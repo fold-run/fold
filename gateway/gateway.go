@@ -65,6 +65,10 @@ type Gateway struct {
 	// (URIs are opaque and never rewritten; ownership is remembered).
 	resourceOwner sync.Map
 
+	// taskOwner remembers which upstream owns each task id (opaque, never
+	// rewritten). Pinned at mint or on first probe; refreshed on use.
+	taskOwner sync.Map
+
 	// callCtx tracks the context of each in-flight named invocation per
 	// downstream session. Server-initiated traffic from an upstream
 	// (sampling, elicitation, logging, progress) is forwarded with that
@@ -166,6 +170,7 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		},
 	)
 	g.server.AddReceivingMiddleware(g.federationMiddleware)
+	g.registerTaskMethods()
 	for _, u := range g.upstreams {
 		u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
 			g.server.ResourceUpdated(ctx, params)

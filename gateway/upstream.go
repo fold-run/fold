@@ -251,6 +251,13 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 func (u *upstream) connect(ctx context.Context, opts *mcp.ClientOptions) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "fold-gateway", Version: version}, opts)
+	// Register the federated task methods so the client may forward them to
+	// this upstream as opaque custom methods.
+	for _, method := range taskMethods {
+		if err := mcp.AddSendingCustomMethod[*rawParams, *rawResult](client, method); err != nil {
+			return nil, fmt.Errorf("register task method %q: %w", method, err)
+		}
+	}
 	cctx, cancel := context.WithTimeout(ctx, u.connectTimeout)
 	defer cancel()
 	session, err := client.Connect(cctx, &mcp.StreamableClientTransport{
@@ -673,4 +680,20 @@ func (u *upstream) ping(ctx context.Context) error {
 	return u.do(ctx, func(ctx context.Context, s *mcp.ClientSession) error {
 		return s.Ping(ctx, nil)
 	})
+}
+
+// callTask forwards an opaque task method to this upstream on the root
+// session. A JSON-RPC error (e.g. the upstream not owning the task) passes
+// through as a wire error; only transport failures count against the breaker.
+func (u *upstream) callTask(ctx context.Context, method string, raw json.RawMessage) (json.RawMessage, error) {
+	var out json.RawMessage
+	err := u.do(ctx, func(ctx context.Context, s *mcp.ClientSession) error {
+		res, err := mcp.CallCustomMethod[*rawParams, *rawResult](ctx, s, method, &rawParams{raw: raw})
+		if err != nil {
+			return err
+		}
+		out = res.raw
+		return nil
+	})
+	return out, err
 }

@@ -93,6 +93,8 @@ POST /mcp
 
 **Server-initiated traffic bridges both ways.** Named invocations run over a per-client upstream session whose handlers forward sampling (`sampling/createMessage`), elicitation, log messages, and progress notifications back to the originating client — routed over that call's own stream, so clients without a standalone SSE stream still hear them. `resources/subscribe` is forwarded to the owning upstream and `resources/updated` notifications fan back out to subscribed clients; `completion/complete` routes by prompt namespace or resource ownership; a client's `logging/setLevel` propagates to its upstream sessions. Idle per-client sessions are swept after 5 minutes.
 
+**Federated tasks.** Task ids are opaque and clients persist them across sessions, so — like resource URIs — fold never rewrites them; ownership is remembered instead. A `tools/call` that mints a task (advertised in the result `_meta`) pins `taskId → upstream`; `tasks/get`, `tasks/cancel`, `tasks/result`, and `tasks/update` route to that owner, whose errors pass through verbatim. A task fold never saw (minted on another instance, or affinity evicted) is located by a read-only `tasks/get` probe across upstreams — the owner answers, everyone else is a healthy "no" — after which the mutating method is sent to the owner alone. `tasks/list` merges every upstream; ids no upstream knows answer `-32002`. The Go SDK does not yet model the task lifecycle, so these are forwarded as opaque JSON via the SDK's custom-method mechanism to fold's task contract; the wire types are gateway-local and swap for the SDK's typed task API when it ships. `subscriptions/listen` fan-in is not included (the SDK exposes no public API for it).
+
 ## Configuration
 
 One JSON document, validated on startup (`fold --validate`). Loaded from `--config <path>` or `FOLD_CONFIG`.
@@ -194,6 +196,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 | `-32041` | Upstream unavailable (circuit open / unreachable / all upstreams down) |
 | `-32042` | Policy denied the invocation |
 | `-32043` | Name does not resolve to a configured namespace |
+| `-32002` | Task id not owned by any upstream |
 
 ## Observability
 
@@ -240,7 +243,7 @@ fold-go is a faithful port of fold's core feature set on a single runtime. Not (
 - **Era translation** (legacy 2025 ↔ stateless 2026 bridging, MRTR parking) — fold-go pins upstream connections to the session era by default (see `protocol`) so server-initiated traffic bridges; fold's held-session legacy bridge and header-based body-free routing are not replicated.
 - **Enterprise-Managed Authorization** (ID-JAG token endpoint) — planned; standard OAuth resource-server auth and RFC 8693 token exchange are implemented.
 - **Cloudflare Workers runtime** — fold-go is a single-binary deployment (Docker/k8s friendly). Redis-shared state (fold's `REDIS_URL`) *is* implemented: rate limits, breakers, and list caches are fleet-wide when configured.
-- **Federated tasks and `subscriptions/listen` fan-in** — long-running task federation is not in this port.
+- **`subscriptions/listen` fan-in** — the notification-stream fan-in is not ported (the Go SDK exposes no public API for it). Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
 - **Composite federated pagination** — list results are merged and returned as a single page.
 
 ## License
