@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -64,6 +66,11 @@ type upstream struct {
 
 	// metrics is the owning gateway's instrumentation (set by Gateway).
 	metrics *metricsSet
+	// log is the owning gateway's logger, tagged with this upstream id.
+	log *slog.Logger
+	// breaker-transition logging state.
+	hadFailure       atomic.Bool
+	lastBreakerState atomic.Value // string
 
 	mu         sync.Mutex
 	session    *mcp.ClientSession       // root session
@@ -86,6 +93,7 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 		cacheTTL:       defaultCacheTTL,
 		bridged:        map[string]*bridgedEntry{},
 		subscribed:     map[string]bool{},
+		log:            slog.New(slog.DiscardHandler),
 	}
 	if t := cfg.Timeouts; t != nil {
 		if t.ConnectMs > 0 {
@@ -127,14 +135,17 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 	if parsed, err := url.Parse(cfg.URL); err == nil {
 		upstreamHost = parsed.Host
 	}
+	ct := newCredentialTransport(u.creds, sessionEra, upstreamHost)
 	u.httpClient = &http.Client{
-		Transport: newCredentialTransport(u.creds, sessionEra, upstreamHost),
+		Transport: ct,
 		// Never follow a redirect that changes host: credentials are attached
 		// per outgoing request, so a hostile upstream returning a cross-host
 		// 3xx would otherwise capture the upstream API key or the caller's
 		// bearer token. Same-host redirects are allowed (trailing-slash, etc).
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Host != via[0].URL.Host {
+				u.log.Warn("refused cross-host redirect from upstream",
+					"from", via[0].URL.Host, "to", req.URL.Host)
 				return fmt.Errorf("refusing cross-host redirect to %q (upstream %q)", req.URL.Host, cfg.ID)
 			}
 			if len(via) >= 10 {
@@ -143,6 +154,8 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 			return nil
 		},
 	}
+	// The transport shares the upstream's logger once it exists.
+	ct.log = func() *slog.Logger { return u.log }
 	return u
 }
 
@@ -166,7 +179,8 @@ type credentialTransport struct {
 	base         http.RoundTripper
 	sse          http.RoundTripper // GETs: base + response-header timeout
 	sessionEra   bool
-	upstreamHost string // credentials/trace attach only to this host
+	upstreamHost string              // credentials/trace attach only to this host
+	log          func() *slog.Logger // resolved lazily (upstream logger set after construction)
 }
 
 func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool, upstreamHost string) *credentialTransport {
@@ -224,6 +238,10 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if req.Method == http.MethodGet {
 		resp, err := t.sse.RoundTrip(req)
 		if err != nil && strings.Contains(err.Error(), "timeout awaiting response headers") {
+			if t.log != nil {
+				t.log().Warn("upstream hung the standalone SSE GET; proceeding without server-initiated stream",
+					"timeout", sseHeaderTimeout)
+			}
 			return synthetic405(req), nil
 		}
 		return resp, err
@@ -240,8 +258,10 @@ func (u *upstream) connect(ctx context.Context, opts *mcp.ClientOptions) (*mcp.C
 		HTTPClient: u.httpClient,
 	}, nil)
 	if err != nil {
+		u.log.Warn("upstream connect failed", "err", err)
 		return nil, fmt.Errorf("connect upstream %q: %w", u.cfg.ID, err)
 	}
+	u.log.Debug("upstream connected")
 	return session, nil
 }
 
@@ -340,15 +360,21 @@ func (u *upstream) bridgedSession(ctx context.Context, key string, opts *mcp.Cli
 
 func (u *upstream) dropSession(s *mcp.ClientSession) {
 	u.mu.Lock()
+	dropped := false
 	if u.session == s {
 		u.session = nil
+		dropped = true
 	}
 	for key, e := range u.bridged {
 		if e.session == s {
 			delete(u.bridged, key)
+			dropped = true
 		}
 	}
 	u.mu.Unlock()
+	if dropped {
+		u.log.Warn("dropped upstream session after transport error; will reconnect on next request")
+	}
 	if s != nil {
 		s.Close()
 	}
@@ -435,7 +461,7 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	defer cancel()
 	err = fn(rctx, session)
 	if err == nil {
-		u.breaker.Record(ctx, true)
+		u.recordBreaker(ctx, true)
 		observe("ok")
 		return nil
 	}
@@ -443,11 +469,12 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	// through verbatim and don't count it against the breaker.
 	var wire *jsonrpc.Error
 	if errors.As(err, &wire) {
-		u.breaker.Record(ctx, true)
+		u.recordBreaker(ctx, true)
 		observe("ok")
 		return wire
 	}
-	u.breaker.Record(ctx, false)
+	u.recordBreaker(ctx, false)
+	u.log.Warn("upstream request failed", "err", err)
 	if isConnectionError(err) {
 		u.dropSession(session)
 	}
@@ -455,6 +482,28 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	return &jsonrpc.Error{
 		Code:    codeUpstreamDown,
 		Message: fmt.Sprintf("upstream %q: %v", u.cfg.ID, err),
+	}
+}
+
+// recordBreaker reports an outcome to the breaker and logs open/close
+// transitions. To avoid extra shared-state reads on the healthy path, the
+// breaker state is only inspected around failures and the first success
+// after a failure.
+func (u *upstream) recordBreaker(ctx context.Context, success bool) {
+	if success && !u.hadFailure.Load() {
+		u.breaker.Record(ctx, true)
+		return
+	}
+	u.breaker.Record(ctx, success)
+	if !success {
+		u.hadFailure.Store(true)
+	}
+	newState := u.breaker.State(ctx)
+	if success {
+		u.hadFailure.Store(false)
+	}
+	if prev := u.lastBreakerState.Swap(string(newState)); prev != nil && prev.(string) != string(newState) {
+		u.log.Warn("circuit breaker state changed", "from", prev, "to", string(newState))
 	}
 }
 

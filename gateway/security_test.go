@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,5 +210,34 @@ func TestHealthzHidesDetailsWhenAuthRequired(t *testing.T) {
 	// Basic liveness fields still present.
 	if !strings.Contains(text, `"id":"u"`) {
 		t.Errorf("healthz should still report upstream id: %s", text)
+	}
+}
+
+func TestLoggerReceivesOperationalEvents(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	up, _ := newUpstreamServer(t, "tool")
+	gw, err := New(&config.Config{Upstreams: []config.Upstream{{ID: "u", URL: up.URL}}}, WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(gw.Handler())
+	t.Cleanup(ts.Close)
+	session := connect(t, ts.URL, nil)
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool"}); err != nil {
+		t.Fatal(err)
+	}
+	gw.Close()
+
+	logs := buf.String()
+	for _, want := range []string{"gateway configured", "upstream connected", "gateway shutting down"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("logs missing %q; got:\n%s", want, logs)
+		}
+	}
+	// The upstream label must be attached to per-upstream events.
+	if !strings.Contains(logs, `upstream=u`) {
+		t.Errorf("per-upstream logs missing upstream label; got:\n%s", logs)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -56,6 +57,7 @@ type Gateway struct {
 	verifier *auth.Verifier
 	metrics  *metricsSet
 	state    state.Provider
+	log      *slog.Logger
 
 	globalLimit state.Limiter
 
@@ -82,8 +84,21 @@ type Gateway struct {
 	stopSweeper chan struct{}
 }
 
+// Option configures a Gateway at construction.
+type Option func(*Gateway)
+
+// WithLogger sets the structured logger for operational events. If unset,
+// the gateway logs to a discard handler (silent).
+func WithLogger(l *slog.Logger) Option {
+	return func(g *Gateway) {
+		if l != nil {
+			g.log = l
+		}
+	}
+}
+
 // New builds a gateway from a validated config.
-func New(cfg *config.Config) (*Gateway, error) {
+func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -101,6 +116,10 @@ func New(cfg *config.Config) (*Gateway, error) {
 		audit:       audit.New(cfg.Audit),
 		state:       provider,
 		subscribers: map[string]map[string]bool{},
+		log:         slog.New(slog.DiscardHandler),
+	}
+	for _, opt := range opts {
+		opt(g)
 	}
 	for _, ucfg := range cfg.Upstreams {
 		u := newUpstream(ucfg, provider)
@@ -121,7 +140,15 @@ func New(cfg *config.Config) (*Gateway, error) {
 	g.metrics = newMetricsSet(g.upstreams)
 	for _, u := range g.upstreams {
 		u.metrics = g.metrics
+		u.log = g.log.With("upstream", u.cfg.ID)
 	}
+	redisOn := (cfg.Server != nil && cfg.Server.RedisURL != "") || os.Getenv("REDIS_URL") != ""
+	g.log.Info("gateway configured",
+		"version", version,
+		"upstreams", len(g.upstreams),
+		"passthrough", g.passthrough,
+		"authRequired", cfg.AuthRequired(),
+		"sharedState", redisOn)
 
 	g.server = mcp.NewServer(
 		&mcp.Implementation{Name: "fold", Title: "fold gateway", Version: version},
@@ -332,6 +359,7 @@ func buildStateProvider(cfg *config.Config) (state.Provider, error) {
 
 // Close shuts down all upstream sessions.
 func (g *Gateway) Close() {
+	g.log.Info("gateway shutting down")
 	close(g.stopSweeper)
 	for _, u := range g.upstreams {
 		u.Close()

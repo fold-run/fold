@@ -9,7 +9,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +22,29 @@ import (
 	"github.com/fold-run/fold-go/gateway"
 )
 
+// newLogger builds the structured logger from the CLI flags.
+func newLogger(format, level string) *slog.Logger {
+	var lvl slog.Level
+	switch level {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: lvl}
+	var h slog.Handler
+	if format == "json" {
+		h = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		h = slog.NewTextHandler(os.Stderr, opts)
+	}
+	return slog.New(h)
+}
+
 func main() {
 	var (
 		configPath  = flag.String("config", "", "path to fold.config.json (or set FOLD_CONFIG to a path or inline JSON)")
@@ -29,6 +52,8 @@ func main() {
 		host        = flag.String("host", "", "address to bind (default all interfaces)")
 		validate    = flag.Bool("validate", false, "validate the config and exit")
 		showVersion = flag.Bool("version", false, "print the version and exit")
+		logFormat   = flag.String("log-format", "text", "log format: text | json")
+		logLevel    = flag.String("log-level", "info", "log level: debug | info | warn | error")
 	)
 	flag.Parse()
 
@@ -63,7 +88,9 @@ func main() {
 		return
 	}
 
-	gw, err := gateway.New(cfg)
+	logger := newLogger(*logFormat, *logLevel)
+
+	gw, err := gateway.New(cfg, gateway.WithLogger(logger))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fold: %v\n", err)
 		os.Exit(1)
@@ -74,16 +101,17 @@ func main() {
 	srv := &http.Server{Addr: addr, Handler: gw.Handler()}
 
 	go func() {
-		log.Printf("fold gateway listening on %s (MCP endpoint: http://localhost:%d%s)", addr, *port, cfg.MCPPath())
+		logger.Info("listening", "addr", addr, "mcpPath", cfg.MCPPath())
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("fold: %v", err)
+			logger.Error("server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
-	log.Println("fold: shutting down")
+	logger.Info("shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
