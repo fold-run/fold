@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -53,8 +54,17 @@ type Gateway struct {
 	// (URIs are opaque and never rewritten; ownership is remembered).
 	resourceOwner sync.Map
 
+	// callCtx tracks the context of each in-flight named invocation per
+	// downstream session. Server-initiated traffic from an upstream
+	// (sampling, elicitation, logging, progress) is forwarded with that
+	// context so the SDK routes it over the originating call's stream —
+	// clients that never open a standalone SSE stream still hear it.
+	callCtx sync.Map // downstream session ID → *ctxStack
+
 	server  *mcp.Server
 	handler http.Handler
+
+	stopSweeper chan struct{}
 }
 
 // New builds a gateway from a validated config.
@@ -91,15 +101,89 @@ func New(cfg *config.Config) (*Gateway, error) {
 		&mcp.ServerOptions{
 			Instructions: g.instructions(),
 			Capabilities: &mcp.ServerCapabilities{
-				Tools:     &mcp.ToolCapabilities{ListChanged: true},
-				Prompts:   &mcp.PromptCapabilities{ListChanged: true},
-				Resources: &mcp.ResourceCapabilities{ListChanged: true},
+				Tools:       &mcp.ToolCapabilities{ListChanged: true},
+				Prompts:     &mcp.PromptCapabilities{ListChanged: true},
+				Resources:   &mcp.ResourceCapabilities{ListChanged: true, Subscribe: true},
+				Logging:     &mcp.LoggingCapabilities{},
+				Completions: &mcp.CompletionCapabilities{},
 			},
+			SubscribeHandler:   g.handleSubscribe,
+			UnsubscribeHandler: g.handleUnsubscribe,
 		},
 	)
 	g.server.AddReceivingMiddleware(g.federationMiddleware)
+	for _, u := range g.upstreams {
+		u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
+			g.server.ResourceUpdated(ctx, params)
+		}
+	}
+	g.stopSweeper = make(chan struct{})
+	go g.sweepLoop()
 	g.handler = g.buildHandler()
 	return g, nil
+}
+
+// sweepLoop periodically closes idle per-client upstream sessions.
+func (g *Gateway) sweepLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			for _, u := range g.upstreams {
+				u.sweepBridged()
+			}
+		case <-g.stopSweeper:
+			return
+		}
+	}
+}
+
+// handleSubscribe forwards resources/subscribe to the upstream owning the
+// URI; the SDK server tracks which downstream sessions subscribed, and
+// resources/updated notifications fan back out through it.
+func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest) error {
+	u, err := g.ownerForURI(ctx, req.Params.URI)
+	if err != nil {
+		return err
+	}
+	return u.subscribe(ctx, req.Params.URI)
+}
+
+func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeRequest) error {
+	u, err := g.ownerForURI(ctx, req.Params.URI)
+	if err != nil {
+		return err
+	}
+	return u.unsubscribe(ctx, req.Params.URI)
+}
+
+// ownerForURI resolves which upstream serves a resource URI, refreshing the
+// resource index once when the URI is unknown.
+func (g *Gateway) ownerForURI(ctx context.Context, uri string) (*upstream, error) {
+	if g.passthrough {
+		return g.upstreams[0], nil
+	}
+	if id, ok := g.resourceOwner.Load(uri); ok {
+		if u := g.byID[id.(string)]; u != nil {
+			return u, nil
+		}
+	}
+	// Refresh the index via a list fan-out, then retry.
+	lists, _ := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
+		return u.listResources(ctx)
+	})
+	for i, u := range g.upstreams {
+		for _, r := range lists[i] {
+			g.resourceOwner.Store(r.URI, u.cfg.ID)
+		}
+	}
+	if id, ok := g.resourceOwner.Load(uri); ok {
+		if u := g.byID[id.(string)]; u != nil {
+			return u, nil
+		}
+	}
+	return nil, mcp.ResourceNotFoundError(uri)
 }
 
 func (g *Gateway) instructions() string {
@@ -121,9 +205,152 @@ func (g *Gateway) Handler() http.Handler { return g.handler }
 
 // Close shuts down all upstream sessions.
 func (g *Gateway) Close() {
+	close(g.stopSweeper)
 	for _, u := range g.upstreams {
 		u.Close()
 	}
+}
+
+// ctxStack tracks in-flight invocation contexts for one downstream session,
+// and counts server-initiated forwards so results can wait for trailing
+// notifications (see drainBridge).
+type ctxStack struct {
+	mu       sync.Mutex
+	stack    []context.Context
+	activity atomic.Int64
+}
+
+// bridgeActivity returns the forward count for a downstream session.
+func (g *Gateway) bridgeActivity(key string) int64 {
+	if v, ok := g.callCtx.Load(key); ok {
+		return v.(*ctxStack).activity.Load()
+	}
+	return 0
+}
+
+func (g *Gateway) bumpBridgeActivity(key string) {
+	if v, ok := g.callCtx.Load(key); ok {
+		v.(*ctxStack).activity.Add(1)
+	}
+}
+
+// drainBridge briefly waits out trailing server-initiated traffic after an
+// invocation completes. Upstream notifications sent just before a result
+// (e.g. a final log message) are handled asynchronously by the SDK client
+// and can lose the race against the result; when this call saw any bridged
+// traffic, wait until the stream has been quiet for a beat (bounded) so
+// those notifications reach the client before the result closes its stream.
+// Calls with no bridged traffic return immediately.
+func (g *Gateway) drainBridge(key string, before int64) {
+	if key == "" {
+		return
+	}
+	v, ok := g.callCtx.Load(key)
+	if !ok {
+		return
+	}
+	s := v.(*ctxStack)
+	last := s.activity.Load()
+	if last == before {
+		return
+	}
+	deadline := time.Now().Add(150 * time.Millisecond)
+	lastChange := time.Now()
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		cur := s.activity.Load()
+		if cur != last {
+			last, lastChange = cur, time.Now()
+			continue
+		}
+		if time.Since(lastChange) >= 30*time.Millisecond {
+			return
+		}
+	}
+}
+
+// pushCallCtx records ctx as the current invocation context for the
+// downstream session key, returning a func that pops it. A no-op for
+// unbridged requests (empty key).
+func (g *Gateway) pushCallCtx(key string, ctx context.Context) func() {
+	if key == "" {
+		return func() {}
+	}
+	v, _ := g.callCtx.LoadOrStore(key, &ctxStack{})
+	s := v.(*ctxStack)
+	s.mu.Lock()
+	s.stack = append(s.stack, ctx)
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		for i := len(s.stack) - 1; i >= 0; i-- {
+			if s.stack[i] == ctx {
+				s.stack = append(s.stack[:i], s.stack[i+1:]...)
+				break
+			}
+		}
+		empty := len(s.stack) == 0
+		s.mu.Unlock()
+		if empty {
+			g.callCtx.Delete(key)
+		}
+	}
+}
+
+// invocationCtx returns the most recent live invocation context for the
+// downstream session key, or fallback when none is in flight.
+func (g *Gateway) invocationCtx(key string, fallback context.Context) context.Context {
+	v, ok := g.callCtx.Load(key)
+	if !ok {
+		return fallback
+	}
+	s := v.(*ctxStack)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.stack) - 1; i >= 0; i-- {
+		if s.stack[i].Err() == nil {
+			return s.stack[i]
+		}
+	}
+	return fallback
+}
+
+// bridgeOptions builds the per-client upstream session options: handlers
+// that forward server-initiated traffic (sampling, elicitation, logging,
+// progress) back to the downstream client session, mirroring the
+// capabilities that client declared. Forwarded traffic uses the in-flight
+// invocation's context so it rides that call's stream.
+func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
+	key := ss.ID()
+	opts := &mcp.ClientOptions{
+		// Advertise no capabilities by default; handlers below add theirs.
+		Capabilities: &mcp.ClientCapabilities{},
+		LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) {
+			g.bumpBridgeActivity(key)
+			ss.Log(g.invocationCtx(key, ctx), req.Params)
+		},
+		ProgressNotificationHandler: func(ctx context.Context, req *mcp.ProgressNotificationClientRequest) {
+			g.bumpBridgeActivity(key)
+			ss.NotifyProgress(g.invocationCtx(key, ctx), req.Params)
+		},
+	}
+	var caps *mcp.ClientCapabilities
+	if init := ss.InitializeParams(); init != nil {
+		caps = init.Capabilities
+	}
+	if caps != nil && caps.Sampling != nil {
+		opts.CreateMessageHandler = func(ctx context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+			g.bumpBridgeActivity(key)
+			return ss.CreateMessage(g.invocationCtx(key, ctx), req.Params)
+		}
+	}
+	if caps != nil && caps.Elicitation != nil {
+		opts.ElicitationHandler = func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			g.bumpBridgeActivity(key)
+			return ss.Elicit(g.invocationCtx(key, ctx), req.Params)
+		}
+	}
+	return opts
 }
 
 func (g *Gateway) buildHandler() http.Handler {

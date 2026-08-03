@@ -24,13 +24,22 @@ type Config struct {
 
 // Upstream describes one MCP server folded into the gateway.
 type Upstream struct {
-	ID        string            `json:"id"`
-	URL       string            `json:"url"`
-	Namespace string            `json:"namespace,omitempty"`
-	Owner     *Owner            `json:"owner,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	Auth      *UpstreamAuth     `json:"auth,omitempty"`
-	Timeouts  *Timeouts         `json:"timeouts,omitempty"`
+	ID        string `json:"id"`
+	URL       string `json:"url"`
+	Namespace string `json:"namespace,omitempty"`
+
+	// Protocol selects the era of the upstream connection. "session" (the
+	// default) negotiates the sessionful handshake, which is required for
+	// server-initiated traffic (sampling, elicitation, logging, progress,
+	// resource-update notifications) to bridge through the gateway.
+	// "auto" lets the SDK prefer the newest protocol (2026-07-28
+	// stateless), which cannot carry server-initiated requests.
+	Protocol string `json:"protocol,omitempty"`
+
+	Owner    *Owner            `json:"owner,omitempty"`
+	Labels   map[string]string `json:"labels,omitempty"`
+	Auth     *UpstreamAuth     `json:"auth,omitempty"`
+	Timeouts *Timeouts         `json:"timeouts,omitempty"`
 
 	CircuitBreaker *CircuitBreaker `json:"circuitBreaker,omitempty"`
 	RateLimit      *RateLimit      `json:"rateLimit,omitempty"`
@@ -209,6 +218,11 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("upstream %q: duplicate namespace %q", u.ID, u.Namespace)
 			}
 			seenNS[u.Namespace] = true
+		}
+		switch u.Protocol {
+		case "", "session", "auto", "2026-07-28":
+		default:
+			return fmt.Errorf("upstream %q: protocol must be %q, %q, or %q", u.ID, "session", "auto", "2026-07-28")
 		}
 		if err := u.validateAuth(); err != nil {
 			return err

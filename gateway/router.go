@@ -97,6 +97,10 @@ func (g *Gateway) route(ctx context.Context, method string, req mcp.Request, evt
 		return g.listResourceTemplates(ctx, evt)
 	case "resources/read":
 		return g.readResource(ctx, req, evt)
+	case "completion/complete":
+		return g.complete(ctx, req, evt)
+	case "logging/setLevel":
+		return g.setLevel(ctx, req, next)
 	default:
 		// initialize, ping, notifications, logging, completion — handled by
 		// the SDK server itself.
@@ -204,11 +208,21 @@ func (g *Gateway) callTool(ctx context.Context, req mcp.Request, evt *audit.Even
 	if res, err := g.authorize(ctx, evt, u, "tools/call", bare); err != nil {
 		return res, err
 	}
-	out, err := u.callTool(ctx, &mcp.CallToolParams{
+	// A missing arguments field must stay missing — a nil RawMessage would
+	// marshal as JSON null, which schema-validating upstreams reject.
+	var args any
+	if len(params.Arguments) > 0 {
+		args = params.Arguments
+	}
+	key, opts := g.bridgeFor(req)
+	defer g.pushCallCtx(key, ctx)()
+	before := g.bridgeActivity(key)
+	out, err := u.callTool(ctx, key, opts, &mcp.CallToolParams{
 		Name:      bare,
-		Arguments: params.Arguments,
+		Arguments: args,
 		Meta:      params.Meta,
 	})
+	g.drainBridge(key, before)
 	if err != nil {
 		return nil, err
 	}
@@ -253,11 +267,15 @@ func (g *Gateway) getPrompt(ctx context.Context, req mcp.Request, evt *audit.Eve
 	if res, err := g.authorize(ctx, evt, u, "prompts/get", bare); err != nil {
 		return res, err
 	}
-	out, err := u.getPrompt(ctx, &mcp.GetPromptParams{
+	key, opts := g.bridgeFor(req)
+	defer g.pushCallCtx(key, ctx)()
+	before := g.bridgeActivity(key)
+	out, err := u.getPrompt(ctx, key, opts, &mcp.GetPromptParams{
 		Name:      bare,
 		Arguments: params.Arguments,
 		Meta:      params.Meta,
 	})
+	g.drainBridge(key, before)
 	if err != nil {
 		return nil, err
 	}
@@ -329,6 +347,69 @@ func (g *Gateway) readResource(ctx context.Context, req mcp.Request, evt *audit.
 		}
 	}
 	return nil, mcp.ResourceNotFoundError(params.URI)
+}
+
+// bridgeFor returns the per-client session key and bridge options for a
+// request, so server-initiated traffic (sampling, elicitation, logging,
+// progress) flows back to the calling client.
+func (g *Gateway) bridgeFor(req mcp.Request) (string, *mcp.ClientOptions) {
+	ss, ok := req.GetSession().(*mcp.ServerSession)
+	if !ok || ss.ID() == "" {
+		return "", nil
+	}
+	return ss.ID(), g.bridgeOptions(ss)
+}
+
+// complete routes completion/complete to the upstream owning the reference:
+// prompt refs resolve by namespace, resource refs by URI ownership.
+func (g *Gateway) complete(ctx context.Context, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
+	params, ok := req.GetParams().(*mcp.CompleteParams)
+	if !ok || params == nil || params.Ref == nil {
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "missing completion ref"}
+	}
+	var u *upstream
+	forwarded := *params
+	switch params.Ref.Type {
+	case "ref/prompt":
+		evt.Name = params.Ref.Name
+		up, bare, err := g.resolve(params.Ref.Name)
+		if err != nil {
+			return nil, err
+		}
+		u = up
+		ref := *params.Ref
+		ref.Name = bare
+		forwarded.Ref = &ref
+	case "ref/resource":
+		evt.Name = params.Ref.URI
+		up, err := g.ownerForURI(ctx, params.Ref.URI)
+		if err != nil {
+			return nil, err
+		}
+		u = up
+	default:
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown completion ref type %q", params.Ref.Type)}
+	}
+	evt.Upstream = u.cfg.ID
+	out, err := u.complete(ctx, &forwarded)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// setLevel propagates the client's logging level to its bridged upstream
+// sessions (best effort — not every upstream supports logging), then lets
+// the SDK server record it for the downstream session.
+func (g *Gateway) setLevel(ctx context.Context, req mcp.Request, next mcp.MethodHandler) (mcp.Result, error) {
+	params, _ := req.GetParams().(*mcp.SetLoggingLevelParams)
+	key, opts := g.bridgeFor(req)
+	if params != nil && key != "" {
+		for _, u := range g.upstreams {
+			u.setLoggingLevel(ctx, key, opts, params.Level)
+		}
+	}
+	return next(ctx, "logging/setLevel", req)
 }
 
 // authorize applies the policy engine to a named invocation. Denials return

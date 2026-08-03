@@ -4,6 +4,8 @@
 
 fold-go sits in front of any number of upstream MCP servers — in any language, on any SDK, from any team or vendor — providing federation, enterprise auth, policy, caching, rate limiting, and audit. It is built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk), so the wire protocol (streamable HTTP, both request/response and SSE) is the SDK's own implementation on both the client-facing and upstream-facing sides.
 
+**Conformant, provably.** The official [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) suite runs against fold-go fronting the reference everything-server on every merge — **40/40 checks**, including sampling, elicitation, logging, progress, and resource subscriptions bridged through the gateway (`conformance` job in [CI](.github/workflows/ci.yml); reproduce with `./scripts/conformance.sh`).
+
 ## Use cases
 
 - **Unify a federation.** Acquisitions, child orgs, and teams each ship their own MCP servers; fold-go presents them as one virtual server with namespaced tools — no team rewrites anything.
@@ -79,6 +81,8 @@ POST /mcp
  → audit                one event per request, including denials (single exit door)
 ```
 
+**Server-initiated traffic bridges both ways.** Named invocations run over a per-client upstream session whose handlers forward sampling (`sampling/createMessage`), elicitation, log messages, and progress notifications back to the originating client — routed over that call's own stream, so clients without a standalone SSE stream still hear them. `resources/subscribe` is forwarded to the owning upstream and `resources/updated` notifications fan back out to subscribed clients; `completion/complete` routes by prompt namespace or resource ownership; a client's `logging/setLevel` propagates to its upstream sessions. Idle per-client sessions are swept after 5 minutes.
+
 ## Configuration
 
 One JSON document, validated on startup (`fold --validate`). Loaded from `--config <path>` or `FOLD_CONFIG`.
@@ -90,6 +94,7 @@ One JSON document, validated on startup (`fold --validate`). Loaded from `--conf
 | `id` | — | Lowercase alphanumeric + hyphens. Used in policy, audit, health. |
 | `url` | — | The upstream's MCP endpoint. |
 | `namespace` | none | Tool/prompt name prefix (`{namespace}__{name}`). Omitted → passthrough; only valid with a single upstream. |
+| `protocol` | `session` | `"session"` negotiates the sessionful handshake, required to bridge server-initiated traffic (sampling, elicitation, logging, progress, resource updates). `"auto"`/`"2026-07-28"` lets the SDK prefer the stateless 2026 protocol, which cannot carry server-initiated requests. |
 | `owner` | none | `{ org, team, contact }` — surfaces in audit and health. |
 | `labels` | none | Free-form string map for reporting. |
 | `auth` | `{"strategy":"none"}` | Upstream credential strategy — see below. |
@@ -200,17 +205,18 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 
 ```bash
 go build ./...
-go test ./...        # unit + integration (real SDK client/server fixtures)
+go test ./...              # unit + integration (real SDK client/server fixtures)
 go test -race ./...
+./scripts/conformance.sh   # official conformance suite through the gateway (needs node)
 ```
 
-The integration suite spins up real MCP servers from the official Go SDK behind the gateway and exercises federation, namespacing, policy filtering and denial, partial failure, credential injection (static and passthrough), rate limits, the breaker, JWT auth against a fixture JWKS issuer, and RFC 9728 metadata.
+The integration suite spins up real MCP servers from the official Go SDK behind the gateway and exercises federation, namespacing, policy filtering and denial, partial failure, credential injection (static and passthrough), rate limits, the breaker, JWT auth against a fixture JWKS issuer, RFC 9728 metadata, and the full server-initiated bridging loop (sampling, elicitation, logging, progress).
 
 ## Differences from fold (TypeScript)
 
 fold-go is a faithful port of fold's core feature set on a single runtime. Not (yet) ported:
 
-- **Era translation** (legacy 2025 ↔ stateless 2026 bridging, MRTR parking) — the Go SDK negotiates protocol versions natively with each peer, which covers the common cases; fold's held-session legacy bridge and header-based body-free routing are not replicated.
+- **Era translation** (legacy 2025 ↔ stateless 2026 bridging, MRTR parking) — fold-go pins upstream connections to the session era by default (see `protocol`) so server-initiated traffic bridges; fold's held-session legacy bridge and header-based body-free routing are not replicated.
 - **Enterprise-Managed Authorization** (ID-JAG token endpoint) — planned; standard OAuth resource-server auth and RFC 8693 token exchange are implemented.
 - **Cloudflare Workers runtime and Redis-shared state** — fold-go is a single-binary Node-equivalent deployment (Docker/k8s friendly); cache, rate-limit, and breaker state are in-process.
 - **Federated tasks and `subscriptions/listen` fan-in** — long-running task federation is not in this port.

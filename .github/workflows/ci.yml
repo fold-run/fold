@@ -33,3 +33,19 @@ jobs:
 
       - name: test
         run: go test -race ./...
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: conformance suite through the gateway
+        run: ./scripts/conformance.sh
