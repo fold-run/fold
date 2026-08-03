@@ -1,0 +1,47 @@
+{
+  "upstreams": [
+    {
+      "id": "github-tools",
+      "url": "https://mcp.platform.acme.com/mcp",
+      "namespace": "gh",
+      "owner": { "org": "acme-platform", "team": "devex" },
+      "auth": { "strategy": "token-exchange", "tokenEndpoint": "https://acme.okta.com/oauth2/v1/token", "clientId": "fold-gateway", "clientAuth": { "type": "client_secret_post", "secretRef": "FOLD_OKTA_SECRET" }, "audience": "https://mcp.platform.acme.com" }
+    },
+    {
+      "id": "ml-search",
+      "url": "https://mcp.ml.acquired-co.com/mcp",
+      "namespace": "search",
+      "owner": { "org": "acquired-co", "team": "ml" },
+      "auth": { "strategy": "static", "secretRef": "ML_SEARCH_API_KEY", "header": "x-api-key", "scheme": "" },
+      "rateLimit": { "requestsPerMinute": 600 },
+      "circuitBreaker": { "failureThreshold": 5, "halfOpenAfterMs": 30000 }
+    }
+  ],
+  "auth": {
+    "mode": "required",
+    "resource": "https://gw.example.com",
+    "issuers": [
+      { "issuer": "https://acme.okta.com", "groupsClaim": "groups" }
+    ]
+  },
+  "policy": {
+    "defaultDecision": "deny",
+    "rules": [
+      {
+        "id": "eng-github",
+        "subjects": { "groups": ["engineering"] },
+        "allow": [
+          { "server": "github-tools", "methods": ["tools/call"], "names": ["get_*", "create_pr"] },
+          { "server": "ml-search" }
+        ]
+      }
+    ]
+  },
+  "audit": {
+    "sinks": [ { "type": "stdout" } ]
+  },
+  "server": {
+    "allowedHosts": ["gw.example.com"],
+    "rateLimit": { "requestsPerMinute": 6000 }
+  }
+}
