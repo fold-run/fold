@@ -205,3 +205,24 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+func TestRejectsTokenWithoutSubject(t *testing.T) {
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, authedConfig(iss, []config.Upstream{{ID: "u", URL: up.URL}}, nil))
+
+	// Mint a token with an empty subject — must be rejected (empty UserID
+	// would disable the SDK's per-session identity binding).
+	noSub := iss.mint(t, "", "https://gw.example.com", nil)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/mcp", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer "+noSub)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("token without sub should be rejected, got %d", resp.StatusCode)
+	}
+}

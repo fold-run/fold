@@ -79,6 +79,18 @@ func subjectsMatch(s *config.PolicySubjects, p *auth.Principal) bool {
 	if p == nil {
 		return false
 	}
+	// When a rule scopes to issuers, the principal's token issuer must be one
+	// of them. Subjects and groups are only unique within an issuer, so a
+	// rule that names them without an issuer is honored across every trusted
+	// issuer — pin the issuer to keep a lower-assurance IdP from minting a
+	// principal that matches a rule written for another.
+	if len(s.Issuers) > 0 && !contains(s.Issuers, p.Issuer) {
+		return false
+	}
+	// If only issuers are named, matching the issuer is sufficient.
+	if len(s.Subs) == 0 && len(s.Groups) == 0 {
+		return len(s.Issuers) > 0
+	}
 	if len(s.Subs) > 0 && contains(s.Subs, p.Subject) {
 		return true
 	}

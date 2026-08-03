@@ -128,10 +128,14 @@ type PolicyRule struct {
 	Allow    []PolicyAllow   `json:"allow"`
 }
 
-// PolicySubjects matches principals by group membership and/or subject.
+// PolicySubjects matches principals by group membership and/or subject,
+// optionally scoped to specific token issuers. Because subjects and groups
+// are only unique within an issuer, scope rules to an issuer whenever more
+// than one issuer is trusted.
 type PolicySubjects struct {
-	Groups []string `json:"groups,omitempty"`
-	Subs   []string `json:"subs,omitempty"`
+	Groups  []string `json:"groups,omitempty"`
+	Subs    []string `json:"subs,omitempty"`
+	Issuers []string `json:"issuers,omitempty"`
 }
 
 // PolicyAllow grants methods/names on one upstream. Names support "*" globs.
@@ -171,6 +175,25 @@ type ServerSection struct {
 }
 
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// requireSecureEndpoint rejects a security-critical endpoint reachable over
+// cleartext HTTP (token endpoints carry client secrets; issuer/JWKS URLs are
+// the inbound trust anchor). Loopback hosts are exempted for local
+// development. what labels the endpoint in the error.
+func requireSecureEndpoint(what, endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%s: %q is not a valid URL", what, endpoint)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	host := parsed.Hostname()
+	if parsed.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+		return nil
+	}
+	return fmt.Errorf("%s: must use https (got %q) — it is security-critical", what, endpoint)
+}
 
 // Load reads and validates a config file.
 func Load(path string) (*Config, error) {
@@ -254,6 +277,17 @@ func (c *Config) Validate() error {
 				if _, err := url.Parse(iss.Issuer); err != nil || iss.Issuer == "" {
 					return fmt.Errorf("auth: issuer %q is not a valid URL", iss.Issuer)
 				}
+				// The issuer and its JWKS are the inbound trust anchor —
+				// forging a principal only requires substituting the key set,
+				// so both must be fetched over TLS (loopback exempt for dev).
+				if err := requireSecureEndpoint("auth issuer", iss.Issuer); err != nil {
+					return err
+				}
+				if iss.JWKSURI != "" {
+					if err := requireSecureEndpoint("auth issuer jwksUri", iss.JWKSURI); err != nil {
+						return err
+					}
+				}
 			}
 		default:
 			return fmt.Errorf("auth: mode must be %q or %q", "disabled", "required")
@@ -310,9 +344,15 @@ func (u *Upstream) validateAuth() error {
 		if a.TokenEndpoint == "" || a.ClientID == "" || a.ClientAuth == nil {
 			return fmt.Errorf("upstream %q: client-credentials auth requires tokenEndpoint, clientId, clientAuth", u.ID)
 		}
+		if err := requireSecureEndpoint(fmt.Sprintf("upstream %q tokenEndpoint", u.ID), a.TokenEndpoint); err != nil {
+			return err
+		}
 	case "token-exchange":
 		if a.TokenEndpoint == "" || a.ClientID == "" || a.ClientAuth == nil || a.Audience == "" {
 			return fmt.Errorf("upstream %q: token-exchange auth requires tokenEndpoint, clientId, clientAuth, audience", u.ID)
+		}
+		if err := requireSecureEndpoint(fmt.Sprintf("upstream %q tokenEndpoint", u.ID), a.TokenEndpoint); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("upstream %q: unknown auth strategy %q", u.ID, a.Strategy)

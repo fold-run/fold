@@ -295,12 +295,17 @@ func (g *Gateway) listResources(ctx context.Context, evt *audit.Event) (mcp.Resu
 	if err != nil {
 		return nil, err
 	}
+	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourcesResult{Resources: []*mcp.Resource{}, Meta: meta}
 	for i, u := range g.upstreams {
 		for _, r := range lists[i] {
 			// Resource URIs are opaque identifiers clients persist; fold
-			// never rewrites them. Ownership is remembered instead.
+			// never rewrites them. Ownership is remembered instead — record
+			// it even for filtered resources so reads still route correctly.
 			g.resourceOwner.Store(r.URI, u.cfg.ID)
+			if !g.policy.Visible(principal, u.cfg.ID, "resources/read", r.URI) {
+				continue
+			}
 			out.Resources = append(out.Resources, r)
 		}
 	}
@@ -315,9 +320,15 @@ func (g *Gateway) listResourceTemplates(ctx context.Context, evt *audit.Event) (
 	if err != nil {
 		return nil, err
 	}
+	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}, Meta: meta}
-	for i := range g.upstreams {
-		out.ResourceTemplates = append(out.ResourceTemplates, lists[i]...)
+	for i, u := range g.upstreams {
+		for _, tpl := range lists[i] {
+			if !g.policy.Visible(principal, u.cfg.ID, "resources/read", tpl.URITemplate) {
+				continue
+			}
+			out.ResourceTemplates = append(out.ResourceTemplates, tpl)
+		}
 	}
 	return out, nil
 }
@@ -328,11 +339,18 @@ func (g *Gateway) readResource(ctx context.Context, req mcp.Request, evt *audit.
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "missing resource uri"}
 	}
 	evt.Name = params.URI
+	principal := auth.PrincipalFromContext(ctx)
+	denied := false
 
 	// Affinity first: route to the upstream the URI was listed from.
 	if id, ok := g.resourceOwner.Load(params.URI); ok {
 		if u := g.byID[id.(string)]; u != nil {
 			evt.Upstream = u.cfg.ID
+			if !g.policy.Decide(principal, u.cfg.ID, "resources/read", params.URI).Allowed {
+				evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
+				return nil, &jsonrpc.Error{Code: codeDenied, Message: fmt.Sprintf("policy denied resources/read %q", params.URI)}
+			}
+			evt.Decision = "allow"
 			out, err := u.readResource(ctx, params)
 			if err == nil {
 				tagUpstream(&out.Meta, u)
@@ -340,15 +358,25 @@ func (g *Gateway) readResource(ctx context.Context, req mcp.Request, evt *audit.
 			}
 		}
 	}
-	// Probe fallback: the owner answers, everyone else is a healthy "no".
+	// Probe fallback: try only the upstreams this principal may read from, so
+	// URI guessing cannot reach an upstream the caller has no grant on.
 	for _, u := range g.upstreams {
+		if !g.policy.Decide(principal, u.cfg.ID, "resources/read", params.URI).Allowed {
+			denied = true
+			continue
+		}
 		out, err := u.readResource(ctx, params)
 		if err == nil {
 			g.resourceOwner.Store(params.URI, u.cfg.ID)
 			evt.Upstream = u.cfg.ID
+			evt.Decision = "allow"
 			tagUpstream(&out.Meta, u)
 			return out, nil
 		}
+	}
+	if denied {
+		evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
+		return nil, &jsonrpc.Error{Code: codeDenied, Message: fmt.Sprintf("policy denied resources/read %q", params.URI)}
 	}
 	return nil, mcp.ResourceNotFoundError(params.URI)
 }
@@ -371,7 +399,12 @@ func (g *Gateway) complete(ctx context.Context, req mcp.Request, evt *audit.Even
 	if !ok || params == nil || params.Ref == nil {
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "missing completion ref"}
 	}
+	// Completion is a sub-capability of the reference it completes: gate a
+	// prompt-argument completion behind prompts/get and a resource
+	// completion behind resources/read, so it cannot be used to enumerate
+	// values on a reference the caller may not otherwise reach.
 	var u *upstream
+	var method, name string
 	forwarded := *params
 	switch params.Ref.Type {
 	case "ref/prompt":
@@ -380,7 +413,7 @@ func (g *Gateway) complete(ctx context.Context, req mcp.Request, evt *audit.Even
 		if err != nil {
 			return nil, err
 		}
-		u = up
+		u, method, name = up, "prompts/get", bare
 		ref := *params.Ref
 		ref.Name = bare
 		forwarded.Ref = &ref
@@ -390,11 +423,14 @@ func (g *Gateway) complete(ctx context.Context, req mcp.Request, evt *audit.Even
 		if err != nil {
 			return nil, err
 		}
-		u = up
+		u, method, name = up, "resources/read", params.Ref.URI
 	default:
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown completion ref type %q", params.Ref.Type)}
 	}
 	evt.Upstream = u.cfg.ID
+	if res, err := g.authorize(ctx, evt, u, method, name); err != nil {
+		return res, err
+	}
 	out, err := u.complete(ctx, &forwarded)
 	if err != nil {
 		return nil, err

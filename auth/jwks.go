@@ -9,19 +9,27 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"sync"
 	"time"
 )
 
-// jwksCache fetches and caches a JWKS document per URI.
+// maxJWKSBytes bounds a JWKS response so a hostile or broken issuer cannot
+// exhaust gateway memory with an oversized body.
+const maxJWKSBytes = 1 << 20 // 1 MiB
+
+// jwksCache fetches and caches a JWKS document per URI, single-flighting
+// concurrent fetches so an unauthenticated flood of unknown-kid tokens
+// cannot be amplified into a burst of outbound requests to the IdP.
 type jwksCache struct {
 	client *http.Client
 	ttl    time.Duration
 
-	mu   sync.Mutex
-	sets map[string]*jwksEntry
+	mu      sync.Mutex
+	sets    map[string]*jwksEntry
+	fetchMu map[string]*sync.Mutex // per-URI fetch serialization
 }
 
 type jwksEntry struct {
@@ -31,9 +39,31 @@ type jwksEntry struct {
 
 func newJWKSCache(client *http.Client) *jwksCache {
 	if client == nil {
-		client = http.DefaultClient
+		// A dedicated client: bounded timeout so a slow IdP cannot pin a
+		// verification goroutine, and no ambient default-client sharing.
+		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &jwksCache{client: client, ttl: 5 * time.Minute, sets: map[string]*jwksEntry{}}
+	return &jwksCache{
+		client:  client,
+		ttl:     5 * time.Minute,
+		sets:    map[string]*jwksEntry{},
+		fetchMu: map[string]*sync.Mutex{},
+	}
+}
+
+// lookup resolves a key from a set, honoring the single-key-no-kid fallback.
+func lookup(keys map[string]any, kid string) (any, bool) {
+	if k, ok := keys[kid]; ok {
+		return k, true
+	}
+	// A JWKS with a single key and a token with no kid: accept it. Applied
+	// on every path so acceptance never depends on cache age.
+	if kid == "" && len(keys) == 1 {
+		for _, k := range keys {
+			return k, true
+		}
+	}
+	return nil, false
 }
 
 // key returns the public key for kid at uri, refetching the set when the kid
@@ -42,7 +72,31 @@ func (c *jwksCache) key(ctx context.Context, uri, kid string) (any, error) {
 	c.mu.Lock()
 	e := c.sets[uri]
 	if e != nil {
-		if k, ok := e.keys[kid]; ok {
+		if k, ok := lookup(e.keys, kid); ok {
+			c.mu.Unlock()
+			return k, nil
+		}
+		if time.Since(e.fetched) < 30*time.Second {
+			c.mu.Unlock()
+			return nil, fmt.Errorf("jwks %s: no key %q", uri, kid)
+		}
+	}
+	// Serialize fetches per URI: the first miss fetches, concurrent misses
+	// wait and then re-read the freshly cached set.
+	fm := c.fetchMu[uri]
+	if fm == nil {
+		fm = &sync.Mutex{}
+		c.fetchMu[uri] = fm
+	}
+	c.mu.Unlock()
+
+	fm.Lock()
+	defer fm.Unlock()
+
+	// Re-check: another goroutine may have populated the set while we waited.
+	c.mu.Lock()
+	if e := c.sets[uri]; e != nil {
+		if k, ok := lookup(e.keys, kid); ok {
 			c.mu.Unlock()
 			return k, nil
 		}
@@ -60,14 +114,8 @@ func (c *jwksCache) key(ctx context.Context, uri, kid string) (any, error) {
 	c.mu.Lock()
 	c.sets[uri] = &jwksEntry{keys: keys, fetched: time.Now()}
 	c.mu.Unlock()
-	if k, ok := keys[kid]; ok {
+	if k, ok := lookup(keys, kid); ok {
 		return k, nil
-	}
-	// A JWKS with a single key and no kid on the token: accept it.
-	if kid == "" && len(keys) == 1 {
-		for _, k := range keys {
-			return k, nil
-		}
 	}
 	return nil, fmt.Errorf("jwks %s: no key %q", uri, kid)
 }
@@ -88,7 +136,7 @@ func (c *jwksCache) fetch(ctx context.Context, uri string) (map[string]any, erro
 	var doc struct {
 		Keys []json.RawMessage `json:"keys"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxJWKSBytes)).Decode(&doc); err != nil {
 		return nil, fmt.Errorf("parse jwks %s: %w", uri, err)
 	}
 	keys := map[string]any{}

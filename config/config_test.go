@@ -83,3 +83,20 @@ func TestFederatedExample(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRequireHTTPSForSecurityEndpoints(t *testing.T) {
+	cases := []struct{ name, json, wantErr string }{
+		{"http token endpoint", `{"upstreams":[{"id":"a","url":"https://x.test/mcp","auth":{"strategy":"token-exchange","tokenEndpoint":"http://idp.evil/token","clientId":"c","clientAuth":{"type":"client_secret_post","secretRef":"S"},"audience":"aud"}}]}`, "https"},
+		{"http issuer", `{"upstreams":[{"id":"a","url":"https://x.test/mcp"}],"auth":{"mode":"required","resource":"https://gw.test","issuers":[{"issuer":"http://idp.evil"}]}}`, "https"},
+		{"http jwksUri", `{"upstreams":[{"id":"a","url":"https://x.test/mcp"}],"auth":{"mode":"required","resource":"https://gw.test","issuers":[{"issuer":"https://idp.test","jwksUri":"http://idp.evil/keys"}]}}`, "https"},
+	}
+	for _, c := range cases {
+		if _, err := Parse([]byte(c.json)); err == nil || !strings.Contains(err.Error(), c.wantErr) {
+			t.Errorf("%s: got %v, want error mentioning %q", c.name, err, c.wantErr)
+		}
+	}
+	// Loopback token endpoints are exempt for local development.
+	if _, err := Parse([]byte(`{"upstreams":[{"id":"a","url":"https://x.test/mcp","auth":{"strategy":"client-credentials","tokenEndpoint":"http://localhost:9000/token","clientId":"c","clientAuth":{"type":"client_secret_post","secretRef":"S"}}}]}`)); err != nil {
+		t.Errorf("loopback token endpoint should be allowed: %v", err)
+	}
+}

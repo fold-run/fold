@@ -69,6 +69,14 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Principal, error) {
 	}
 
 	sub, _ := claims.GetSubject()
+	if sub == "" {
+		// A token with no subject would yield an empty UserID, which
+		// disables the SDK's per-session identity binding (any other valid
+		// token could then attach to the session), and would collide every
+		// such caller onto one identity for policy and token-exchange
+		// caching. Require a subject.
+		return nil, fmt.Errorf("invalid token: missing sub claim")
+	}
 	exp, _ := claims.GetExpirationTime()
 	var expiry time.Time
 	if exp != nil {

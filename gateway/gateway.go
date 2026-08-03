@@ -17,6 +17,7 @@ import (
 	"time"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 
@@ -69,6 +70,12 @@ type Gateway struct {
 	// clients that never open a standalone SSE stream still hear it.
 	callCtx sync.Map // downstream session ID → *ctxStack
 
+	// subscribers ref-counts resource subscriptions per URI across
+	// downstream sessions, so the single shared upstream subscription is
+	// established on the first subscriber and dropped only on the last.
+	subMu       sync.Mutex
+	subscribers map[string]map[string]bool // URI → set of downstream session IDs
+
 	server  *mcp.Server
 	handler http.Handler
 
@@ -93,6 +100,7 @@ func New(cfg *config.Config) (*Gateway, error) {
 		policy:      policy.New(cfg.Policy),
 		audit:       audit.New(cfg.Audit),
 		state:       provider,
+		subscribers: map[string]map[string]bool{},
 	}
 	for _, ucfg := range cfg.Upstreams {
 		u := newUpstream(ucfg, provider)
@@ -190,14 +198,45 @@ func (g *Gateway) sweepLoop() {
 }
 
 // handleSubscribe forwards resources/subscribe to the upstream owning the
-// URI; the SDK server tracks which downstream sessions subscribed, and
-// resources/updated notifications fan back out through it.
+// URI, gated by policy. The gateway holds one upstream subscription per URI
+// shared across all downstream subscribers, ref-counted per session so one
+// client's unsubscribe cannot tear down another's.
 func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest) error {
 	u, err := g.ownerForURI(ctx, req.Params.URI)
 	if err != nil {
 		return err
 	}
-	return u.subscribe(ctx, req.Params.URI)
+	if !g.policy.Decide(auth.PrincipalFromContext(ctx), u.cfg.ID, "resources/read", req.Params.URI).Allowed {
+		return &jsonrpc.Error{Code: codeDenied, Message: fmt.Sprintf("policy denied resources/subscribe %q", req.Params.URI)}
+	}
+	sessionID := ""
+	if ss, ok := req.GetSession().(*mcp.ServerSession); ok {
+		sessionID = ss.ID()
+	}
+
+	g.subMu.Lock()
+	subscribers := g.subscribers[req.Params.URI]
+	first := len(subscribers) == 0
+	if subscribers == nil {
+		subscribers = map[string]bool{}
+		g.subscribers[req.Params.URI] = subscribers
+	}
+	subscribers[sessionID] = true
+	g.subMu.Unlock()
+
+	if !first {
+		return nil // upstream subscription already held
+	}
+	if err := u.subscribe(ctx, req.Params.URI); err != nil {
+		g.subMu.Lock()
+		delete(g.subscribers[req.Params.URI], sessionID)
+		if len(g.subscribers[req.Params.URI]) == 0 {
+			delete(g.subscribers, req.Params.URI)
+		}
+		g.subMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeRequest) error {
@@ -205,7 +244,30 @@ func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeReq
 	if err != nil {
 		return err
 	}
-	return u.unsubscribe(ctx, req.Params.URI)
+	sessionID := ""
+	if ss, ok := req.GetSession().(*mcp.ServerSession); ok {
+		sessionID = ss.ID()
+	}
+
+	g.subMu.Lock()
+	subscribers := g.subscribers[req.Params.URI]
+	if !subscribers[sessionID] {
+		// This session never subscribed to this URI — do not touch the
+		// shared upstream subscription other clients depend on.
+		g.subMu.Unlock()
+		return nil
+	}
+	delete(subscribers, sessionID)
+	last := len(subscribers) == 0
+	if last {
+		delete(g.subscribers, req.Params.URI)
+	}
+	g.subMu.Unlock()
+
+	if last {
+		return u.unsubscribe(ctx, req.Params.URI)
+	}
+	return nil
 }
 
 // ownerForURI resolves which upstream serves a resource URI, refreshing the
@@ -458,7 +520,7 @@ func (g *Gateway) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata
 // hostValidation is DNS-rebinding protection: requests must carry an
 // allowed Host (and Origin, when present).
 func (g *Gateway) hostValidation(next http.Handler) http.Handler {
-	allowed := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+	allowed := map[string]bool{}
 	wildcard := false
 	if g.cfg.Server != nil {
 		for _, h := range g.cfg.Server.AllowedHosts {
@@ -467,6 +529,14 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 			}
 			allowed[strings.ToLower(h)] = true
 		}
+	}
+	// Seed the localhost defaults only when the operator did NOT pin an
+	// explicit allowlist. A production deployment that sets allowedHosts to
+	// its public hostname must not silently keep accepting Host: localhost.
+	if len(allowed) == 0 {
+		allowed["localhost"] = true
+		allowed["127.0.0.1"] = true
+		allowed["::1"] = true
 	}
 	hostname := func(hostport string) string {
 		if h, _, err := net.SplitHostPort(hostport); err == nil {
@@ -482,12 +552,17 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 				return
 			}
 			if origin := r.Header.Get("Origin"); origin != "" {
+				// A present Origin must resolve to an allowed host. A
+				// schemeless or opaque origin (e.g. "null" from a sandboxed
+				// document) has no allowed host and fails closed.
+				host := ""
 				if i := strings.Index(origin, "://"); i >= 0 {
-					if !allowed[hostname(origin[i+3:])] {
-						g.metrics.reject("forbidden_origin")
-						http.Error(w, "forbidden origin", http.StatusForbidden)
-						return
-					}
+					host = hostname(origin[i+3:])
+				}
+				if !allowed[host] {
+					g.metrics.reject("forbidden_origin")
+					http.Error(w, "forbidden origin", http.StatusForbidden)
+					return
 				}
 			}
 		}
@@ -558,11 +633,15 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
-// upstreamHealth is one upstream's health snapshot.
+// upstreamHealth is one upstream's health snapshot. Sensitive fields (URL,
+// owner, labels, detailed error) are populated only for trusted deployments
+// (auth disabled); a public deployment's /healthz stays minimal so an
+// unauthenticated caller cannot enumerate the federation or learn secret
+// env-var names from connect errors.
 type upstreamHealth struct {
 	ID        string            `json:"id"`
 	Namespace string            `json:"namespace,omitempty"`
-	URL       string            `json:"url"`
+	URL       string            `json:"url,omitempty"`
 	Owner     *config.Owner     `json:"owner,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	Breaker   breaker.State     `json:"breaker"`
@@ -574,6 +653,7 @@ type upstreamHealth struct {
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	detailed := !g.cfg.AuthRequired()
 	statuses := make([]upstreamHealth, len(g.upstreams))
 	var wg sync.WaitGroup
 	for i, u := range g.upstreams {
@@ -583,14 +663,21 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 			h := upstreamHealth{
 				ID:        u.cfg.ID,
 				Namespace: u.cfg.Namespace,
-				URL:       u.cfg.URL,
-				Owner:     u.cfg.Owner,
-				Labels:    u.cfg.Labels,
 				Breaker:   u.breaker.State(ctx),
+			}
+			if detailed {
+				h.URL = u.cfg.URL
+				h.Owner = u.cfg.Owner
+				h.Labels = u.cfg.Labels
 			}
 			start := time.Now()
 			if err := u.ping(ctx); err != nil {
-				h.Error = err.Error()
+				// Never echo the raw error to callers — it can name secret
+				// env vars or internal hosts. Detailed deployments get a
+				// short category; public ones get nothing.
+				if detailed {
+					h.Error = err.Error()
+				}
 			} else {
 				h.Connected = true
 				h.LatencyMs = time.Since(start).Milliseconds()

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -99,6 +100,13 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 	} else if cfg.CacheTTLMs < 0 {
 		u.cacheTTL = 0
 	}
+	// A caller-derived credential (passthrough / token-exchange) means the
+	// upstream may return a per-user list. The list cache is keyed per
+	// upstream, not per principal, so caching one caller's list and serving
+	// it to another would leak names across principals. Disable it.
+	if cfg.Auth != nil && (cfg.Auth.Strategy == "passthrough" || cfg.Auth.Strategy == "token-exchange") {
+		u.cacheTTL = 0
+	}
 	rpm := 0
 	if rl := cfg.RateLimit; rl != nil {
 		rpm = rl.RequestsPerMinute
@@ -115,8 +123,25 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 	}
 	u.breaker = provider.Breaker("up:"+cfg.ID, threshold, halfOpen)
 	sessionEra := cfg.Protocol == "" || cfg.Protocol == "session"
+	upstreamHost := ""
+	if parsed, err := url.Parse(cfg.URL); err == nil {
+		upstreamHost = parsed.Host
+	}
 	u.httpClient = &http.Client{
-		Transport: newCredentialTransport(u.creds, sessionEra),
+		Transport: newCredentialTransport(u.creds, sessionEra, upstreamHost),
+		// Never follow a redirect that changes host: credentials are attached
+		// per outgoing request, so a hostile upstream returning a cross-host
+		// 3xx would otherwise capture the upstream API key or the caller's
+		// bearer token. Same-host redirects are allowed (trailing-slash, etc).
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Host != via[0].URL.Host {
+				return fmt.Errorf("refusing cross-host redirect to %q (upstream %q)", req.URL.Host, cfg.ID)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
+		},
 	}
 	return u
 }
@@ -137,13 +162,14 @@ var sseHeaderTimeout = 3 * time.Second
 // the only era whose connections can carry server-initiated requests
 // (sampling, elicitation) back through the gateway.
 type credentialTransport struct {
-	creds      *auth.UpstreamCredentials
-	base       http.RoundTripper
-	sse        http.RoundTripper // GETs: base + response-header timeout
-	sessionEra bool
+	creds        *auth.UpstreamCredentials
+	base         http.RoundTripper
+	sse          http.RoundTripper // GETs: base + response-header timeout
+	sessionEra   bool
+	upstreamHost string // credentials/trace attach only to this host
 }
 
-func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool) *credentialTransport {
+func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool, upstreamHost string) *credentialTransport {
 	sse := http.RoundTripper(http.DefaultTransport)
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		clone := t.Clone()
@@ -151,10 +177,11 @@ func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool) *c
 		sse = clone
 	}
 	return &credentialTransport{
-		creds:      creds,
-		base:       http.DefaultTransport,
-		sse:        sse,
-		sessionEra: sessionEra,
+		creds:        creds,
+		base:         http.DefaultTransport,
+		sse:          sse,
+		sessionEra:   sessionEra,
+		upstreamHost: upstreamHost,
 	}
 }
 
@@ -184,10 +211,16 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		req.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	req = req.Clone(req.Context())
-	if err := t.creds.Apply(req.Context(), req.Header); err != nil {
-		return nil, fmt.Errorf("upstream credentials: %w", err)
+	// Attach credentials and trace context only when the request is actually
+	// bound for the configured upstream host. CheckRedirect already blocks
+	// cross-host redirects; this is defense-in-depth so a credential can
+	// never ride a request to any other host.
+	if t.upstreamHost == "" || req.URL.Host == t.upstreamHost {
+		if err := t.creds.Apply(req.Context(), req.Header); err != nil {
+			return nil, fmt.Errorf("upstream credentials: %w", err)
+		}
+		injectTraceContext(req.Context(), req.Header)
 	}
-	injectTraceContext(req.Context(), req.Header)
 	if req.Method == http.MethodGet {
 		resp, err := t.sse.RoundTrip(req)
 		if err != nil && strings.Contains(err.Error(), "timeout awaiting response headers") {

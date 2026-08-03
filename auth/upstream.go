@@ -92,7 +92,15 @@ func (c *UpstreamCredentials) Apply(ctx context.Context, hdr http.Header) error 
 		if p == nil || p.Token == "" {
 			return fmt.Errorf("token-exchange auth requires an authenticated caller")
 		}
-		tok, err := c.cachedFetch(ctx, p.Subject, func() (url.Values, error) {
+		if p.Subject == "" || p.Issuer == "" {
+			// Never share one cache entry across subjects: an empty subject
+			// would collide every such caller onto one exchanged token.
+			return fmt.Errorf("token-exchange auth requires a token with iss and sub claims")
+		}
+		// Key per (issuer, subject): sub is only unique within an issuer, and
+		// the gateway may trust several. \x00 cannot appear in either claim.
+		cacheKey := p.Issuer + "\x00" + p.Subject
+		tok, err := c.cachedFetch(ctx, cacheKey, func() (url.Values, error) {
 			return c.tokenExchangeForm(p.Token)
 		})
 		if err != nil {

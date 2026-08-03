@@ -97,3 +97,24 @@ func TestGlobMatch(t *testing.T) {
 		}
 	}
 }
+
+func TestIssuerScoping(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID:       "corp-admins",
+			Subjects: &config.PolicySubjects{Issuers: []string{"https://corp.okta.com"}, Groups: []string{"admins"}},
+			Allow:    []config.PolicyAllow{{Server: "*"}},
+		}},
+	})
+	corp := &auth.Principal{Subject: "alice", Issuer: "https://corp.okta.com", Groups: []string{"admins"}}
+	// Same group name, different (lower-assurance) issuer must NOT match.
+	partner := &auth.Principal{Subject: "mallory", Issuer: "https://partner.example", Groups: []string{"admins"}}
+
+	if !e.Decide(corp, "db", "tools/call", "x").Allowed {
+		t.Error("corp admin should be allowed")
+	}
+	if e.Decide(partner, "db", "tools/call", "x").Allowed {
+		t.Error("partner-issuer principal must not match a corp-scoped rule")
+	}
+}
