@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,9 +17,7 @@ import (
 
 	"github.com/fold-run/fold-go/auth"
 	"github.com/fold-run/fold-go/config"
-	"github.com/fold-run/fold-go/internal/breaker"
-	"github.com/fold-run/fold-go/internal/cache"
-	"github.com/fold-run/fold-go/internal/ratelimit"
+	"github.com/fold-run/fold-go/internal/state"
 )
 
 // Gateway-minted JSON-RPC error codes, documented in the README.
@@ -44,9 +43,9 @@ type upstream struct {
 	cfg   config.Upstream
 	creds *auth.UpstreamCredentials
 
-	limiter *ratelimit.Limiter
-	breaker *breaker.Breaker
-	lists   *cache.Cache
+	limiter state.Limiter
+	breaker state.Breaker
+	lists   state.ListCache
 
 	connectTimeout time.Duration
 	requestTimeout time.Duration
@@ -76,11 +75,11 @@ type bridgedEntry struct {
 	lastUsed time.Time
 }
 
-func newUpstream(cfg config.Upstream) *upstream {
+func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 	u := &upstream{
 		cfg:            cfg,
 		creds:          auth.NewUpstreamCredentials(cfg.Auth, http.DefaultClient),
-		lists:          cache.New(),
+		lists:          provider.ListCache("up:" + cfg.ID),
 		connectTimeout: defaultConnectTimeout,
 		requestTimeout: defaultRequestTimeout,
 		cacheTTL:       defaultCacheTTL,
@@ -100,9 +99,11 @@ func newUpstream(cfg config.Upstream) *upstream {
 	} else if cfg.CacheTTLMs < 0 {
 		u.cacheTTL = 0
 	}
+	rpm := 0
 	if rl := cfg.RateLimit; rl != nil {
-		u.limiter = ratelimit.New(rl.RequestsPerMinute)
+		rpm = rl.RequestsPerMinute
 	}
+	u.limiter = provider.Limiter("up:"+cfg.ID, rpm)
 	threshold, halfOpen := 5, 30*time.Second
 	if cb := cfg.CircuitBreaker; cb != nil {
 		if cb.FailureThreshold > 0 {
@@ -112,7 +113,7 @@ func newUpstream(cfg config.Upstream) *upstream {
 			halfOpen = time.Duration(cb.HalfOpenAfterMs) * time.Millisecond
 		}
 	}
-	u.breaker = breaker.New(threshold, halfOpen)
+	u.breaker = provider.Breaker("up:"+cfg.ID, threshold, halfOpen)
 	sessionEra := cfg.Protocol == "" || cfg.Protocol == "session"
 	u.httpClient = &http.Client{
 		Transport: &credentialTransport{creds: u.creds, base: http.DefaultTransport, sessionEra: sessionEra},
@@ -197,16 +198,16 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 		}
 	}
 	opts := &mcp.ClientOptions{
-		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
-			u.lists.Invalidate("tools")
+		ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
+			u.lists.Invalidate(ctx, "tools")
 			notifyDownstream("tools")
 		},
-		PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
-			u.lists.Invalidate("prompts")
+		PromptListChangedHandler: func(ctx context.Context, _ *mcp.PromptListChangedRequest) {
+			u.lists.Invalidate(ctx, "prompts")
 			notifyDownstream("prompts")
 		},
-		ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
-			u.lists.Invalidate("resources")
+		ResourceListChangedHandler: func(ctx context.Context, _ *mcp.ResourceListChangedRequest) {
+			u.lists.Invalidate(ctx, "resources")
 			notifyDownstream("resources")
 		},
 		ResourceUpdatedHandler: func(ctx context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
@@ -341,14 +342,14 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 			u.metrics.observeUpstream(u.cfg.ID, outcome, time.Since(start))
 		}
 	}
-	if ok, retry := u.limiter.Allow(); !ok {
+	if ok, retry := u.limiter.Allow(ctx); !ok {
 		observe("rate_limited")
 		return &jsonrpc.Error{
 			Code:    codeRateLimited,
 			Message: fmt.Sprintf("upstream %q rate limit exceeded; retry in %s", u.cfg.ID, retry.Round(time.Second)),
 		}
 	}
-	if !u.breaker.Allow() {
+	if !u.breaker.Allow(ctx) {
 		observe("circuit_open")
 		return &jsonrpc.Error{
 			Code:    codeUpstreamDown,
@@ -357,7 +358,7 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	}
 	session, err := acquire(ctx)
 	if err != nil {
-		u.breaker.Record(false)
+		u.breaker.Record(ctx, false)
 		observe("connect_error")
 		return &jsonrpc.Error{Code: codeUpstreamDown, Message: err.Error()}
 	}
@@ -365,7 +366,7 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	defer cancel()
 	err = fn(rctx, session)
 	if err == nil {
-		u.breaker.Record(true)
+		u.breaker.Record(ctx, true)
 		observe("ok")
 		return nil
 	}
@@ -373,11 +374,11 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	// through verbatim and don't count it against the breaker.
 	var wire *jsonrpc.Error
 	if errors.As(err, &wire) {
-		u.breaker.Record(true)
+		u.breaker.Record(ctx, true)
 		observe("ok")
 		return wire
 	}
-	u.breaker.Record(false)
+	u.breaker.Record(ctx, false)
 	if isConnectionError(err) {
 		u.dropSession(session)
 	}
@@ -397,85 +398,83 @@ func isConnectionError(err error) bool {
 		strings.Contains(msg, "broken pipe") || strings.Contains(msg, "refused")
 }
 
-// listTools returns the upstream's full (un-namespaced) tool list, cached.
-func (u *upstream) listTools(ctx context.Context) ([]*mcp.Tool, error) {
-	v, err := u.lists.GetOrFill(ctx, "tools", u.cacheTTL, func(ctx context.Context) (any, error) {
-		var tools []*mcp.Tool
+// cachedList fetches a list through the upstream's shared cache, which
+// stores serialized JSON so entries can live in Redis and be shared across
+// gateway instances.
+func cachedList[T any](ctx context.Context, u *upstream, key string, fetch func(context.Context, *mcp.ClientSession) ([]T, error)) ([]T, error) {
+	data, err := u.lists.GetOrFill(ctx, key, u.cacheTTL, func(ctx context.Context) ([]byte, error) {
+		var items []T
 		err := u.do(ctx, func(ctx context.Context, s *mcp.ClientSession) error {
-			for t, err := range s.Tools(ctx, nil) {
-				if err != nil {
-					return err
-				}
-				tools = append(tools, t)
-			}
-			return nil
+			var err error
+			items, err = fetch(ctx, s)
+			return err
 		})
-		return tools, err
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(items)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return v.([]*mcp.Tool), nil
+	var items []T
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, fmt.Errorf("decode cached %s for upstream %q: %w", key, u.cfg.ID, err)
+	}
+	return items, nil
+}
+
+// listTools returns the upstream's full (un-namespaced) tool list, cached.
+func (u *upstream) listTools(ctx context.Context) ([]*mcp.Tool, error) {
+	return cachedList(ctx, u, "tools", func(ctx context.Context, s *mcp.ClientSession) ([]*mcp.Tool, error) {
+		var tools []*mcp.Tool
+		for t, err := range s.Tools(ctx, nil) {
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, t)
+		}
+		return tools, nil
+	})
 }
 
 func (u *upstream) listPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
-	v, err := u.lists.GetOrFill(ctx, "prompts", u.cacheTTL, func(ctx context.Context) (any, error) {
+	return cachedList(ctx, u, "prompts", func(ctx context.Context, s *mcp.ClientSession) ([]*mcp.Prompt, error) {
 		var prompts []*mcp.Prompt
-		err := u.do(ctx, func(ctx context.Context, s *mcp.ClientSession) error {
-			for p, err := range s.Prompts(ctx, nil) {
-				if err != nil {
-					return err
-				}
-				prompts = append(prompts, p)
+		for p, err := range s.Prompts(ctx, nil) {
+			if err != nil {
+				return nil, err
 			}
-			return nil
-		})
-		return prompts, err
+			prompts = append(prompts, p)
+		}
+		return prompts, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return v.([]*mcp.Prompt), nil
 }
 
 func (u *upstream) listResources(ctx context.Context) ([]*mcp.Resource, error) {
-	v, err := u.lists.GetOrFill(ctx, "resources", u.cacheTTL, func(ctx context.Context) (any, error) {
+	return cachedList(ctx, u, "resources", func(ctx context.Context, s *mcp.ClientSession) ([]*mcp.Resource, error) {
 		var res []*mcp.Resource
-		err := u.do(ctx, func(ctx context.Context, s *mcp.ClientSession) error {
-			for r, err := range s.Resources(ctx, nil) {
-				if err != nil {
-					return err
-				}
-				res = append(res, r)
+		for r, err := range s.Resources(ctx, nil) {
+			if err != nil {
+				return nil, err
 			}
-			return nil
-		})
-		return res, err
+			res = append(res, r)
+		}
+		return res, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return v.([]*mcp.Resource), nil
 }
 
 func (u *upstream) listResourceTemplates(ctx context.Context) ([]*mcp.ResourceTemplate, error) {
-	v, err := u.lists.GetOrFill(ctx, "resources/templates", u.cacheTTL, func(ctx context.Context) (any, error) {
+	return cachedList(ctx, u, "resources/templates", func(ctx context.Context, s *mcp.ClientSession) ([]*mcp.ResourceTemplate, error) {
 		var res []*mcp.ResourceTemplate
-		err := u.do(ctx, func(ctx context.Context, s *mcp.ClientSession) error {
-			for r, err := range s.ResourceTemplates(ctx, nil) {
-				if err != nil {
-					return err
-				}
-				res = append(res, r)
+		for r, err := range s.ResourceTemplates(ctx, nil) {
+			if err != nil {
+				return nil, err
 			}
-			return nil
-		})
-		return res, err
+			res = append(res, r)
+		}
+		return res, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return v.([]*mcp.ResourceTemplate), nil
 }
 
 func (u *upstream) callTool(ctx context.Context, key string, opts *mcp.ClientOptions, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {

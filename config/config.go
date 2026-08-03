@@ -163,6 +163,11 @@ type ServerSection struct {
 	MCPPath      string     `json:"mcpPath,omitempty"`      // default "/mcp"
 	AllowedHosts []string   `json:"allowedHosts,omitempty"` // default localhost set; ["*"] disables
 	RateLimit    *RateLimit `json:"rateLimit,omitempty"`    // global, across all upstreams
+
+	// RedisURL shares cache, rate-limit, and circuit-breaker state across
+	// gateway instances (redis:// URL). Defaults to the REDIS_URL
+	// environment variable; absent → in-process state.
+	RedisURL string `json:"redisUrl,omitempty"`
 }
 
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)

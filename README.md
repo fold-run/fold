@@ -74,7 +74,7 @@ A federated multi-org config — each upstream owned by a different team, in any
 }
 ```
 
-fold-go fans list requests out across all upstreams concurrently, merges and namespaces the results, degrades gracefully when an upstream is down (`_meta["run.fold/partialFailure"]` lists the failed upstream ids), and short-circuits unhealthy upstreams with a per-upstream circuit breaker. Proxied results are tagged with their origin in `_meta["run.fold/upstream"]`. See [`fold.config.example.json`](fold.config.example.json) for a full example.
+fold-go fans list requests out across all upstreams concurrently, merges and namespaces the results, degrades gracefully when an upstream is down (`_meta["run.fold/partialFailure"]` lists the failed upstream ids), and short-circuits unhealthy upstreams with a per-upstream circuit breaker. Proxied results are tagged with their origin in `_meta["run.fold/upstream"]`. Set `REDIS_URL` (or `server.redisUrl`) to share cache, rate-limit, and circuit-breaker state across instances — a fleet of gateways behaves as one. See [`fold.config.example.json`](fold.config.example.json) for a full example.
 
 ## Request pipeline
 
@@ -180,6 +180,7 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `mcpPath` | `/mcp` | Path the gateway serves MCP on. |
 | `allowedHosts` | localhost set | DNS-rebinding protection: allowed Host/Origin hostnames. Set to your public hostname(s) in production, or `["*"]` only behind a trusted proxy. |
 | `rateLimit` | none | Global `{ requestsPerMinute }` across all upstreams. |
+| `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
 
 ## Error codes
 
@@ -235,7 +236,7 @@ fold-go is a faithful port of fold's core feature set on a single runtime. Not (
 
 - **Era translation** (legacy 2025 ↔ stateless 2026 bridging, MRTR parking) — fold-go pins upstream connections to the session era by default (see `protocol`) so server-initiated traffic bridges; fold's held-session legacy bridge and header-based body-free routing are not replicated.
 - **Enterprise-Managed Authorization** (ID-JAG token endpoint) — planned; standard OAuth resource-server auth and RFC 8693 token exchange are implemented.
-- **Cloudflare Workers runtime and Redis-shared state** — fold-go is a single-binary Node-equivalent deployment (Docker/k8s friendly); cache, rate-limit, and breaker state are in-process.
+- **Cloudflare Workers runtime** — fold-go is a single-binary deployment (Docker/k8s friendly). Redis-shared state (fold's `REDIS_URL`) *is* implemented: rate limits, breakers, and list caches are fleet-wide when configured.
 - **Federated tasks and `subscriptions/listen` fan-in** — long-running task federation is not in this port.
 - **Composite federated pagination** — list results are merged and returned as a single page.
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +24,7 @@ import (
 	"github.com/fold-run/fold-go/auth"
 	"github.com/fold-run/fold-go/config"
 	"github.com/fold-run/fold-go/internal/breaker"
-	"github.com/fold-run/fold-go/internal/ratelimit"
+	"github.com/fold-run/fold-go/internal/state"
 	"github.com/fold-run/fold-go/policy"
 )
 
@@ -53,8 +54,9 @@ type Gateway struct {
 	audit    *audit.Logger
 	verifier *auth.Verifier
 	metrics  *metricsSet
+	state    state.Provider
 
-	globalLimit *ratelimit.Limiter
+	globalLimit state.Limiter
 
 	// resourceOwner remembers which upstream listed each resource URI
 	// (URIs are opaque and never rewritten; ownership is remembered).
@@ -78,6 +80,10 @@ func New(cfg *config.Config) (*Gateway, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	provider, err := buildStateProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
 	g := &Gateway{
 		cfg:         cfg,
 		sep:         cfg.NamespaceSeparator(),
@@ -86,18 +92,21 @@ func New(cfg *config.Config) (*Gateway, error) {
 		byID:        map[string]*upstream{},
 		policy:      policy.New(cfg.Policy),
 		audit:       audit.New(cfg.Audit),
+		state:       provider,
 	}
 	for _, ucfg := range cfg.Upstreams {
-		u := newUpstream(ucfg)
+		u := newUpstream(ucfg, provider)
 		g.upstreams = append(g.upstreams, u)
 		g.byID[ucfg.ID] = u
 		if ucfg.Namespace != "" {
 			g.byNamespace[ucfg.Namespace] = u
 		}
 	}
+	globalRPM := 0
 	if cfg.Server != nil && cfg.Server.RateLimit != nil {
-		g.globalLimit = ratelimit.New(cfg.Server.RateLimit.RequestsPerMinute)
+		globalRPM = cfg.Server.RateLimit.RequestsPerMinute
 	}
+	g.globalLimit = provider.Limiter("global", globalRPM)
 	if cfg.AuthRequired() {
 		g.verifier = auth.NewVerifier(cfg.Auth, http.DefaultClient)
 	}
@@ -244,12 +253,28 @@ func (g *Gateway) instructions() string {
 // /.well-known/oauth-protected-resource and /healthz.
 func (g *Gateway) Handler() http.Handler { return g.handler }
 
+// buildStateProvider selects shared (Redis) or in-process state.
+func buildStateProvider(cfg *config.Config) (state.Provider, error) {
+	url := ""
+	if cfg.Server != nil {
+		url = cfg.Server.RedisURL
+	}
+	if url == "" {
+		url = os.Getenv("REDIS_URL")
+	}
+	if url == "" {
+		return state.NewMemory(), nil
+	}
+	return state.NewRedis(url)
+}
+
 // Close shuts down all upstream sessions.
 func (g *Gateway) Close() {
 	close(g.stopSweeper)
 	for _, u := range g.upstreams {
 		u.Close()
 	}
+	g.state.Close()
 }
 
 // ctxStack tracks in-flight invocation contexts for one downstream session,
@@ -505,7 +530,7 @@ func (g *Gateway) authMiddleware(next http.Handler) http.Handler {
 // rateLimitMiddleware enforces the global request budget: 429 + Retry-After.
 func (g *Gateway) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if ok, retry := g.globalLimit.Allow(); !ok {
+		if ok, retry := g.globalLimit.Allow(r.Context()); !ok {
 			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			g.metrics.reject("rate_limited")
@@ -561,7 +586,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 				URL:       u.cfg.URL,
 				Owner:     u.cfg.Owner,
 				Labels:    u.cfg.Labels,
-				Breaker:   u.breaker.State(),
+				Breaker:   u.breaker.State(ctx),
 			}
 			start := time.Now()
 			if err := u.ping(ctx); err != nil {

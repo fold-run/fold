@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -69,7 +70,7 @@ func newMetricsSet(ups []*upstream) *metricsSet {
 			Help:        "Circuit breaker state per upstream: 0 closed, 1 half-open, 2 open.",
 			ConstLabels: prometheus.Labels{"upstream": u.cfg.ID},
 		}, func() float64 {
-			switch u.breaker.State() {
+			switch u.breaker.State(context.Background()) {
 			case breaker.Open:
 				return 2
 			case breaker.HalfOpen:
