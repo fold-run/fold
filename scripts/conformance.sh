@@ -6,10 +6,11 @@
 # Requires: go, node/npm/npx, git.
 set -euo pipefail
 
-# Pinned for reproducible CI runs; bump deliberately.
+# Pinned for reproducible CI runs; bump deliberately. The scheduled drift
+# workflow overrides COMMIT=main and PKG=@latest to catch upstream movement.
 CONFORMANCE_REPO=https://github.com/modelcontextprotocol/conformance.git
-CONFORMANCE_COMMIT=81eb1c3edaed87d7fd585d7b80186da7a2960660
-CONFORMANCE_PKG=@modelcontextprotocol/conformance@0.1.16
+CONFORMANCE_COMMIT="${CONFORMANCE_COMMIT:-81eb1c3edaed87d7fd585d7b80186da7a2960660}"
+CONFORMANCE_PKG="${CONFORMANCE_PKG:-@modelcontextprotocol/conformance@0.1.16}"
 
 UPSTREAM_PORT="${UPSTREAM_PORT:-3901}"
 GATEWAY_PORT="${GATEWAY_PORT:-3902}"

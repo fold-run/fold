@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Go module dependencies — the MCP SDK is the one that moves fast.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Batch minor/patch bumps into one PR; majors stay separate for review.
+      go-minor-patch:
+        update-types: [minor, patch]
+
+  # GitHub Actions used by the CI and release workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

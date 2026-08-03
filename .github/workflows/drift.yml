@@ -1,0 +1,91 @@
+name: drift
+
+# Weekly check that fold-go still builds, tests, and conforms against the
+# LATEST upstream MCP SDK and conformance suite — not the pinned versions CI
+# gates on. A failure here means the spec/SDK moved and fold-go needs
+# attention; it opens a tracking issue rather than blocking any PR.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sdk-latest:
+    runs-on: ubuntu-latest
+    outputs:
+      sdk_version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: bump to latest MCP Go SDK
+        id: bump
+        run: |
+          go get github.com/modelcontextprotocol/go-sdk@latest
+          go mod tidy
+          version=$(go list -m -f '{{.Version}}' github.com/modelcontextprotocol/go-sdk)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "MCP Go SDK now at $version"
+
+      - name: build and test against latest SDK
+        run: |
+          go build ./...
+          go test -race ./...
+
+  conformance-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: bump to latest MCP Go SDK
+        run: |
+          go get github.com/modelcontextprotocol/go-sdk@latest
+          go mod tidy
+
+      - name: conformance suite against latest (unpinned) conformance
+        env:
+          CONFORMANCE_COMMIT: main
+          CONFORMANCE_PKG: "@modelcontextprotocol/conformance@latest"
+        run: ./scripts/conformance.sh
+
+  report:
+    needs: [sdk-latest, conformance-latest]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: open or update a drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Drift: fold-go fails against latest MCP SDK / conformance"
+          body="The weekly drift check failed — the MCP SDK or conformance suite moved and fold-go needs attention.
+
+          Run: $RUN_URL
+
+          Check which job failed:
+          - **sdk-latest**: build/test broke against the latest \`modelcontextprotocol/go-sdk\`.
+          - **conformance-latest**: a conformance scenario regressed against the latest suite / spec.
+
+          This issue is auto-managed by \`.github/workflows/drift.yml\`; close it once the pins in \`go.mod\` and \`scripts/conformance.sh\` are updated and CI is green."
+          existing=$(gh issue list --state open --label drift --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Drift check failed again: $RUN_URL"
+          else
+            gh label create drift --color FBCA04 --description "Upstream spec/SDK drift" 2>/dev/null || true
+            gh issue create --title "$title" --body "$body" --label drift
+          fi
