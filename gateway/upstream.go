@@ -116,10 +116,19 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 	u.breaker = provider.Breaker("up:"+cfg.ID, threshold, halfOpen)
 	sessionEra := cfg.Protocol == "" || cfg.Protocol == "session"
 	u.httpClient = &http.Client{
-		Transport: &credentialTransport{creds: u.creds, base: http.DefaultTransport, sessionEra: sessionEra},
+		Transport: newCredentialTransport(u.creds, sessionEra),
 	}
 	return u
 }
+
+// sseHeaderTimeout bounds how long an upstream may take to answer the
+// standalone SSE GET with response headers. Real-world servers exist that
+// accept the GET and never respond; the SDK client establishes this stream
+// synchronously during the handshake, so a hang would eat the whole
+// connect budget. A hang is converted into a synthetic 405 — the spec's
+// "server does not offer an SSE stream" answer — which the client handles
+// by proceeding without the stream. (var for tests)
+var sseHeaderTimeout = 3 * time.Second
 
 // credentialTransport attaches upstream credentials to every outgoing
 // request, resolving caller-derived strategies (passthrough, token-exchange)
@@ -130,7 +139,36 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 type credentialTransport struct {
 	creds      *auth.UpstreamCredentials
 	base       http.RoundTripper
+	sse        http.RoundTripper // GETs: base + response-header timeout
 	sessionEra bool
+}
+
+func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool) *credentialTransport {
+	sse := http.RoundTripper(http.DefaultTransport)
+	if t, ok := http.DefaultTransport.(*http.Transport); ok {
+		clone := t.Clone()
+		clone.ResponseHeaderTimeout = sseHeaderTimeout
+		sse = clone
+	}
+	return &credentialTransport{
+		creds:      creds,
+		base:       http.DefaultTransport,
+		sse:        sse,
+		sessionEra: sessionEra,
+	}
+}
+
+func synthetic405(req *http.Request) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusMethodNotAllowed,
+		Status:     "405 Method Not Allowed",
+		Proto:      req.Proto,
+		ProtoMajor: req.ProtoMajor,
+		ProtoMinor: req.ProtoMinor,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(nil)),
+		Request:    req,
+	}
 }
 
 func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -141,16 +179,7 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 			return nil, err
 		}
 		if bytes.Contains(body, []byte(`"server/discover"`)) {
-			return &http.Response{
-				StatusCode: http.StatusMethodNotAllowed,
-				Status:     "405 Method Not Allowed",
-				Proto:      req.Proto,
-				ProtoMajor: req.ProtoMajor,
-				ProtoMinor: req.ProtoMinor,
-				Header:     http.Header{},
-				Body:       io.NopCloser(bytes.NewReader(nil)),
-				Request:    req,
-			}, nil
+			return synthetic405(req), nil
 		}
 		req.Body = io.NopCloser(bytes.NewReader(body))
 	}
@@ -159,6 +188,13 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return nil, fmt.Errorf("upstream credentials: %w", err)
 	}
 	injectTraceContext(req.Context(), req.Header)
+	if req.Method == http.MethodGet {
+		resp, err := t.sse.RoundTrip(req)
+		if err != nil && strings.Contains(err.Error(), "timeout awaiting response headers") {
+			return synthetic405(req), nil
+		}
+		return resp, err
+	}
 	return t.base.RoundTrip(req)
 }
 
