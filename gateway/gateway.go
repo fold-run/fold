@@ -126,11 +126,42 @@ func New(cfg *config.Config) (*Gateway, error) {
 		u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
 			g.server.ResourceUpdated(ctx, params)
 		}
+		u.onListChanged = g.notifyListChanged
 	}
 	g.stopSweeper = make(chan struct{})
 	go g.sweepLoop()
 	g.handler = g.buildHandler()
 	return g, nil
+}
+
+// notifyListChanged re-emits an upstream's list_changed notification to
+// every connected client. The SDK server only sends these on feature
+// mutations, so we blip a sentinel feature: add + immediate remove is
+// debounced into a single notification, and the sentinel is never visible
+// because the federation middleware intercepts all list methods.
+func (g *Gateway) notifyListChanged(kind string) {
+	switch kind {
+	case "tools":
+		g.server.AddTool(&mcp.Tool{
+			Name:        "fold-refresh-sentinel",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return nil, fmt.Errorf("fold-refresh-sentinel is not callable")
+		})
+		g.server.RemoveTools("fold-refresh-sentinel")
+	case "prompts":
+		g.server.AddPrompt(&mcp.Prompt{Name: "fold-refresh-sentinel"},
+			func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+				return nil, fmt.Errorf("fold-refresh-sentinel is not gettable")
+			})
+		g.server.RemovePrompts("fold-refresh-sentinel")
+	case "resources":
+		g.server.AddResource(&mcp.Resource{URI: "fold:refresh-sentinel", Name: "fold-refresh-sentinel"},
+			func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+				return nil, fmt.Errorf("fold-refresh-sentinel is not readable")
+			})
+		g.server.RemoveResources("fold:refresh-sentinel")
+	}
 }
 
 // sweepLoop periodically closes idle per-client upstream sessions.

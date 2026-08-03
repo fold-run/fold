@@ -58,6 +58,10 @@ type upstream struct {
 	// the root session (which holds all upstream subscriptions).
 	onResourceUpdated func(context.Context, *mcp.ResourceUpdatedNotificationParams)
 
+	// onListChanged re-emits an upstream's list_changed notification to the
+	// gateway's connected clients ("tools" | "prompts" | "resources").
+	onListChanged func(kind string)
+
 	// metrics is the owning gateway's instrumentation (set by Gateway).
 	metrics *metricsSet
 
@@ -187,15 +191,23 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 	}
 	u.mu.Unlock()
 
+	notifyDownstream := func(kind string) {
+		if u.onListChanged != nil {
+			u.onListChanged(kind)
+		}
+	}
 	opts := &mcp.ClientOptions{
 		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
 			u.lists.Invalidate("tools")
+			notifyDownstream("tools")
 		},
 		PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
 			u.lists.Invalidate("prompts")
+			notifyDownstream("prompts")
 		},
 		ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
 			u.lists.Invalidate("resources")
+			notifyDownstream("resources")
 		},
 		ResourceUpdatedHandler: func(ctx context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
 			if u.onResourceUpdated != nil {

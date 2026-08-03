@@ -113,7 +113,7 @@ One JSON document, validated on startup (`fold --validate`). Loaded from `--conf
 | `rateLimit` | none | `{ requestsPerMinute }` for this upstream only. |
 | `cacheTtlMs` | `30000` | TTL for cached list results. Negative disables caching. |
 
-List caches are also invalidated immediately when an upstream emits a `list_changed` notification — TTLs remain the backstop.
+List freshness works end to end: when an upstream emits a `list_changed` notification, the gateway invalidates its cache **and re-emits the notification to every connected client**, so clients refetch and see the change immediately. TTLs remain the backstop when no notification arrives.
 
 ### Upstream auth strategies
 
