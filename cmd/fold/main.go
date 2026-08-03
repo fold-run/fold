@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,12 +24,18 @@ import (
 
 func main() {
 	var (
-		configPath = flag.String("config", "", "path to fold.config.json (or set FOLD_CONFIG)")
-		port       = flag.Int("port", 8080, "port to listen on")
-		host       = flag.String("host", "", "address to bind (default all interfaces)")
-		validate   = flag.Bool("validate", false, "validate the config and exit")
+		configPath  = flag.String("config", "", "path to fold.config.json (or set FOLD_CONFIG to a path or inline JSON)")
+		port        = flag.Int("port", 8080, "port to listen on")
+		host        = flag.String("host", "", "address to bind (default all interfaces)")
+		validate    = flag.Bool("validate", false, "validate the config and exit")
+		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("fold", gateway.Version())
+		return
+	}
 
 	path := *configPath
 	if path == "" {
@@ -38,7 +45,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "fold: --config <path> (or FOLD_CONFIG) is required")
 		os.Exit(2)
 	}
-	cfg, err := config.Load(path)
+	var cfg *config.Config
+	var err error
+	if strings.HasPrefix(strings.TrimSpace(path), "{") {
+		// FOLD_CONFIG may carry the JSON document itself (convenient for
+		// container env injection), mirroring fold on Workers.
+		cfg, err = config.Parse([]byte(path))
+	} else {
+		cfg, err = config.Load(path)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fold: %v\n", err)
 		os.Exit(1)

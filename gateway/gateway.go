@@ -27,7 +27,12 @@ import (
 	"github.com/fold-run/fold-go/policy"
 )
 
-const version = "0.1.0"
+// version is stamped at build time via
+// -ldflags="-X github.com/fold-run/fold-go/gateway.version=v...".
+var version = "dev"
+
+// Version reports the gateway build version.
+func Version() string { return version }
 
 // tokenInfoPrincipalKey carries the verified Principal through the SDK's
 // TokenInfo.Extra map into per-request MCP metadata.

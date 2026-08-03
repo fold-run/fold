@@ -1,0 +1,8 @@
+.git
+.github
+*.log
+fold
+Dockerfile
+README.md
+LICENSE
+scripts

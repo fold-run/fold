@@ -25,9 +25,19 @@ cat > fold.config.json <<'EOF'
 }
 EOF
 
-go run github.com/fold-run/fold-go/cmd/fold --config fold.config.json --port 8080
+go run github.com/fold-run/fold-go/cmd/fold@latest --config fold.config.json --port 8080
 # MCP endpoint: http://localhost:8080/mcp
 ```
+
+Or run the container (~18 MB, distroless):
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e FOLD_CONFIG="$(cat fold.config.json)" \
+  ghcr.io/fold-run/fold-go:latest
+```
+
+`FOLD_CONFIG` accepts either a file path or the JSON document itself (convenient for container env injection). Prebuilt binaries for linux/darwin (amd64/arm64) are on the [releases page](https://github.com/fold-run/fold-go/releases), or `go install github.com/fold-run/fold-go/cmd/fold@latest`.
 
 A single upstream without a `namespace` runs in passthrough mode (no name rewriting). Multiple upstreams require namespaces; tools and prompts are exposed as `{namespace}__{name}`.
 
