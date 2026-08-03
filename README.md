@@ -192,9 +192,16 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 | `-32042` | Policy denied the invocation |
 | `-32043` | Name does not resolve to a configured namespace |
 
+## Observability
+
+- `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_http_rejections_total{reason}`, `fold_build_info{version}`, plus standard Go process/runtime collectors.
+- **Distributed tracing** — W3C Trace Context (`traceparent`/`tracestate`) headers on incoming requests are propagated to the upstream calls they cause, so the gateway hop joins the caller's trace.
+- **Latency, measurably** — the `bench` CI job gates every merge on added p50 latency < 5 ms through the proxy path (loose for shared runners). Typical local numbers (Apple Silicon, in-process upstream): **~0.20 ms added p50**, gateway p99 ≈ 0.57 ms. Reproduce: `FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v`.
+
 ## Operational endpoints
 
 - `GET /healthz` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, and owner. `503` when no upstream is reachable.
+- `GET /metrics` — Prometheus metrics (see Observability).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata (when auth is enabled).
 
 ## Repository layout

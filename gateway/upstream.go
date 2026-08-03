@@ -58,6 +58,9 @@ type upstream struct {
 	// the root session (which holds all upstream subscriptions).
 	onResourceUpdated func(context.Context, *mcp.ResourceUpdatedNotificationParams)
 
+	// metrics is the owning gateway's instrumentation (set by Gateway).
+	metrics *metricsSet
+
 	mu         sync.Mutex
 	session    *mcp.ClientSession       // root session
 	bridged    map[string]*bridgedEntry // downstream session ID → bridged session
@@ -150,6 +153,7 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if err := t.creds.Apply(req.Context(), req.Header); err != nil {
 		return nil, fmt.Errorf("upstream credentials: %w", err)
 	}
+	injectTraceContext(req.Context(), req.Header)
 	return t.base.RoundTrip(req)
 }
 
@@ -319,13 +323,21 @@ func (u *upstream) doBridged(ctx context.Context, key string, opts *mcp.ClientOp
 // guardedDo applies the per-upstream guards around fn: rate limit, circuit
 // breaker, request timeout, session drop on transport failure.
 func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) (*mcp.ClientSession, error), fn func(context.Context, *mcp.ClientSession) error) error {
+	start := time.Now()
+	observe := func(outcome string) {
+		if u.metrics != nil {
+			u.metrics.observeUpstream(u.cfg.ID, outcome, time.Since(start))
+		}
+	}
 	if ok, retry := u.limiter.Allow(); !ok {
+		observe("rate_limited")
 		return &jsonrpc.Error{
 			Code:    codeRateLimited,
 			Message: fmt.Sprintf("upstream %q rate limit exceeded; retry in %s", u.cfg.ID, retry.Round(time.Second)),
 		}
 	}
 	if !u.breaker.Allow() {
+		observe("circuit_open")
 		return &jsonrpc.Error{
 			Code:    codeUpstreamDown,
 			Message: fmt.Sprintf("upstream %q unavailable (circuit open)", u.cfg.ID),
@@ -334,6 +346,7 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	session, err := acquire(ctx)
 	if err != nil {
 		u.breaker.Record(false)
+		observe("connect_error")
 		return &jsonrpc.Error{Code: codeUpstreamDown, Message: err.Error()}
 	}
 	rctx, cancel := context.WithTimeout(ctx, u.requestTimeout)
@@ -341,6 +354,7 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	err = fn(rctx, session)
 	if err == nil {
 		u.breaker.Record(true)
+		observe("ok")
 		return nil
 	}
 	// A JSON-RPC error response proves the upstream is alive: pass it
@@ -348,12 +362,14 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	var wire *jsonrpc.Error
 	if errors.As(err, &wire) {
 		u.breaker.Record(true)
+		observe("ok")
 		return wire
 	}
 	u.breaker.Record(false)
 	if isConnectionError(err) {
 		u.dropSession(session)
 	}
+	observe("error")
 	return &jsonrpc.Error{
 		Code:    codeUpstreamDown,
 		Message: fmt.Sprintf("upstream %q: %v", u.cfg.ID, err),

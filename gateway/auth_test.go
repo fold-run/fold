@@ -194,7 +194,7 @@ func TestPassthroughCredentials(t *testing.T) {
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool"}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
-	if got := lastAuth.Load().(string); got != "Bearer "+token {
+	if got := lastHeader(lastAuth, "Authorization"); got != "Bearer "+token {
 		t.Errorf("upstream did not receive the caller's token (got %q)", truncate(got, 40))
 	}
 }

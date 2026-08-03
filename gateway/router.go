@@ -30,6 +30,9 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 		start := time.Now()
 		principal := principalFrom(req)
 		ctx = auth.WithPrincipal(ctx, principal)
+		if extra := req.GetExtra(); extra != nil {
+			ctx = withTraceContext(ctx, extra.Header)
+		}
 
 		evt := audit.Event{Method: method}
 		if principal != nil {
@@ -51,6 +54,7 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 		// Notifications and pings are protocol plumbing; keep audit focused
 		// on requests, matching fold's "every request including denials".
 		if method != "notifications/initialized" && method != "ping" {
+			g.metrics.observeRequest(method, string(evt.Outcome), time.Since(start))
 			g.audit.Emit(evt)
 		}
 		return res, err

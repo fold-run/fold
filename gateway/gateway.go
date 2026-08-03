@@ -52,6 +52,7 @@ type Gateway struct {
 	policy   *policy.Engine
 	audit    *audit.Logger
 	verifier *auth.Verifier
+	metrics  *metricsSet
 
 	globalLimit *ratelimit.Limiter
 
@@ -99,6 +100,10 @@ func New(cfg *config.Config) (*Gateway, error) {
 	}
 	if cfg.AuthRequired() {
 		g.verifier = auth.NewVerifier(cfg.Auth, http.DefaultClient)
+	}
+	g.metrics = newMetricsSet(g.upstreams)
+	for _, u := range g.upstreams {
+		u.metrics = g.metrics
 	}
 
 	g.server = mcp.NewServer(
@@ -375,6 +380,7 @@ func (g *Gateway) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(g.cfg.MCPPath(), mcpChain)
 	mux.HandleFunc("/healthz", g.handleHealth)
+	mux.Handle("/metrics", g.metrics.handler())
 	if g.cfg.AuthRequired() {
 		mux.Handle("/.well-known/oauth-protected-resource", sdkauth.ProtectedResourceMetadataHandler(g.protectedResourceMetadata()))
 	}
@@ -415,12 +421,14 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !wildcard {
 			if !allowed[hostname(r.Host)] {
+				g.metrics.reject("forbidden_host")
 				http.Error(w, "forbidden host", http.StatusForbidden)
 				return
 			}
 			if origin := r.Header.Get("Origin"); origin != "" {
 				if i := strings.Index(origin, "://"); i >= 0 {
 					if !allowed[hostname(origin[i+3:])] {
+						g.metrics.reject("forbidden_origin")
 						http.Error(w, "forbidden origin", http.StatusForbidden)
 						return
 					}
@@ -453,6 +461,7 @@ func (g *Gateway) authMiddleware(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		inner.ServeHTTP(rec, r)
 		if rec.status == http.StatusUnauthorized {
+			g.metrics.reject("unauthenticated")
 			g.audit.Emit(audit.Event{
 				Method:  "http",
 				Outcome: audit.OutcomeUnauthenticated,
@@ -468,6 +477,7 @@ func (g *Gateway) rateLimitMiddleware(next http.Handler) http.Handler {
 		if ok, retry := g.globalLimit.Allow(); !ok {
 			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			g.metrics.reject("rate_limited")
 			g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeRateLimited})
 			return
 		}

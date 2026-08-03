@@ -16,7 +16,7 @@ import (
 )
 
 // newUpstreamServer runs a real SDK MCP server over streamable HTTP with one
-// echo tool, recording the Authorization header of the last request.
+// echo tool, recording the headers of the last tools/call-bearing request.
 func newUpstreamServer(t *testing.T, toolNames ...string) (*httptest.Server, *atomic.Value) {
 	t.Helper()
 	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1.0"}, nil)
@@ -37,15 +37,19 @@ func newUpstreamServer(t *testing.T, toolNames ...string) (*httptest.Server, *at
 		}}, nil
 	})
 
-	var lastAuth atomic.Value
-	lastAuth.Store("")
+	var lastHeaders atomic.Value
+	lastHeaders.Store(http.Header{})
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		lastAuth.Store(r.Header.Get("Authorization"))
+		lastHeaders.Store(r.Header.Clone())
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	return ts, &lastAuth
+	return ts, &lastHeaders
+}
+
+func lastHeader(v *atomic.Value, name string) string {
+	return v.Load().(http.Header).Get(name)
 }
 
 func startGateway(t *testing.T, cfg *config.Config) (*httptest.Server, *Gateway) {
@@ -243,7 +247,7 @@ func TestStaticUpstreamCredentials(t *testing.T) {
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool"}); err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
-	if got := lastAuth.Load().(string); got != "Bearer sekret" {
+	if got := lastHeader(lastAuth, "Authorization"); got != "Bearer sekret" {
 		t.Errorf("upstream Authorization = %q, want Bearer sekret", got)
 	}
 }
