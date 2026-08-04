@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -58,7 +58,7 @@ func connectSession(t *testing.T, url string) *mcp.ClientSession {
 func measure(t *testing.T, session *mcp.ClientSession) []time.Duration {
 	t.Helper()
 	params := &mcp.CallToolParams{Name: "echo", Arguments: map[string]any{}}
-	for i := 0; i < warmup; i++ {
+	for range warmup {
 		if _, err := session.CallTool(context.Background(), params); err != nil {
 			t.Fatalf("warmup call: %v", err)
 		}
@@ -71,7 +71,7 @@ func measure(t *testing.T, session *mcp.ClientSession) []time.Duration {
 		}
 		out[i] = time.Since(start)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 

@@ -260,7 +260,7 @@ func TestGlobalRateLimit(t *testing.T) {
 	})
 	// Consume the budget with raw POSTs (the MCP handshake also counts).
 	var last int
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		resp, err := http.Post(ts.URL+"/mcp", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
 		if err != nil {
 			t.Fatal(err)
@@ -281,7 +281,7 @@ func TestUpstreamRateLimitAndBreaker(t *testing.T) {
 	session := connect(t, ts.URL, nil)
 
 	var rateLimited bool
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool"}); err != nil {
 			if strings.Contains(err.Error(), "rate limit") {
 				rateLimited = true

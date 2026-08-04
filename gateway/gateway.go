@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -471,8 +472,8 @@ func (g *Gateway) pushCallCtx(ctx context.Context, key string) func() {
 	s.mu.Unlock()
 	return func() {
 		s.mu.Lock()
-		for i := len(s.stack) - 1; i >= 0; i-- {
-			if s.stack[i] == ctx {
+		for i, v := range slices.Backward(s.stack) {
+			if v == ctx {
 				s.stack = append(s.stack[:i], s.stack[i+1:]...)
 				break
 			}
@@ -495,9 +496,9 @@ func (g *Gateway) invocationCtx(fallback context.Context, key string) context.Co
 	s := v.(*ctxStack)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.stack) - 1; i >= 0; i-- {
-		if s.stack[i].Err() == nil {
-			return s.stack[i]
+	for _, v := range slices.Backward(s.stack) {
+		if v.Err() == nil {
+			return v
 		}
 	}
 	return fallback
@@ -690,8 +691,8 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 				// schemeless or opaque origin (e.g. "null" from a sandboxed
 				// document) has no allowed host and fails closed.
 				host := ""
-				if i := strings.Index(origin, "://"); i >= 0 {
-					host = hostname(origin[i+3:])
+				if _, after, ok := strings.Cut(origin, "://"); ok {
+					host = hostname(after)
 				}
 				if !allowed[host] {
 					g.metrics.reject("forbidden_origin")
@@ -836,9 +837,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	statuses := make([]upstreamHealth, len(g.upstreams))
 	var wg sync.WaitGroup
 	for i, u := range g.upstreams {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			h := upstreamHealth{
 				ID:        u.cfg.ID,
 				Namespace: u.cfg.Namespace,
@@ -862,7 +861,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 				h.LatencyMs = time.Since(start).Milliseconds()
 			}
 			statuses[i] = h
-		}()
+		})
 	}
 	wg.Wait()
 	healthy := 0

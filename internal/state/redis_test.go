@@ -35,7 +35,7 @@ func TestRedisLimiterSharedBudget(t *testing.T) {
 	lb := b.Limiter("up:x", 4)
 
 	admitted := 0
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		// Alternate instances: the budget must be shared, not per instance.
 		l := la
 		if i%2 == 1 {
@@ -58,7 +58,7 @@ func TestRedisLimiterSharedBudget(t *testing.T) {
 func TestRedisLimiterUnlimited(t *testing.T) {
 	a, _ := twoProviders(t)
 	l := a.Limiter("up:x", 0)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if ok, _ := l.Allow(context.Background()); !ok {
 			t.Fatal("rpm<=0 must be unlimited")
 		}
@@ -73,7 +73,7 @@ func TestRedisBreakerSharedState(t *testing.T) {
 	bb := b.Breaker("up:x", 3, 30*time.Second)
 
 	// Failures observed by instance A open the circuit for instance B.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if !ba.Allow(ctx) {
 			t.Fatalf("closed breaker should allow (i=%d)", i)
 		}

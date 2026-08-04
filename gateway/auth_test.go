@@ -265,7 +265,7 @@ func TestPerPrincipalRateLimit(t *testing.T) {
 	bobTok := iss.mint(t, "bob", "https://gw.example.com", nil)
 
 	last := 0
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		last = post(aliceTok)
 	}
 	if last != http.StatusTooManyRequests {

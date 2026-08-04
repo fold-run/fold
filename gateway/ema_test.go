@@ -198,7 +198,7 @@ func TestEMATokenRateLimit(t *testing.T) {
 
 	var last int
 	var lastBody map[string]any
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		last, lastBody = redeem(t, ts.URL, idJAG(t, idp, "alice", fmt.Sprintf("jag-rl-%d", i)))
 	}
 	if last != http.StatusTooManyRequests || lastBody["error"] != "slow_down" {

@@ -144,11 +144,9 @@ func fanOut[T any](ctx context.Context, ups []*upstream, fn func(context.Context
 	errs := make([]error, len(ups))
 	var wg sync.WaitGroup
 	for i, u := range ups {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			results[i], errs[i] = fn(ctx, u)
-		}()
+		})
 	}
 	wg.Wait()
 	for i, err := range errs {

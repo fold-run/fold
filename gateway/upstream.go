@@ -474,8 +474,7 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	}
 	// A JSON-RPC error response proves the upstream is alive: pass it
 	// through verbatim and don't count it against the breaker.
-	var wire *jsonrpc.Error
-	if errors.As(err, &wire) {
+	if wire, ok := errors.AsType[*jsonrpc.Error](err); ok {
 		u.recordBreaker(ctx, true)
 		observe("ok")
 		return wire

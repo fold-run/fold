@@ -10,7 +10,7 @@ func TestOpensAfterThreshold(t *testing.T) {
 	now := time.Now()
 	b.now = func() time.Time { return now }
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if !b.Allow() {
 			t.Fatalf("closed breaker should allow (i=%d)", i)
 		}

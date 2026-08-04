@@ -64,7 +64,6 @@ func newMetricsSet(ups []*upstream) *metricsSet {
 	m.registry.MustRegister(build)
 
 	for _, u := range ups {
-		u := u
 		m.registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Name:        "fold_upstream_breaker_state",
 			Help:        "Circuit breaker state per upstream: 0 closed, 1 half-open, 2 open.",

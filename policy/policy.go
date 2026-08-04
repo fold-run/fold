@@ -5,6 +5,7 @@
 package policy
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/fold-run/fold/auth"
@@ -105,12 +106,7 @@ func subjectsMatch(s *config.PolicySubjects, p *auth.Principal) bool {
 }
 
 func contains(list []string, v string) bool {
-	for _, x := range list {
-		if x == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, v)
 }
 
 // globAny reports whether name matches any pattern. Patterns support "*"

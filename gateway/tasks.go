@@ -112,7 +112,6 @@ func (r *rawResult) UnmarshalJSON(b []byte) error {
 // federation router.
 func (g *Gateway) registerTaskMethods() error {
 	for _, method := range taskMethods {
-		method := method
 		if err := mcp.AddReceivingCustomMethod(g.server, method,
 			func(ctx context.Context, _ *mcp.ServerSession, p *rawParams) (*rawResult, error) {
 				var raw json.RawMessage

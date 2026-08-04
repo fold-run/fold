@@ -10,7 +10,7 @@ func TestBudgetEnforced(t *testing.T) {
 	now := time.Now()
 	l.now = func() time.Time { return now }
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if ok, _ := l.Allow(); !ok {
 			t.Fatalf("request %d should be admitted", i)
 		}
@@ -35,13 +35,13 @@ func TestSlidingWindowWeighting(t *testing.T) {
 	now := time.Now()
 	l.now = func() time.Time { return now }
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		l.Allow()
 	}
 	// Half a window later, roughly half the budget is back.
 	now = now.Add(90 * time.Second)
 	admitted := 0
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if ok, _ := l.Allow(); ok {
 			admitted++
 		}
