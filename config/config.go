@@ -20,6 +20,24 @@ type Config struct {
 	Audit     *Audit         `json:"audit,omitempty"`
 	Routing   *Routing       `json:"routing,omitempty"`
 	Server    *ServerSection `json:"server,omitempty"`
+	Tracing   *Tracing       `json:"tracing,omitempty"`
+}
+
+// Tracing enables first-party OpenTelemetry spans (one server span per MCP
+// request, one client span per upstream call), exported over OTLP/HTTP.
+// Absent → fold only propagates the caller's W3C trace context.
+type Tracing struct {
+	// OTLPEndpoint is the collector's OTLP/HTTP base URL, e.g.
+	// "http://otel-collector:4318". Plain http is allowed — collectors are
+	// commonly cluster-local sidecars.
+	OTLPEndpoint string `json:"otlpEndpoint"`
+
+	ServiceName string `json:"serviceName,omitempty"` // default "fold"
+
+	// SampleRatio samples traces fold roots itself at this rate (0 < r <= 1,
+	// default 1). Parent-based: callers that sampled their trace stay
+	// sampled regardless.
+	SampleRatio float64 `json:"sampleRatio,omitempty"`
 }
 
 // Upstream describes one MCP server folded into the gateway.
@@ -451,6 +469,15 @@ func (c *Config) Validate() error {
 					return fmt.Errorf("policy rule %q: unknown server %q", r.ID, a.Server)
 				}
 			}
+		}
+	}
+	if c.Tracing != nil {
+		parsed, err := url.Parse(c.Tracing.OTLPEndpoint)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("tracing: otlpEndpoint must be an absolute http(s) URL")
+		}
+		if c.Tracing.SampleRatio < 0 || c.Tracing.SampleRatio > 1 {
+			return fmt.Errorf("tracing: sampleRatio must be between 0 and 1")
 		}
 	}
 	if c.Audit != nil {

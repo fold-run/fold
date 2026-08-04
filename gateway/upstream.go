@@ -70,6 +70,8 @@ type upstream struct {
 
 	// metrics is the owning gateway's instrumentation (set by Gateway).
 	metrics *metricsSet
+	// tracer is the owning gateway's tracer (nil → tracing disabled).
+	tracer *gwTracer
 	// log is the owning gateway's logger, tagged with this upstream id.
 	log *slog.Logger
 
@@ -542,10 +544,12 @@ func (u *upstream) doBridged(ctx context.Context, key string, opts *mcp.ClientOp
 // breaker, request timeout, session drop on transport failure.
 func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) (*mcp.ClientSession, error), fn func(context.Context, *mcp.ClientSession) error) error {
 	start := time.Now()
+	ctx, span := u.tracer.startClient(ctx, u.cfg.ID)
 	observe := func(outcome string) {
 		if u.metrics != nil {
 			u.metrics.observeUpstream(u.cfg.ID, outcome, time.Since(start))
 		}
+		endClient(span, outcome)
 	}
 	if ok, retry := u.limiter.Allow(ctx); !ok {
 		observe("rate_limited")

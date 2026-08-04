@@ -57,6 +57,8 @@ func TestValidationErrors(t *testing.T) {
 		{"bad urls entry", `{"upstreams":[{"id":"a","urls":["http://x.test","nope"]}]}`, "http(s)"},
 		{"duplicate urls entry", `{"upstreams":[{"id":"a","urls":["http://x.test","http://x.test"]}]}`, "duplicate endpoint"},
 		{"bad health interval", `{"upstreams":[{"id":"a","url":"http://x.test","healthCheck":{"intervalMs":0}}]}`, "healthCheck.intervalMs"},
+		{"tracing without endpoint", `{"upstreams":[{"id":"a","url":"http://x.test"}],"tracing":{}}`, "otlpEndpoint"},
+		{"tracing bad ratio", `{"upstreams":[{"id":"a","url":"http://x.test"}],"tracing":{"otlpEndpoint":"http://c.test:4318","sampleRatio":1.5}}`, "sampleRatio"},
 		{"auth without resource", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","issuers":[{"issuer":"https://idp.test"}]}}`, "resource"},
 		{"auth without issuers", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","resource":"https://gw.test"}}`, "issuer"},
 		{"static without secret", `{"upstreams":[{"id":"a","url":"http://x.test","auth":{"strategy":"static"}}]}`, "secretRef"},

@@ -61,6 +61,7 @@ type Gateway struct {
 	audit    *audit.Logger
 	verifier *auth.Verifier
 	metrics  *metricsSet
+	tracer   *gwTracer // nil unless cfg.Tracing is set
 	state    state.Provider
 	log      *slog.Logger
 
@@ -102,6 +103,7 @@ type Gateway struct {
 	handler http.Handler
 
 	stopSweeper chan struct{}
+	closeOnce   sync.Once
 }
 
 // routes is one immutable snapshot of the gateway's reloadable state. cfg is
@@ -158,6 +160,11 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		}
 		return nil
 	})
+	if cfg.Tracing != nil {
+		if g.tracer, err = newGwTracer(cfg.Tracing); err != nil {
+			return nil, err
+		}
+	}
 	g.routes.Store(g.buildRoutes(cfg, nil))
 	globalRPM := 0
 	if cfg.Server != nil && cfg.Server.RateLimit != nil {
@@ -248,6 +255,7 @@ func (g *Gateway) buildRoutes(cfg *config.Config, prev *routes) *routes {
 func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
 	u := newUpstream(ucfg, g.state)
 	u.metrics = g.metrics
+	u.tracer = g.tracer
 	u.log = g.log.With("upstream", ucfg.ID)
 	u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
 		_ = g.server.ResourceUpdated(ctx, params) // best-effort fan-out
@@ -266,9 +274,9 @@ func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
 // resource subscriptions are re-established on its replacement. Clients
 // receive list_changed notifications so they refetch.
 //
-// The auth, server, routing, and audit sections are wired into the HTTP
-// handler at construction and cannot hot-swap: changing them returns an
-// error and leaves the running configuration untouched.
+// The auth, server, routing, audit, and tracing sections are wired in at
+// construction and cannot hot-swap: changing them returns an error and
+// leaves the running configuration untouched.
 func (g *Gateway) Reload(cfg *config.Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -284,6 +292,7 @@ func (g *Gateway) Reload(cfg *config.Config) error {
 		{"server", !reflect.DeepEqual(cfg.Server, old.cfg.Server)},
 		{"routing", !reflect.DeepEqual(cfg.Routing, old.cfg.Routing)},
 		{"audit", !reflect.DeepEqual(cfg.Audit, old.cfg.Audit)},
+		{"tracing", !reflect.DeepEqual(cfg.Tracing, old.cfg.Tracing)},
 	} {
 		if section.changed {
 			return fmt.Errorf("reload: the %s section cannot change without a restart", section.name)
@@ -520,14 +529,18 @@ func buildStateProvider(cfg *config.Config) (state.Provider, error) {
 	return state.NewRedis(url)
 }
 
-// Close shuts down all upstream sessions.
+// Close shuts down all upstream sessions, flushes buffered trace spans, and
+// releases the state provider. Safe to call more than once.
 func (g *Gateway) Close() {
-	g.log.Info("gateway shutting down")
-	close(g.stopSweeper)
-	for _, u := range g.rt().upstreams {
-		u.Close()
-	}
-	_ = g.state.Close()
+	g.closeOnce.Do(func() {
+		g.log.Info("gateway shutting down")
+		close(g.stopSweeper)
+		for _, u := range g.rt().upstreams {
+			u.Close()
+		}
+		g.tracer.shutdown()
+		_ = g.state.Close()
+	})
 }
 
 // ctxStack tracks in-flight invocation contexts for one downstream session,

@@ -168,6 +168,7 @@ func TestReloadRejectsNonReloadableSections(t *testing.T) {
 		"audit": {Upstreams: base, Audit: &config.Audit{Sinks: []config.AuditSink{{Type: "stdout"}}}},
 		"auth": {Upstreams: base, Auth: &config.Auth{Mode: "required", Resource: "https://gw.example.com",
 			Issuers: []config.Issuer{{Issuer: "https://idp.example.com"}}}},
+		"tracing": {Upstreams: base, Tracing: &config.Tracing{OTLPEndpoint: "http://collector.example.com:4318"}},
 	}
 	for section, cfg := range cases {
 		err := gw.Reload(cfg)

@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fold-run/fold/audit"
 	"github.com/fold-run/fold/auth"
@@ -30,8 +32,19 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 		start := time.Now()
 		principal := principalFrom(req)
 		ctx = auth.WithPrincipal(ctx, principal)
+		var hdr http.Header
 		if extra := req.GetExtra(); extra != nil {
-			ctx = withTraceContext(ctx, extra.Header)
+			hdr = extra.Header
+			ctx = withTraceContext(ctx, hdr)
+		}
+		// Notifications and pings are protocol plumbing; keep audit, metrics,
+		// and spans focused on requests, matching fold's "every request
+		// including denials".
+		plumbing := method == "notifications/initialized" || method == "ping"
+
+		var span trace.Span
+		if !plumbing {
+			ctx, span = g.tracer.startServer(ctx, method, hdr)
 		}
 
 		evt := audit.Event{Method: method}
@@ -51,11 +64,10 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 		} else if evt.Outcome == "" {
 			evt.Outcome = audit.OutcomeOK
 		}
-		// Notifications and pings are protocol plumbing; keep audit focused
-		// on requests, matching fold's "every request including denials".
-		if method != "notifications/initialized" && method != "ping" {
+		if !plumbing {
 			g.metrics.observeRequest(method, string(evt.Outcome), time.Since(start))
 			g.audit.Emit(evt)
+			endServer(span, &evt, err)
 		}
 		return res, err
 	}

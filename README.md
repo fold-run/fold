@@ -34,7 +34,7 @@ go run github.com/fold-run/fold/cmd/fold@latest --config fold.config.json --port
 # Binds 127.0.0.1 by default; pass --host 0.0.0.0 to expose beyond loopback.
 ```
 
-Or run the container (~18 MB, distroless):
+Or run the container (~22 MB, distroless):
 
 ```bash
 docker run --rm -p 8080:8080 \
@@ -83,7 +83,7 @@ fold fans list requests out across all upstreams concurrently, merges and namesp
 
 **Replicated upstreams load-balance.** Give an upstream `urls` instead of `url` and the gateway balances across the replicas: MCP is sessionful, so each new session — the shared root session, and each client's bridged session — connects round-robin to the next healthy endpoint and stays pinned there. An endpoint that refuses a connection is skipped (the connect fails over to the next replica in the same attempt) and rests out of rotation for the breaker's `halfOpenAfterMs` before being retried. Add `"healthCheck": { "intervalMs": 30000 }` for active probing: the gateway connects to every endpoint on the interval, so a dead replica is ejected before the first client request and a recovered one returns to rotation without a live-request retry paying for the discovery. Per-endpoint health shows in `/healthz` and the `fold_upstream_endpoint_healthy` metric. Replicas are assumed identical — one namespace, one credential strategy, one policy surface.
 
-**Configuration hot-reloads.** `kill -HUP` the process — or run with `--watch` to poll the config file — and fold revalidates and applies the new document without dropping the listener: the upstream set and the policy engine swap atomically, in-flight requests finish against the snapshot they started on, and connected clients receive `list_changed` notifications so they refetch. Upstreams whose config is unchanged keep their live sessions; removed or changed ones are drained (closed after their request timeout) and a changed upstream's resource subscriptions move to its replacement. Embedders get the same behavior via `gw.Reload(cfg)`. The `auth`, `server`, `routing`, and `audit` sections are wired into the HTTP handler at construction and cannot hot-swap — changing them makes the reload fail loudly, keeping the running configuration; a rejected reload never takes anything down.
+**Configuration hot-reloads.** `kill -HUP` the process — or run with `--watch` to poll the config file — and fold revalidates and applies the new document without dropping the listener: the upstream set and the policy engine swap atomically, in-flight requests finish against the snapshot they started on, and connected clients receive `list_changed` notifications so they refetch. Upstreams whose config is unchanged keep their live sessions; removed or changed ones are drained (closed after their request timeout) and a changed upstream's resource subscriptions move to its replacement. Embedders get the same behavior via `gw.Reload(cfg)`. The `auth`, `server`, `routing`, `audit`, and `tracing` sections are wired in at construction and cannot hot-swap — changing them makes the reload fail loudly, keeping the running configuration; a rejected reload never takes anything down.
 
 ## Request pipeline
 
@@ -230,6 +230,18 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `namespaceSeparator` | `__` | Separator between namespace and bare name in public tool/prompt names. Must not contain lowercase letters, digits, or hyphens (the namespace alphabet). |
 | `pageSize` | `200` | Per-page bound on federated list results (tools, prompts, resources, templates). Fold merges and policy-filters every upstream's full list, then serves it in pages; cursors are opaque, bound to the calling principal, and expire when the underlying snapshot changes (the client receives `-32602` and restarts the list — `list_changed` notifications already prompt refetches). Negative disables pagination (single merged page). `tasks/list` is always a single merged page. |
 
+### `tracing`
+
+```jsonc
+{
+  "otlpEndpoint": "http://otel-collector:4318",  // OTLP/HTTP collector; a bare base URL gets the standard /v1/traces path
+  "serviceName": "fold",                         // resource service.name (default "fold")
+  "sampleRatio": 1.0                             // sampling for traces fold roots itself; parent-based, so sampled callers stay sampled
+}
+```
+
+Absent, fold only propagates the caller's W3C trace context (see Observability). Present, fold emits its own spans: one server span per MCP request — carrying method, tool/prompt name, routed upstream, policy decision + rule id, principal, and outcome, the same fields as the audit event — and one client span per upstream call with its guard outcome (ok, rate-limited, circuit open, error). Spans export through a batching processor, so the request path never waits on the collector.
+
 ## Error codes
 
 Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
@@ -245,7 +257,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 ## Observability
 
 - `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_upstream_endpoint_healthy{upstream,endpoint}` (multi-endpoint upstreams: 1 in rotation, 0 ejected), `fold_http_rejections_total{reason}`, `fold_build_info{version}`, plus standard Go process/runtime collectors.
-- **Distributed tracing** — W3C Trace Context (`traceparent`/`tracestate`) headers on incoming requests are propagated to the upstream calls they cause, so the gateway hop joins the caller's trace.
+- **Distributed tracing** — W3C Trace Context (`traceparent`/`tracestate`) headers on incoming requests are always propagated to the upstream calls they cause, so the gateway hop joins the caller's trace. With the `tracing` section configured, fold also emits its own OpenTelemetry spans (server span per request, client span per upstream call, pipeline outcomes as attributes) over OTLP/HTTP — the gateway hop appears *in* the trace instead of being invisible, and upstream calls parent under fold's client span while keeping the caller's trace id.
 - **Latency, measurably** — the `bench` CI job gates every merge on added p50 latency < 5 ms through the proxy path (loose for shared runners). Typical local numbers (Apple Silicon, in-process upstream): **~0.20 ms added p50**, gateway p99 ≈ 0.57 ms. Reproduce: `FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v`.
 - **Structured logging** — operational events (startup, upstream connect/reconnect, session drops, circuit-breaker transitions, refused cross-host redirects, SSE-hang fallbacks, shutdown) log via `log/slog`. `--log-format text|json` and `--log-level debug|info|warn|error` on the CLI; embedders pass `gateway.WithLogger(*slog.Logger)`. Per-request accounting stays in metrics and the audit sink, not the log stream.
 
