@@ -20,8 +20,8 @@ jobs:
     outputs:
       sdk_version: ${{ steps.bump.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -42,11 +42,11 @@ jobs:
   conformance-latest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -66,7 +66,7 @@ jobs:
     if: failure()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: open or update a drift issue
         env:
           GH_TOKEN: ${{ github.token }}
