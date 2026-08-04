@@ -359,6 +359,14 @@ Known gaps, documented deliberately:
 
 ## Changelog
 
+### v0.8.0 — 2026-08-04
+
+The 1.0 readiness release — hardening and documentation, no behavior changes.
+
+- **Hardening** — fuzzers for the untrusted parsers (pagination cursors, discovery documents; ~1M exploratory execs, clean) and a churn test interleaving reloads, discovery flapping, health probes, and concurrent traffic under the race detector.
+- **Decisions on record** — the defaults review ([docs/defaults.md](docs/defaults.md)); supported-versions and deprecation policy in [SECURITY.md](SECURITY.md) and README.
+- **Guides** — new [operations](docs/operations.md), [security-model](docs/security-model.md), and [embedding](docs/embedding.md) docs (embedding examples compile in CI), plus a deploy-guide accuracy pass with hot-reload coverage.
+
 ### v0.7.0 — 2026-08-04
 
 The road to v1.0.
