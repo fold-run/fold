@@ -1,9 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -147,7 +150,7 @@ func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMess
 	rt := g.rt()
 	caller := taskOwnerKey(auth.PrincipalFromContext(ctx))
 	if method == methodTasksList {
-		return g.listTasks(ctx, rt, caller)
+		return g.listTasks(ctx, rt, caller, raw)
 	}
 	taskID := extractTaskID(raw)
 	if taskID == "" {
@@ -202,8 +205,10 @@ func (g *Gateway) locateTaskOwner(ctx context.Context, rt *routes, taskID string
 // principal: upstreams see fold as one client, so the merged list would
 // otherwise expose every caller's tasks. Tasks with no ownership record
 // (out-of-band or evicted) are kept, matching the locate-by-probe fallback.
-// A partial-failure marker records any upstreams that were down.
-func (g *Gateway) listTasks(ctx context.Context, rt *routes, caller string) (json.RawMessage, error) {
+// A partial-failure marker records any upstreams that were down. The merged
+// list is sorted by task id and served in pages with the same snapshot-offset
+// cursors as the typed lists (see paginate).
+func (g *Gateway) listTasks(ctx context.Context, rt *routes, caller string, raw json.RawMessage) (json.RawMessage, error) {
 	empty, _ := json.Marshal(map[string]any{})
 	results, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
 		return u.callTask(ctx, methodTasksList, empty)
@@ -237,7 +242,30 @@ func (g *Gateway) listTasks(ctx context.Context, rt *routes, caller string) (jso
 			merged = append(merged, t)
 		}
 	}
-	out := map[string]any{"tasks": merged}
+	// Deterministic order so a cursor's offset means the same thing on the
+	// next page: upstreams commonly emit task lists in map order, and the
+	// snapshot fingerprint would treat that jitter as a changed snapshot.
+	// Ids are unique across the federation (upstream-minted), so id order is
+	// total; raw bytes break ties for malformed entries without an id.
+	slices.SortStableFunc(merged, func(a, b json.RawMessage) int {
+		if c := strings.Compare(extractTaskID(a), extractTaskID(b)); c != 0 {
+			return c
+		}
+		return bytes.Compare(a, b)
+	})
+	var params struct {
+		Cursor string `json:"cursor"`
+	}
+	_ = json.Unmarshal(raw, &params) // absent params → first page
+	page, next, jerr := paginate(merged, extractTaskID, "tasks", params.Cursor,
+		g.pageSize, auth.PrincipalFromContext(ctx))
+	if jerr != nil {
+		return nil, jerr
+	}
+	out := map[string]any{"tasks": page}
+	if next != "" {
+		out["nextCursor"] = next
+	}
 	if meta != nil {
 		out["_meta"] = meta
 	}

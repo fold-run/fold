@@ -45,4 +45,4 @@ CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, `go mod tidy -diff`
 1. **Test with real peers**: integration tests (in `gateway/*_test.go`) spin up real MCP servers from the official Go SDK behind the gateway — hand-rolled fixtures only for instrumentation. Redis paths are tested against miniredis.
 2. **The gateway stays invisible**: behavior through the gateway must match hitting the upstream directly; the conformance suite enforces this. Don't buffer or rewrite responses unless federation requires it (namespacing, list merging, policy filtering).
 3. **Performance is a test**: the bench job gates merges on added latency; keep the proxy path allocation-light.
-4. **Known gaps are documented**: deliberately unimplemented features (`subscriptions/listen` fan-in, composite pagination) live in README "Not implemented" — update it if you close or widen a gap.
+4. **Known gaps are documented**: deliberately unimplemented features (`subscriptions/listen` fan-in, content inspection) live in README "Not implemented" — update it if you close or widen a gap.

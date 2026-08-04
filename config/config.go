@@ -256,9 +256,8 @@ type Routing struct {
 	NamespaceSeparator string `json:"namespaceSeparator,omitempty"` // default "__"
 
 	// PageSize bounds federated list results (tools/prompts/resources/
-	// templates) per page. 0 uses the default (200); negative disables
+	// templates/tasks) per page. 0 uses the default (200); negative disables
 	// pagination and returns the full merged list as a single page.
-	// tasks/list is always a single merged page.
 	PageSize int `json:"pageSize,omitempty"`
 }
 
