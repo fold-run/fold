@@ -2,8 +2,6 @@
 
 **fold: the enterprise MCP gateway — one governed endpoint between every MCP client and every MCP server.**
 
-This is the primary fold implementation. The original [TypeScript implementation](https://github.com/fold-run/fold-ts) is archived; see [Differences from the TypeScript fold](#differences-from-the-typescript-fold-archived) for what was intentionally left behind.
-
 fold sits in front of any number of upstream MCP servers — in any language, on any SDK, from any team or vendor — providing federation, enterprise auth, policy, caching, rate limiting, and audit. It is built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk), so the wire protocol (streamable HTTP, both request/response and SSE) is the SDK's own implementation on both the client-facing and upstream-facing sides.
 
 **Conformant, provably.** The official [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) suite runs against fold fronting the reference everything-server on every merge — **40/40 checks**, including sampling, elicitation, logging, progress, and resource subscriptions bridged through the gateway (`conformance` job in [CI](.github/workflows/ci.yml); reproduce with `./scripts/conformance.sh`).
@@ -242,14 +240,12 @@ go test -race ./...
 
 The integration suite spins up real MCP servers from the official Go SDK behind the gateway and exercises federation, namespacing, policy filtering and denial, partial failure, credential injection (static and passthrough), rate limits, the breaker, JWT auth against a fixture JWKS issuer, RFC 9728 metadata, and the full server-initiated bridging loop (sampling, elicitation, logging, progress).
 
-## Differences from the TypeScript fold (archived)
+## Not implemented
 
-fold began as a TypeScript implementation targeting Cloudflare Workers; this Go implementation carries the full core feature set on a single runtime and superseded it. Intentionally not carried over:
+Known gaps, documented deliberately:
 
-- **Era translation** (legacy 2025 ↔ stateless 2026 bridging, MRTR parking) — fold pins upstream connections to the session era by default (see `protocol`) so server-initiated traffic bridges; the TypeScript held-session legacy bridge and header-based body-free routing are not replicated.
 - **Enterprise-Managed Authorization** (ID-JAG token endpoint) — planned; standard OAuth resource-server auth and RFC 8693 token exchange are implemented.
-- **Cloudflare Workers runtime** — fold is a single-binary deployment (Docker/k8s friendly). Redis-shared state (`REDIS_URL`) *is* implemented: rate limits, breakers, and list caches are fleet-wide when configured.
-- **`subscriptions/listen` fan-in** — the notification-stream fan-in is not carried over (the Go SDK exposes no public API for it). Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
+- **`subscriptions/listen` fan-in** — the notification-stream fan-in awaits a public Go SDK API. Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
 - **Composite federated pagination** — list results are merged and returned as a single page.
 
 ## License
