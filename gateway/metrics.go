@@ -22,6 +22,7 @@ type metricsSet struct {
 	upstreamReq *prometheus.CounterVec   // upstream requests by upstream and outcome
 	upstreamDur *prometheus.HistogramVec // upstream request duration by upstream
 	httpRejects *prometheus.CounterVec   // HTTP-level rejections by reason
+	discovery   *prometheus.CounterVec   // discovery syncs by outcome
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -49,9 +50,13 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_http_rejections_total",
 			Help: "Requests rejected before the MCP layer, by reason.",
 		}, []string{"reason"}),
+		discovery: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_discovery_syncs_total",
+			Help: "Upstream-discovery polls by outcome: applied, unchanged, rejected, error.",
+		}, []string{"outcome"}),
 	}
 	m.registry.MustRegister(
-		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects,
+		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -123,6 +128,10 @@ func (m *metricsSet) observeUpstream(upstreamID, outcome string, d time.Duration
 
 func (m *metricsSet) reject(reason string) {
 	m.httpRejects.WithLabelValues(reason).Inc()
+}
+
+func (m *metricsSet) discoverySync(outcome string) {
+	m.discovery.WithLabelValues(outcome).Inc()
 }
 
 func (m *metricsSet) handler() http.Handler {

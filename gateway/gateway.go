@@ -56,7 +56,15 @@ type Gateway struct {
 	// indexes, and the policy engine — swapped atomically by Reload. Every
 	// request loads the pointer once so it sees one consistent world.
 	routes   atomic.Pointer[routes]
-	reloadMu sync.Mutex // serializes Reload; the swap itself is atomic
+	reloadMu sync.Mutex // serializes reloads; the swap itself is atomic
+
+	// baseCfg is the operator-supplied configuration; discovered is the
+	// discovery-sourced upstream set merged in alongside it. Both guarded
+	// by reloadMu — Reload replaces the base keeping discovered, a
+	// discovery sync replaces discovered keeping the base.
+	baseCfg    *config.Config
+	discovered []config.Upstream
+	discovery  *discoverer // nil unless cfg.Discovery is set
 
 	audit    *audit.Logger
 	verifier *auth.Verifier
@@ -216,6 +224,11 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	g.stopSweeper = make(chan struct{})
 	go g.sweepLoop()
 	g.handler = g.buildHandler()
+	g.baseCfg = cfg
+	if cfg.Discovery != nil {
+		g.discovery = newDiscoverer(g, cfg.Discovery)
+		go g.discovery.loop()
+	}
 	return g, nil
 }
 
@@ -272,34 +285,56 @@ func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
 // state; removed or changed upstreams are drained (closed after their
 // request timeout, so in-flight calls complete) and a changed upstream's
 // resource subscriptions are re-established on its replacement. Clients
-// receive list_changed notifications so they refetch.
+// receive list_changed notifications so they refetch. Discovery-sourced
+// upstreams (see config.Discovery) survive a base reload unchanged.
 //
-// The auth, server, routing, audit, and tracing sections are wired in at
-// construction and cannot hot-swap: changing them returns an error and
-// leaves the running configuration untouched.
+// The auth, server, routing, audit, tracing, and discovery sections are
+// wired in at construction and cannot hot-swap: changing them returns an
+// error and leaves the running configuration untouched.
 func (g *Gateway) Reload(cfg *config.Config) error {
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
 	g.reloadMu.Lock()
 	defer g.reloadMu.Unlock()
+	return g.applyLocked(cfg, g.discovered)
+}
+
+// setDiscovered swaps the discovery-sourced upstream set, keeping the
+// operator-supplied base configuration.
+func (g *Gateway) setDiscovered(ups []config.Upstream) error {
+	g.reloadMu.Lock()
+	defer g.reloadMu.Unlock()
+	return g.applyLocked(g.baseCfg, ups)
+}
+
+// applyLocked merges base + discovered into one document, validates it as a
+// whole — so a discovered upstream colliding with a static id or namespace
+// rejects the discovery set, never corrupts routing — and swaps the snapshot.
+// Caller holds reloadMu.
+func (g *Gateway) applyLocked(base *config.Config, discovered []config.Upstream) error {
+	merged := *base
+	if len(discovered) > 0 {
+		merged.Upstreams = append(append([]config.Upstream{}, base.Upstreams...), discovered...)
+	}
+	if err := merged.Validate(); err != nil {
+		return err
+	}
 	old := g.rt()
 	for _, section := range []struct {
 		name    string
 		changed bool
 	}{
-		{"auth", !reflect.DeepEqual(cfg.Auth, old.cfg.Auth)},
-		{"server", !reflect.DeepEqual(cfg.Server, old.cfg.Server)},
-		{"routing", !reflect.DeepEqual(cfg.Routing, old.cfg.Routing)},
-		{"audit", !reflect.DeepEqual(cfg.Audit, old.cfg.Audit)},
-		{"tracing", !reflect.DeepEqual(cfg.Tracing, old.cfg.Tracing)},
+		{"auth", !reflect.DeepEqual(merged.Auth, old.cfg.Auth)},
+		{"server", !reflect.DeepEqual(merged.Server, old.cfg.Server)},
+		{"routing", !reflect.DeepEqual(merged.Routing, old.cfg.Routing)},
+		{"audit", !reflect.DeepEqual(merged.Audit, old.cfg.Audit)},
+		{"tracing", !reflect.DeepEqual(merged.Tracing, old.cfg.Tracing)},
+		{"discovery", !reflect.DeepEqual(merged.Discovery, old.cfg.Discovery)},
 	} {
 		if section.changed {
 			return fmt.Errorf("reload: the %s section cannot change without a restart", section.name)
 		}
 	}
 
-	next := g.buildRoutes(cfg, old)
+	next := g.buildRoutes(&merged, old)
 	kept := map[*upstream]bool{}
 	for _, u := range next.upstreams {
 		kept[u] = true
@@ -342,8 +377,10 @@ func (g *Gateway) Reload(cfg *config.Config) error {
 	for _, kind := range []string{"tools", "prompts", "resources"} {
 		g.notifyListChanged(kind)
 	}
+	g.baseCfg, g.discovered = base, discovered
 	g.log.Info("configuration reloaded",
 		"upstreams", len(next.upstreams),
+		"discovered", len(discovered),
 		"retired", len(retired),
 		"passthrough", next.passthrough)
 	return nil
@@ -534,6 +571,9 @@ func buildStateProvider(cfg *config.Config) (state.Provider, error) {
 func (g *Gateway) Close() {
 	g.closeOnce.Do(func() {
 		g.log.Info("gateway shutting down")
+		if g.discovery != nil {
+			close(g.discovery.stop)
+		}
 		close(g.stopSweeper)
 		for _, u := range g.rt().upstreams {
 			u.Close()

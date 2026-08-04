@@ -21,6 +21,26 @@ type Config struct {
 	Routing   *Routing       `json:"routing,omitempty"`
 	Server    *ServerSection `json:"server,omitempty"`
 	Tracing   *Tracing       `json:"tracing,omitempty"`
+	Discovery *Discovery     `json:"discovery,omitempty"`
+}
+
+// Discovery enables dynamic upstream discovery: fold polls url for a JSON
+// document {"upstreams": [...]} (same schema as the static upstreams
+// section) and hot-swaps the discovered set into the federation alongside
+// the statically configured upstreams. A document that fails validation —
+// including id or namespace collisions with static upstreams — is rejected
+// whole and the last good set keeps serving.
+type Discovery struct {
+	// URL of the discovery document. It decides where traffic routes and
+	// where upstream credentials attach, so it must use https (loopback
+	// exempt for development).
+	URL string `json:"url"`
+
+	IntervalMs int `json:"intervalMs,omitempty"` // poll interval; default 30000
+
+	// BearerSecretRef names an environment variable whose value is sent as
+	// a Bearer token when fetching the document.
+	BearerSecretRef string `json:"bearerSecretRef,omitempty"`
 }
 
 // Tracing enables first-party OpenTelemetry spans (one server span per MCP
@@ -490,6 +510,14 @@ func (c *Config) Validate() error {
 					}
 				}
 			}
+		}
+	}
+	if c.Discovery != nil {
+		if err := requireSecureEndpoint("discovery url", c.Discovery.URL); err != nil {
+			return err
+		}
+		if c.Discovery.IntervalMs < 0 {
+			return fmt.Errorf("discovery: intervalMs must be positive")
 		}
 	}
 	if c.Tracing != nil {
