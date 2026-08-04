@@ -41,8 +41,13 @@ exposed host).
 
 ## Supported versions
 
-Only the latest release receives security fixes. The `main` branch is fixed
-first; a patch release follows for anything exploitable.
+While fold is pre-1.0, only the latest release receives security fixes.
+
+From v1.0.0, the latest minor release line receives security fixes as patch
+releases; older minors are expected to upgrade — upgrades within a major
+version are drop-in under the compatibility contract in the README's "API
+stability" section. In both eras the `main` branch is fixed first; a patch
+release follows for anything exploitable.
 
 ## Dependencies
 
