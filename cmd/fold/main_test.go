@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -45,6 +46,20 @@ func runFold(t *testing.T, env map[string]string, args ...string) (stdout, stder
 		t.Fatalf("run: %v", err)
 	}
 	return out.String(), errb.String(), code
+}
+
+func TestSchemaFlag(t *testing.T) {
+	stdout, _, code := runFold(t, nil, "--schema")
+	if code != 0 {
+		t.Fatalf("--schema: exit=%d", code)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("--schema output is not JSON: %v", err)
+	}
+	if doc["title"] != "fold gateway configuration" {
+		t.Errorf("--schema printed the wrong document: title=%v", doc["title"])
+	}
 }
 
 func TestVersionFlag(t *testing.T) {

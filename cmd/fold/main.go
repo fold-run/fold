@@ -51,6 +51,7 @@ func main() {
 		port        = flag.Int("port", 8080, "port to listen on")
 		host        = flag.String("host", "127.0.0.1", "address to bind; set 0.0.0.0 to expose beyond loopback")
 		validate    = flag.Bool("validate", false, "validate the config and exit")
+		showSchema  = flag.Bool("schema", false, "print the config JSON Schema and exit")
 		showVersion = flag.Bool("version", false, "print the version and exit")
 		watch       = flag.Bool("watch", false, "watch the config file and hot-reload on change (SIGHUP always reloads)")
 		logFormat   = flag.String("log-format", "text", "log format: text | json")
@@ -60,6 +61,10 @@ func main() {
 
 	if *showVersion {
 		fmt.Println("fold", gateway.Version())
+		return
+	}
+	if *showSchema {
+		_, _ = os.Stdout.Write(config.Schema())
 		return
 	}
 

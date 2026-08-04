@@ -110,6 +110,8 @@ POST /mcp
 
 One JSON document, validated on startup (`fold --validate`). Loaded from `--config <path>` or `FOLD_CONFIG`.
 
+A JSON Schema for the document ships with fold — [`config/fold.config.schema.json`](config/fold.config.schema.json), printed by `fold --schema`, included in release archives — for editor completion and CI linting. The schema is the structural contract (fields, types, enums, required properties) and is kept in lockstep with the code by test; cross-field rules (namespace requirements, https mandates) remain `fold --validate`'s job.
+
 ### `upstreams` (required)
 
 | Field | Default | Notes |
@@ -326,7 +328,16 @@ The integration suite spins up real MCP servers from the official Go SDK behind 
 
 ## API stability
 
-fold is pre-1.0. The supported surfaces are the `fold` binary (CLI flags, the JSON config document, error codes, operational endpoints) and embedding via `gateway.New` + `Gateway.Handler` + `Gateway.Reload` + `Gateway.Close` with a `config.Config` — see the [package example](https://pkg.go.dev/github.com/fold-run/fold/gateway). The `auth`, `policy`, and `audit` packages are exported because the gateway wires through them, but their Go APIs may change between minor versions until v1.0. `internal/` packages are not API.
+fold is pre-1.0; this section is the compatibility contract v1.0 will adopt, stated now so the remaining pre-1.0 releases can settle into it.
+
+**Frozen at v1.0** (breaking changes only with a new major version):
+
+- **The config document** — field names, meanings, defaults, and validation semantics. The machine-readable contract is [`config/fold.config.schema.json`](config/fold.config.schema.json) (`fold --schema`), kept in lockstep with the code by test.
+- **The `fold` CLI** — flags, exit codes, and `FOLD_CONFIG` semantics.
+- **The wire surface** — gateway-minted JSON-RPC error codes, HTTP endpoints (`/mcp`, `/healthz`, `/metrics`, `/.well-known/*`, `/oauth/token`), metric names and label sets, and the audit event JSON shape.
+- **Go, for embedders** — the `gateway` package (`New`, `Option`, `WithLogger`, `Gateway.Handler/Reload/Close`, `Version`), the `config` package's document structs and `Load`/`Parse`/`Validate`/`Schema`, plus the contract types the gateway hands outward: `auth.Principal` with `WithPrincipal`/`PrincipalFromContext`, and `audit.Event`/`Outcome`. See the [package example](https://pkg.go.dev/github.com/fold-run/fold/gateway).
+
+**Wiring, not API** (may change in any release): the constructors the gateway threads through its packages — `auth.Verifier`/`EMA`/`UpstreamCredentials`, `policy.Engine`, `audit.Logger`/`Sink`. They are exported so the gateway can reach them across package boundaries, not as an extension surface. `internal/` packages are never API.
 
 ## Not implemented
 

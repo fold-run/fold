@@ -1,0 +1,266 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/fold-run/fold/main/config/fold.config.schema.json",
+  "title": "fold gateway configuration",
+  "description": "The fold MCP gateway's single JSON configuration document. Structural contract only — cross-field rules (e.g. namespaces required with multiple upstreams, https requirements) are enforced by `fold --validate`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["upstreams"],
+  "properties": {
+    "upstreams": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/upstream" }
+    },
+    "auth": { "$ref": "#/definitions/auth" },
+    "policy": { "$ref": "#/definitions/policy" },
+    "audit": { "$ref": "#/definitions/audit" },
+    "routing": { "$ref": "#/definitions/routing" },
+    "server": { "$ref": "#/definitions/server" },
+    "tracing": { "$ref": "#/definitions/tracing" },
+    "discovery": { "$ref": "#/definitions/discovery" }
+  },
+  "definitions": {
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "oneOf": [
+        { "required": ["url"], "not": { "required": ["urls"] } },
+        { "required": ["urls"], "not": { "required": ["url"] } }
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "url": { "type": "string", "format": "uri" },
+        "urls": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "format": "uri" }
+        },
+        "namespace": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "protocol": { "enum": ["session", "auto", "2026-07-28"] },
+        "owner": { "$ref": "#/definitions/owner" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "auth": { "$ref": "#/definitions/upstreamAuth" },
+        "timeouts": { "$ref": "#/definitions/timeouts" },
+        "circuitBreaker": { "$ref": "#/definitions/circuitBreaker" },
+        "rateLimit": { "$ref": "#/definitions/rateLimit" },
+        "healthCheck": { "$ref": "#/definitions/healthCheck" },
+        "cacheTtlMs": { "type": "integer" }
+      }
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "org": { "type": "string" },
+        "team": { "type": "string" },
+        "contact": { "type": "string" }
+      }
+    },
+    "upstreamAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy"],
+      "properties": {
+        "strategy": {
+          "enum": ["none", "static", "passthrough", "client-credentials", "token-exchange"]
+        },
+        "secretRef": { "type": "string" },
+        "header": { "type": "string" },
+        "scheme": { "type": "string" },
+        "tokenEndpoint": { "type": "string", "format": "uri" },
+        "clientId": { "type": "string" },
+        "clientAuth": { "$ref": "#/definitions/clientAuth" },
+        "scopes": { "type": "array", "items": { "type": "string" } },
+        "resource": { "type": "string" },
+        "audience": { "type": "string" }
+      }
+    },
+    "clientAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "secretRef"],
+      "properties": {
+        "type": { "enum": ["client_secret_post", "client_secret_basic"] },
+        "secretRef": { "type": "string" }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "connectMs": { "type": "integer", "minimum": 0 },
+        "requestMs": { "type": "integer", "minimum": 0 },
+        "streamIdleMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "circuitBreaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "failureThreshold": { "type": "integer", "minimum": 0 },
+        "halfOpenAfterMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rateLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestsPerMinute"],
+      "properties": {
+        "requestsPerMinute": { "type": "integer", "minimum": 0 },
+        "perPrincipalPerMinute": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "healthCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intervalMs"],
+      "properties": {
+        "intervalMs": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["disabled", "required"] },
+        "resource": { "type": "string", "format": "uri" },
+        "issuers": { "type": "array", "items": { "$ref": "#/definitions/issuer" } },
+        "ema": { "$ref": "#/definitions/ema" }
+      }
+    },
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer"],
+      "properties": {
+        "issuer": { "type": "string", "format": "uri" },
+        "jwksUri": { "type": "string", "format": "uri" },
+        "groupsClaim": { "type": "string" },
+        "mode": { "enum": ["direct", "exchange"] }
+      }
+    },
+    "ema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idpIssuer", "signingKeyRef"],
+      "properties": {
+        "idpIssuer": { "type": "string", "format": "uri" },
+        "idpJwksUri": { "type": "string", "format": "uri" },
+        "signingKeyRef": { "type": "string" },
+        "tokenTtlSec": { "type": "integer", "minimum": 0 },
+        "tokenRateLimitPerMinute": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaultDecision": { "enum": ["deny", "allow"] },
+        "rules": { "type": "array", "items": { "$ref": "#/definitions/policyRule" } }
+      }
+    },
+    "policyRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "allow"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "subjects": { "$ref": "#/definitions/policySubjects" },
+        "allow": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/policyAllow" }
+        }
+      }
+    },
+    "policySubjects": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "groups": { "type": "array", "items": { "type": "string" } },
+        "subs": { "type": "array", "items": { "type": "string" } },
+        "issuers": { "type": "array", "items": { "type": "string" } },
+        "claims": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        }
+      }
+    },
+    "policyAllow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server"],
+      "properties": {
+        "server": { "type": "string" },
+        "methods": { "type": "array", "items": { "type": "string" } },
+        "names": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sinks"],
+      "properties": {
+        "sinks": { "type": "array", "items": { "$ref": "#/definitions/auditSink" } }
+      }
+    },
+    "auditSink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["stdout", "webhook"] },
+        "url": { "type": "string", "format": "uri" },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespaceSeparator": { "type": "string" },
+        "pageSize": { "type": "integer" }
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mcpPath": { "type": "string" },
+        "allowedHosts": { "type": "array", "items": { "type": "string" } },
+        "rateLimit": { "$ref": "#/definitions/rateLimit" },
+        "maxBodyBytes": { "type": "integer", "minimum": 0 },
+        "redisUrl": { "type": "string", "format": "uri" }
+      }
+    },
+    "tracing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["otlpEndpoint"],
+      "properties": {
+        "otlpEndpoint": { "type": "string", "format": "uri" },
+        "serviceName": { "type": "string" },
+        "sampleRatio": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "intervalMs": { "type": "integer", "minimum": 0 },
+        "bearerSecretRef": { "type": "string" }
+      }
+    }
+  }
+}

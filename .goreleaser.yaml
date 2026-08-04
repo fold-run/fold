@@ -23,6 +23,8 @@ archives:
       - README.md
       - LICENSE
       - fold.config.example.json
+      - src: config/fold.config.schema.json
+        dst: fold.config.schema.json
 
 checksum:
   name_template: checksums.txt
