@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/fold-run/fold/actions/workflows/ci.yml/badge.svg)](https://github.com/fold-run/fold/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/fold-run/fold.svg)](https://pkg.go.dev/github.com/fold-run/fold)
-[![Go Report Card](https://goreportcard.com/badge/github.com/fold-run/fold)](https://goreportcard.com/report/github.com/fold-run/fold)
 [![Release](https://img.shields.io/github/v/release/fold-run/fold)](https://github.com/fold-run/fold/releases)
 
 **fold: the enterprise MCP gateway — one governed endpoint between every MCP client and every MCP server.**
@@ -266,6 +265,7 @@ make race          # what CI runs
 make lint          # golangci-lint (config in .golangci.yml)
 make check         # fmt-check + tidy-check + vet + build + race + lint
 make bench         # added-latency gate (p50 < 5 ms through the proxy path)
+make fuzz          # fuzz config parsing and namespace routing (seeds run in `make test`)
 make conformance   # official conformance suite through the gateway (needs node)
 ```
 

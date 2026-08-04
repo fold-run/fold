@@ -1,6 +1,6 @@
 # Single source of truth for dev/CI commands; CI calls these same targets.
 
-.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench conformance check
+.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench conformance check fuzz
 
 build:
 	go build ./...
@@ -31,6 +31,11 @@ vuln:
 
 bench:
 	FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v
+
+# Seed corpora always run as part of `make test`; this explores further.
+fuzz:
+	go test ./config -run '^$$' -fuzz FuzzParse -fuzztime 30s
+	go test ./gateway -run '^$$' -fuzz FuzzResolve -fuzztime 30s
 
 conformance:
 	./scripts/conformance.sh

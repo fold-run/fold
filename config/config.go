@@ -229,6 +229,12 @@ type ServerSection struct {
 
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
+// sepCollisionRE matches namespace-alphabet characters. A separator
+// containing any of them is ambiguous: names are split at the separator's
+// first occurrence, so a namespace could swallow or shed characters (e.g.
+// separator "-" with namespace "my-ns" routes "my-ns-tool" to "my").
+var sepCollisionRE = regexp.MustCompile(`[a-z0-9-]`)
+
 // requireSecureEndpoint rejects a security-critical endpoint reachable over
 // cleartext HTTP (token endpoints carry client secrets; issuer/JWKS URLs are
 // the inbound trust anchor). Loopback hosts are exempted for local
@@ -323,6 +329,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("upstream %q: namespace is required when multiple upstreams are configured", c.Upstreams[i].ID)
 			}
 		}
+	}
+	if c.Routing != nil && c.Routing.NamespaceSeparator != "" && sepCollisionRE.MatchString(c.Routing.NamespaceSeparator) {
+		return fmt.Errorf("routing: namespaceSeparator %q must not contain lowercase letters, digits, or hyphens — those can appear in namespaces, making name splitting ambiguous", c.Routing.NamespaceSeparator)
 	}
 	if c.Server != nil && c.Server.MaxBodyBytes < 0 {
 		return fmt.Errorf("server: maxBodyBytes must be positive")
