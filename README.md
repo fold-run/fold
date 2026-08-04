@@ -322,6 +322,21 @@ Known gaps, documented deliberately:
 - **`tasks/list` pagination** — federated task lists are merged and returned as a single page (the typed lists — tools, prompts, resources, templates — paginate; see `routing.pageSize`).
 - **Content inspection (DLP / PII filtering / prompt-injection detection)** — deliberately out of scope. Inspecting request and response bodies means buffering and rewriting traffic, which conflicts with fold's invisibility rule (behavior through the gateway matches hitting the upstream directly) and its latency gate — and inline detection is a product of its own, not a gateway feature. fold's security model is structural instead: deny-by-default tool allowlists, per-principal invisibility, claim-gated (ABAC) rules, credential brokering so agents never hold upstream keys, and a full audit trail to feed the SIEM that does the detecting. If inline inspection becomes table stakes, the fold-shaped answer is an opt-in content-inspection hook (an external policy endpoint on the ingress/egress path), not built-in scanning.
 
+## Changelog
+
+### v0.5.0 — 2026-08-04
+
+Running a federation in production: balancing, live reconfiguration, and deeper observability.
+
+- **Load-balanced upstreams** — an upstream can list replica `urls`; new sessions balance round-robin with connect failover, and optional active health probes (`healthCheck.intervalMs`) eject dead replicas before client traffic hits them.
+- **Hot config reload** — `SIGHUP`, `--watch`, or `Gateway.Reload` apply a new config without dropping the listener; unchanged upstreams keep their live sessions, and clients are nudged to refetch via `list_changed`.
+- **First-party OpenTelemetry tracing** — `tracing.otlpEndpoint` adds a server span per request and a client span per upstream call, carrying the same fields as the audit event; W3C trace propagation remains always-on.
+- **ABAC policy** — rules can gate on verified token claims (`subjects.claims`), composing with groups/subjects or standing alone.
+- **Composite federated pagination** — merged lists serve in pages with principal-bound snapshot cursors (`routing.pageSize`).
+- **Deployment assets** — Helm chart, compose file, and a deployment guide.
+
+Full history: [releases](https://github.com/fold-run/fold/releases).
+
 ## License
 
 Apache-2.0
