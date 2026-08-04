@@ -6,7 +6,7 @@ an optional Redis. That makes every deployment shape the same three
 decisions — how the config document reaches the process, how the `secretRef`
 environment variables reach it, and what sits in front of it for TLS.
 
-- **Docker / compose** — simplest; the image is ~18 MB distroless.
+- **Docker / compose** — simplest; the image is ~22 MB distroless.
 - **Kubernetes** — the [Helm chart](../deploy/helm/fold) encodes the
   probe/allowlist details below.
 - **VM / bare metal** — prebuilt binaries + systemd.
@@ -33,7 +33,7 @@ docker run --rm -p 8080:8080 \
 - The image runs as nonroot on distroless static; `--read-only` works.
 
 Images are multi-arch (linux/amd64, linux/arm64), tagged `latest` and per
-release (`v0.4.0`).
+release (`v0.7.0`).
 
 ## docker compose
 
@@ -82,9 +82,12 @@ How the pieces map:
 - **Config** — either inline under `config:` (the chart renders it into a
   ConfigMap, and a checksum annotation rolls the Deployment when it changes)
   or `existingConfigMap:` naming a ConfigMap you manage with the document
-  under the key `fold.config.json` (then config changes need a reloader
-  controller or `kubectl rollout restart`, and `probes.hostHeader` becomes
-  required — see below).
+  under the key `fold.config.json` (then `probes.hostHeader` becomes
+  required — see below). With an externally managed ConfigMap, add
+  `server.extraArgs: ["--watch"]` so fold hot-reloads the mounted document
+  when Kubernetes syncs it (the mtime poll handles the atomic-rename update
+  ConfigMap mounts perform) — no reloader controller or rollout needed for
+  the reloadable sections (see [Hot reload](#hot-reload)).
 - **Secrets** — the config document never contains secret material; its
   `secretRef` fields name environment variables. Put the values in a
   Kubernetes Secret and inject with `envFrom`. The validate init container
@@ -134,6 +137,28 @@ Shutdown: on SIGTERM the gateway drains for up to 10 s, then exits;
 long-lived SSE streams are cut at that bound. The chart sets
 `terminationGracePeriodSeconds: 30` to stay clear of it.
 
+## Hot reload
+
+A running gateway applies config changes without a restart, three ways:
+`kill -HUP <pid>` re-reads the config source; `--watch` polls the config
+file's mtime (2 s) and reloads on change; embedders call `gw.Reload(cfg)`.
+The upstream set and the policy engine swap atomically — unchanged upstreams
+keep their live sessions, removed ones drain, clients get `list_changed` —
+while the `auth`, `server`, `routing`, `audit`, `tracing`, and `discovery`
+sections are fixed at startup: a reload that touches them fails loudly and
+the running configuration keeps serving, so a bad push never takes the
+gateway down. A rejected or invalid document is logged and ignored the same
+way.
+
+Restart-only changes (auth issuers, listen address, tracing endpoint) still
+need a rollout; in Kubernetes the inline-config checksum annotation does
+that automatically, and under systemd `ExecReload` covers the SIGHUP path
+(see the unit below).
+
+For upstreams that come and go without any operator involvement, see the
+`discovery` section in the README — fold can poll a registry document and
+swap discovered upstreams in and out on its own.
+
 ## TLS and ingress
 
 fold does not terminate TLS — put an ingress controller, load balancer, or
@@ -182,6 +207,8 @@ ExecStart=/usr/local/bin/fold --config /etc/fold/fold.config.json --host 0.0.0.0
 # secretRef env vars (and optionally REDIS_URL), e.g. ML_SEARCH_API_KEY=...
 EnvironmentFile=/etc/fold/env
 ExecStartPre=/usr/local/bin/fold --config /etc/fold/fold.config.json --validate
+# `systemctl reload fold` hot-reloads the upstream set and policy.
+ExecReload=/bin/kill -HUP $MAINPID
 DynamicUser=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -229,4 +256,5 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 - [ ] Kubernetes: PodDisruptionBudget on, resource limits sized, probe Host
       header matches the allowlist
 - [ ] Alerts on `fold_upstream_breaker_state`, `fold_http_rejections_total`,
-      and `/healthz` degradation
+      and `/healthz` degradation (plus `fold_discovery_syncs_total`
+      `rejected`/`error` outcomes when discovery is enabled)

@@ -285,6 +285,14 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - `GET /metrics` — Prometheus metrics (see Observability).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata (when auth is enabled).
 
+## Guides
+
+- [docs/deploy.md](docs/deploy.md) — Docker, compose, Helm, systemd; TLS/SSE fronting, `allowedHosts` and probes, hot reload in each shape, Redis for fleets, the production checklist.
+- [docs/operations.md](docs/operations.md) — day-2 reference: every endpoint, metric, audit field, and error code, and how reloads, discovery, and probes surface in logs and metrics.
+- [docs/security-model.md](docs/security-model.md) — the architecture: trust anchors, the inbound chain, the enforcement pair, credential containment, tenant isolation.
+- [docs/embedding.md](docs/embedding.md) — the Go embedding surface, with CI-compiled examples.
+- [docs/defaults.md](docs/defaults.md) — the v1.0 defaults review, every default a decision on record.
+
 ## Deploying
 
 fold is a single static binary with no local state — see [docs/deploy.md](docs/deploy.md) for the full guide (TLS, `allowedHosts`, probes, Redis, secrets, audit shipping, production checklist).
@@ -304,6 +312,7 @@ fold is a single static binary with no local state — see [docs/deploy.md](docs
 | `auth` | OAuth resource server (JWKS verifier) + upstream credential strategies |
 | `policy` | Allowlist policy engine + per-principal list filtering |
 | `audit` | Audit events + sinks (stdout, webhook) |
+| `docs` | Deploy, operations, security-model, embedding, and defaults guides |
 | `internal/ratelimit` | Sliding-window limiter |
 | `internal/breaker` | Circuit breaker |
 | `internal/cache` | TTL cache with single-flight refresh |
