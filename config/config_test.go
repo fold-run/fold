@@ -61,6 +61,8 @@ func TestValidationErrors(t *testing.T) {
 		{"discovery without url", `{"upstreams":[{"id":"a","url":"http://x.test"}],"discovery":{}}`, "discovery url"},
 		{"discovery cleartext url", `{"upstreams":[{"id":"a","url":"http://x.test"}],"discovery":{"url":"http://registry.internal/doc"}}`, "https"},
 		{"discovery negative interval", `{"upstreams":[{"id":"a","url":"http://x.test"}],"discovery":{"url":"https://r.test/doc","intervalMs":-1}}`, "intervalMs"},
+		{"discovery bad strategy", `{"upstreams":[{"id":"a","url":"http://x.test"}],"discovery":{"url":"https://r.test/doc","allowedAuthStrategies":["nope"]}}`, "unknown strategy"},
+		{"discovery empty secret ref", `{"upstreams":[{"id":"a","url":"http://x.test"}],"discovery":{"url":"https://r.test/doc","allowedSecretRefs":[""]}}`, "must not be empty"},
 		{"tracing bad ratio", `{"upstreams":[{"id":"a","url":"http://x.test"}],"tracing":{"otlpEndpoint":"http://c.test:4318","sampleRatio":1.5}}`, "sampleRatio"},
 		{"auth without resource", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","issuers":[{"issuer":"https://idp.test"}]}}`, "resource"},
 		{"auth without issuers", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","resource":"https://gw.test"}}`, "issuer"},

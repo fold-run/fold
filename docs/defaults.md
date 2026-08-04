@@ -36,6 +36,7 @@ implementation order. Verdict for all: **keep**.
 | `rateLimit` (global, per-upstream) | none | The gateway must never throttle by surprise; limits are an operator's policy, opted into. |
 | `healthCheck` | absent (passive) | Active probing costs a connect per endpoint per interval; passive ejection + cooldown is free and correct. Opt in. |
 | `discovery.intervalMs` | 30000 | Registry churn is minutes-scale; 30 s balances freshness against load on the source. |
+| `discovery.allowedAuthStrategies` / `allowedSecretRefs` | absent (unrestricted) | Compatibility with pre-hardening discovery deployments; restricting by default post-v1.0 would break them. The producer (`fold-discovery`) is the inverse — default-deny — because it shipped with the hardening. Set the gateway allowlists whenever the discovery source is not operated by the gateway's operators. |
 | `server.redisUrl` | unset (in-process state) | Single instances need no infrastructure; fleets opt in. Redis outages fail open, bounded 500 ms per operation. |
 
 ## Observability

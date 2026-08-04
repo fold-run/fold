@@ -65,6 +65,38 @@ environment variables — and `/healthz` withholds URLs, owners, and error
 text (which can name env vars or internal hosts) unless auth is disabled,
 i.e. on deployments already private by posture.
 
+## Discovery moves an authorization boundary — treat it that way
+
+With dynamic discovery, *who can register an upstream* becomes a security
+decision made outside fold: on Kubernetes with `fold-discovery`, it is
+whoever can create or label a Service in a watched namespace. Three
+consequences, each with a control:
+
+- **Credential references are the sharp edge.** A registered upstream
+  chooses both its `secretRef` names and its destination URL — ungated,
+  that is an exfiltration path for any gateway-held secret, and
+  `passthrough` would forward caller tokens to a URL of the registrant's
+  choosing. Two independent gates close it: the producer refuses
+  credentialed strategies and secret references by default
+  (`--allow-auth-strategies`, `--allow-secret-refs`), and the gateway
+  enforces its own `discovery.allowedAuthStrategies` /
+  `allowedSecretRefs` allowlists as a backstop, rejecting a violating
+  document whole. Set the gateway-side allowlists whenever the discovery
+  source is not operated by the gateway's operators.
+- **Identity claims need bounds.** A registration colliding with a static
+  upstream id makes the gateway reject every future document (fail-safe,
+  but a freeze an attacker can cause — alert on
+  `fold_discovery_syncs_total{outcome="rejected"}`); producer-side
+  `--reserved-ids` prevents publishing the collision at all. Among
+  discovered entries, `--namespace-prefixed-ids` requires both the upstream
+  id **and** the MCP namespace — the identity clients actually route on —
+  to carry the registering Kubernetes namespace's prefix, so no team can
+  squat another's routing identity, whatever the API's list order.
+- **Policy is the exposure gate, and wildcards defeat it.** A discovered
+  upstream is plumbing until a policy rule grants its tools — unless rules
+  use `"server": "*"`, which makes every future registration instantly
+  callable. With discovery enabled, name servers in allow rules.
+
 ## Tenant isolation under load
 
 The global rate limit protects the gateway; `perPrincipalPerMinute` gives

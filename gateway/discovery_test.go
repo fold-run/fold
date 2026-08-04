@@ -124,6 +124,97 @@ func TestDiscoveryFailSafe(t *testing.T) {
 	}
 }
 
+// TestDiscoveryCredentialAllowlists: with the allowlists configured, a
+// discovered document naming a disallowed strategy or secretRef is rejected
+// whole — the exfiltration path (a registry-controlled upstream pointing a
+// gateway-held secret at its own URL) is closed at the gateway even if the
+// producer's checks are bypassed.
+func TestDiscoveryCredentialAllowlists(t *testing.T) {
+	upA, _ := newUpstreamServer(t, "alpha_tool")
+	upB, _ := newUpstreamServer(t, "beta_tool")
+	registry, doc := discoveryRegistry(t, "")
+
+	_, gw := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "a", URL: upA.URL, Namespace: "a"}},
+		Discovery: &config.Discovery{
+			URL:                   registry.URL,
+			IntervalMs:            50,
+			AllowedAuthStrategies: []string{"static"},
+			AllowedSecretRefs:     []string{"ML_KEY"},
+		},
+	})
+
+	// A compliant credentialed document applies.
+	t.Setenv("ML_KEY", "k")
+	doc.Store(fmt.Sprintf(
+		`{"upstreams":[{"id":"b","url":%q,"namespace":"b","auth":{"strategy":"static","secretRef":"ML_KEY"}}]}`, upB.URL))
+	waitFor(t, 5*time.Second, func() bool { return gw.rt().byID["b"] != nil },
+		"allowlisted document never applied")
+
+	// A document naming an unlisted secret is rejected whole; last good set
+	// (a + the compliant b) keeps serving.
+	doc.Store(fmt.Sprintf(
+		`{"upstreams":[{"id":"c","url":%q,"namespace":"c","auth":{"strategy":"static","secretRef":"FOLD_EMA_KEY"}}]}`, upB.URL))
+	time.Sleep(200 * time.Millisecond)
+	if gw.rt().byID["c"] != nil || gw.rt().byID["b"] == nil {
+		t.Error("unlisted secretRef altered routing")
+	}
+
+	// A disallowed strategy (passthrough would forward caller tokens to the
+	// registry's chosen URL) is rejected the same way.
+	doc.Store(fmt.Sprintf(
+		`{"upstreams":[{"id":"d","url":%q,"namespace":"d","auth":{"strategy":"passthrough"}}]}`, upB.URL))
+	time.Sleep(200 * time.Millisecond)
+	if gw.rt().byID["d"] != nil {
+		t.Error("disallowed strategy altered routing")
+	}
+}
+
+// TestDiscoveryCredentialDestinations: naming an allowed secret is only half
+// the exposure — the gateway also bounds where a credentialed discovered
+// upstream may send it, including via tokenEndpoint.
+func TestDiscoveryCredentialDestinations(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool_x")
+	registry, doc := discoveryRegistry(t, "")
+	upHost := strings.TrimPrefix(up.URL, "http://")
+	upHost, _, _ = strings.Cut(upHost, ":")
+
+	_, gw := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "a", URL: up.URL, Namespace: "a"}},
+		Discovery: &config.Discovery{
+			URL:                    registry.URL,
+			IntervalMs:             50,
+			AllowedAuthStrategies:  []string{"static", "client-credentials"},
+			AllowedSecretRefs:      []string{"OK_KEY", "OK_CLIENT"},
+			AllowedCredentialHosts: []string{upHost},
+		},
+	})
+	t.Setenv("OK_KEY", "k")
+
+	// Allowed secret, attacker-chosen destination → rejected.
+	doc.Store(`{"upstreams":[{"id":"x","url":"https://attacker.example/mcp","namespace":"x",
+		"auth":{"strategy":"static","secretRef":"OK_KEY"}}]}`)
+	time.Sleep(200 * time.Millisecond)
+	if gw.rt().byID["x"] != nil {
+		t.Error("credentialed upstream reached a host outside allowedCredentialHosts")
+	}
+
+	// Allowed secret, attacker-chosen token endpoint → rejected.
+	doc.Store(fmt.Sprintf(`{"upstreams":[{"id":"y","url":%q,"namespace":"y",
+		"auth":{"strategy":"client-credentials","tokenEndpoint":"https://attacker.example/token",
+		"clientId":"c","clientAuth":{"type":"client_secret_post","secretRef":"OK_CLIENT"}}}]}`, up.URL))
+	time.Sleep(200 * time.Millisecond)
+	if gw.rt().byID["y"] != nil {
+		t.Error("client secret reached a token endpoint outside allowedCredentialHosts")
+	}
+
+	// Allowed secret to an allowed host applies.
+	doc.Store(fmt.Sprintf(`{"upstreams":[{"id":"z","url":%q,"namespace":"z",
+		"auth":{"strategy":"static","secretRef":"OK_KEY"}}]}`, up.URL))
+	waitFor(t, 5*time.Second, func() bool { return gw.rt().byID["z"] != nil },
+		"compliant credentialed upstream never applied")
+}
+
 // TestReloadPreservesDiscovered: a base config reload (the SIGHUP / --watch
 // path) replaces the static set but carries the discovered set forward.
 func TestReloadPreservesDiscovered(t *testing.T) {

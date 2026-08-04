@@ -6,7 +6,8 @@ version: 2
 project_name: fold
 
 builds:
-  - main: ./cmd/fold
+  - id: fold
+    main: ./cmd/fold
     env:
       - CGO_ENABLED=0
     goos: [linux, darwin]
@@ -16,15 +17,39 @@ builds:
       - -s -w -X github.com/fold-run/fold/gateway.version={{ .Tag }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  # The Kubernetes discovery-document producer. Linux-only: it runs in a
+  # cluster, listing Services with the pod's service account.
+  - id: fold-discovery
+    main: ./cmd/fold-discovery
+    binary: fold-discovery
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
   # Keep the pre-goreleaser naming: fold_v1.2.3_linux_amd64.tar.gz
-  - name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+  - id: fold
+    ids: [fold]
+    name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE
       - fold.config.example.json
       - src: config/fold.config.schema.json
         dst: fold.config.schema.json
+
+  - id: fold-discovery
+    ids: [fold-discovery]
+    name_template: "fold-discovery_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - src: deploy/fold-discovery.yaml
+        dst: fold-discovery.yaml
 
 checksum:
   name_template: checksums.txt

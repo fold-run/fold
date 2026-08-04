@@ -259,7 +259,20 @@
       "properties": {
         "url": { "type": "string", "format": "uri" },
         "intervalMs": { "type": "integer", "minimum": 0 },
-        "bearerSecretRef": { "type": "string" }
+        "bearerSecretRef": { "type": "string" },
+        "allowedAuthStrategies": {
+          "type": "array",
+          "items": { "enum": ["none", "static", "passthrough", "client-credentials", "token-exchange"] }
+        },
+        "allowedSecretRefs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allowedCredentialHosts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "minHealthCheckIntervalMs": { "type": "integer", "minimum": 0 }
       }
     }
   }

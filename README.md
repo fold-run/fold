@@ -242,11 +242,17 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 {
   "url": "https://registry.internal/fold-upstreams.json",  // serves {"upstreams":[...]} — same schema as the static section
   "intervalMs": 30000,                                     // poll interval (default 30s); syncs once immediately at startup
-  "bearerSecretRef": "FOLD_REGISTRY_TOKEN"                 // optional: env var sent as a Bearer token on the poll
+  "bearerSecretRef": "FOLD_REGISTRY_TOKEN",                // optional: env var sent as a Bearer token on the poll
+  "allowedAuthStrategies": ["static"],                     // optional: credential strategies discovered upstreams may carry (absent → unrestricted)
+  "allowedSecretRefs": ["ML_SEARCH_API_KEY"],              // optional: env vars discovered upstreams may name in secretRef (absent → unrestricted)
+  "allowedCredentialHosts": ["*.svc.cluster.local"],       // optional: where a credentialed discovered upstream may send secrets (url + tokenEndpoint hosts)
+  "minHealthCheckIntervalMs": 1000                         // floor on discovered healthCheck.intervalMs (default 1000)
 }
 ```
 
-The URL decides where traffic routes and where upstream credentials attach, so it must use `https` (loopback exempt). Back it with whatever produces the document — a Kubernetes operator watching labels, a service registry, a script writing to object storage. Each gateway instance polls independently; a consistent source keeps a fleet consistent.
+These are the gateway-side backstop for a partially trusted registry. Whoever controls the discovery source controls an upstream's `secretRef` names, its `tokenEndpoint`, **and** its destination URL — so naming a secret is only half the exposure. `allowedSecretRefs` bounds which secrets a discovered upstream may reference; `allowedCredentialHosts` bounds where a credentialed upstream may send them (both its endpoint hosts and its token endpoint, `*.` wildcards supported), which is what stops a registry from pointing a gateway-held key — or, via `passthrough`, a caller's token — at an endpoint it controls. Any violation rejects the document whole and the last good set keeps serving. Set all three whenever the people who can register upstreams are not the people who operate the gateway (see [docs/security-model.md](docs/security-model.md)).
+
+The URL decides where traffic routes and where upstream credentials attach, so it must use `https` (loopback exempt). Back it with whatever produces the document — on Kubernetes, [`fold-discovery`](docs/discovery-controller.md) does it out of the box: label a Service `fold.run/upstream: "true"` and it joins the federation. Any other producer works too — a service registry, a script writing to object storage. Each gateway instance polls independently; a consistent source keeps a fleet consistent.
 
 ### `tracing`
 
@@ -290,6 +296,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/deploy.md](docs/deploy.md) — Docker, compose, Helm, systemd; TLS/SSE fronting, `allowedHosts` and probes, hot reload in each shape, Redis for fleets, the production checklist.
 - [docs/operations.md](docs/operations.md) — day-2 reference: every endpoint, metric, audit field, and error code, and how reloads, discovery, and probes surface in logs and metrics.
 - [docs/security-model.md](docs/security-model.md) — the architecture: trust anchors, the inbound chain, the enforcement pair, credential containment, tenant isolation.
+- [docs/discovery-controller.md](docs/discovery-controller.md) — `fold-discovery`, the Kubernetes producer: label a Service and it joins the federation.
 - [docs/embedding.md](docs/embedding.md) — the Go embedding surface, with CI-compiled examples.
 - [docs/defaults.md](docs/defaults.md) — the v1.0 defaults review, every default a decision on record.
 
@@ -307,6 +314,7 @@ fold is a single static binary with no local state — see [docs/deploy.md](docs
 | Path | Purpose |
 |---|---|
 | `cmd/fold` | The `fold` CLI |
+| `cmd/fold-discovery` | The Kubernetes discovery-document producer (`internal/kubediscovery`) |
 | `gateway` | Gateway engine: pipeline, federation routing, proxying, health |
 | `config` | Config schema + validation |
 | `auth` | OAuth resource server (JWKS verifier) + upstream credential strategies |

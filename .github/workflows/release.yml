@@ -67,3 +67,15 @@ jobs:
           tags: |
             ghcr.io/fold-run/fold:${{ github.ref_name }}
             ghcr.io/fold-run/fold:latest
+
+      - name: build and push discovery image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.discovery
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ github.ref_name }}
+          tags: |
+            ghcr.io/fold-run/fold-discovery:${{ github.ref_name }}
+            ghcr.io/fold-run/fold-discovery:latest

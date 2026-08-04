@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -298,11 +299,96 @@ func (g *Gateway) Reload(cfg *config.Config) error {
 }
 
 // setDiscovered swaps the discovery-sourced upstream set, keeping the
-// operator-supplied base configuration.
+// operator-supplied base configuration. The document is checked against the
+// discovery credential allowlists first — the discovery source chooses both
+// an upstream's secretRef names and its destination URL, so without a
+// gateway-side gate a compromised source could point gateway-held secrets
+// (or callers' tokens, via passthrough) at any endpoint.
 func (g *Gateway) setDiscovered(ups []config.Upstream) error {
+	if err := checkDiscoveredCredentials(g.cfg.Discovery, ups); err != nil {
+		return err
+	}
+	clampDiscoveredUpstreams(g.cfg.Discovery, ups, g.log)
 	g.reloadMu.Lock()
 	defer g.reloadMu.Unlock()
 	return g.applyLocked(g.baseCfg, ups)
+}
+
+// checkDiscoveredCredentials enforces discovery.allowedAuthStrategies and
+// allowedSecretRefs on a discovered document. Nil allowlists (absent from
+// the config) leave that dimension unrestricted; a violation rejects the
+// whole document, matching the discovery path's fail-safe posture.
+func checkDiscoveredCredentials(d *config.Discovery, ups []config.Upstream) error {
+	if d == nil {
+		return nil
+	}
+	for i := range ups {
+		u := &ups[i]
+		if u.Auth == nil {
+			continue
+		}
+		strategy := u.Auth.Strategy
+		if strategy == "" {
+			strategy = "none"
+		}
+		if d.AllowedAuthStrategies != nil && strategy != "none" && !slices.Contains(d.AllowedAuthStrategies, strategy) {
+			return fmt.Errorf("discovery: upstream %q: auth strategy %q is not in allowedAuthStrategies", u.ID, strategy)
+		}
+		if d.AllowedSecretRefs != nil {
+			refs := []string{u.Auth.SecretRef}
+			if u.Auth.ClientAuth != nil {
+				refs = append(refs, u.Auth.ClientAuth.SecretRef)
+			}
+			for _, ref := range refs {
+				if ref != "" && !slices.Contains(d.AllowedSecretRefs, ref) {
+					return fmt.Errorf("discovery: upstream %q: secretRef %q is not in allowedSecretRefs", u.ID, ref)
+				}
+			}
+		}
+		// Naming a secret is half the exposure; the destination is the
+		// other half. A credentialed upstream sends the gateway's secret
+		// (or, under passthrough/token-exchange, the caller's token) to its
+		// endpoints and its token endpoint — bound both.
+		if d.AllowedCredentialHosts != nil && strategy != "none" {
+			targets := u.Endpoints()
+			if u.Auth.TokenEndpoint != "" {
+				targets = append(targets, u.Auth.TokenEndpoint)
+			}
+			for _, raw := range targets {
+				parsed, err := url.Parse(raw)
+				if err != nil {
+					return fmt.Errorf("discovery: upstream %q: unparseable endpoint %q", u.ID, raw)
+				}
+				if !config.HostAllowed(d.AllowedCredentialHosts, parsed.Host) {
+					return fmt.Errorf("discovery: upstream %q: credentialed endpoint host %q is not in allowedCredentialHosts",
+						u.ID, parsed.Host)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// clampDiscoveredUpstreams bounds per-upstream knobs a discovery source
+// could otherwise weaponize. A 1 ms health-probe interval would make the
+// gateway a flood source against a host the source chose; the floor is
+// applied rather than rejected so a merely aggressive registration still
+// federates.
+func clampDiscoveredUpstreams(d *config.Discovery, ups []config.Upstream, log *slog.Logger) {
+	if d == nil {
+		return
+	}
+	floor := d.MinHealthCheckIntervalResolved()
+	for i := range ups {
+		hc := ups[i].HealthCheck
+		if hc != nil && hc.IntervalMs < floor {
+			log.Warn("discovery: clamping health-probe interval",
+				"upstream", ups[i].ID, "requested", hc.IntervalMs, "floor", floor)
+			clamped := *hc
+			clamped.IntervalMs = floor
+			ups[i].HealthCheck = &clamped
+		}
+	}
 }
 
 // applyLocked merges base + discovered into one document, validates it as a

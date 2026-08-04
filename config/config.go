@@ -6,6 +6,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -41,6 +42,67 @@ type Discovery struct {
 	// BearerSecretRef names an environment variable whose value is sent as
 	// a Bearer token when fetching the document.
 	BearerSecretRef string `json:"bearerSecretRef,omitempty"`
+
+	// AllowedAuthStrategies restricts the credential strategies discovered
+	// upstreams may carry ("none" needs no listing). Whoever controls the
+	// discovery source controls both an upstream's secretRef names and its
+	// destination URL — an unrestricted source can point gateway-held
+	// secrets (or, via passthrough, caller tokens) at any endpoint. Absent
+	// → unrestricted; present → a document whose upstream carries any other
+	// strategy is rejected whole, keeping the last good set.
+	AllowedAuthStrategies []string `json:"allowedAuthStrategies,omitempty"`
+
+	// AllowedSecretRefs restricts which environment variables discovered
+	// upstreams may name in secretRef fields (upstream auth and client
+	// auth). Absent → unrestricted; present → any other reference rejects
+	// the document whole.
+	AllowedSecretRefs []string `json:"allowedSecretRefs,omitempty"`
+
+	// AllowedCredentialHosts restricts where a *credentialed* discovered
+	// upstream may send secrets: both its endpoint hosts and its
+	// tokenEndpoint host must match. Naming a secret is only half the
+	// exposure — the destination is the other half, and a discovery source
+	// chooses both. Entries are hostnames, optionally with a leading "*."
+	// wildcard ("*.svc.cluster.local"); ports are ignored. Absent →
+	// unrestricted; present → a violating document is rejected whole.
+	// Upstreams with no credentials (strategy none/absent) are unaffected.
+	AllowedCredentialHosts []string `json:"allowedCredentialHosts,omitempty"`
+
+	// MinHealthCheckIntervalMs floors healthCheck.intervalMs on discovered
+	// upstreams (default 1000). A discovery source could otherwise turn the
+	// gateway into a probe flood against a host of its choosing.
+	MinHealthCheckIntervalMs int `json:"minHealthCheckIntervalMs,omitempty"`
+}
+
+// MinHealthCheckIntervalResolved returns the floor applied to discovered
+// upstreams' health-probe interval (default 1000 ms).
+func (d *Discovery) MinHealthCheckIntervalResolved() int {
+	if d.MinHealthCheckIntervalMs > 0 {
+		return d.MinHealthCheckIntervalMs
+	}
+	return 1000
+}
+
+// HostAllowed reports whether host (possibly host:port) matches one of the
+// patterns: an exact hostname, or "*.suffix" matching any subdomain.
+func HostAllowed(patterns []string, host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	for _, p := range patterns {
+		p = strings.ToLower(p)
+		if suffix, ok := strings.CutPrefix(p, "*."); ok {
+			if strings.HasSuffix(host, "."+suffix) || host == suffix {
+				return true
+			}
+			continue
+		}
+		if host == p {
+			return true
+		}
+	}
+	return false
 }
 
 // Tracing enables first-party OpenTelemetry spans (one server span per MCP
@@ -518,6 +580,18 @@ func (c *Config) Validate() error {
 		}
 		if c.Discovery.IntervalMs < 0 {
 			return fmt.Errorf("discovery: intervalMs must be positive")
+		}
+		for _, s := range c.Discovery.AllowedAuthStrategies {
+			switch s {
+			case "none", "static", "passthrough", "client-credentials", "token-exchange":
+			default:
+				return fmt.Errorf("discovery: allowedAuthStrategies: unknown strategy %q", s)
+			}
+		}
+		for _, ref := range c.Discovery.AllowedSecretRefs {
+			if ref == "" {
+				return fmt.Errorf("discovery: allowedSecretRefs entries must not be empty")
+			}
 		}
 	}
 	if c.Tracing != nil {

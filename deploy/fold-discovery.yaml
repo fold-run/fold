@@ -1,0 +1,116 @@
+# fold-discovery: the Kubernetes discovery-document producer.
+# Lists Services labeled fold.run/upstream=true and serves the discovery
+# document a fold gateway polls via its `discovery.url`. Adjust namespace,
+# and scope the RBAC to a Role/RoleBinding + --namespace for a single
+# namespace instead of cluster-wide.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fold-discovery
+  namespace: fold
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fold-discovery
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fold-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fold-discovery
+subjects:
+  - kind: ServiceAccount
+    name: fold-discovery
+    namespace: fold
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fold-discovery
+  namespace: fold
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fold-discovery
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fold-discovery
+    spec:
+      serviceAccountName: fold-discovery
+      containers:
+        - name: fold-discovery
+          image: ghcr.io/fold-run/fold-discovery:latest # pin a version in production
+          args:
+            - --log-format
+            - json
+            # Registration bounds — see docs/discovery-controller.md.
+            # Namespace prefixing is on by default (anti-squatting); add
+            # --allow-unprefixed-ids only in single-tenant clusters.
+            - --bearer-env
+            - FOLD_DISCOVERY_TOKEN
+            # Uncomment to let Services carry credentials, always paired
+            # with a destination allowlist:
+            # - --allow-auth-strategies
+            # - static
+            # - --allow-secret-refs
+            # - ML_SEARCH_API_KEY
+            # - --allow-credential-hosts
+            # - "*.svc.cluster.local"
+            # List the gateway's static upstream ids so a Service cannot
+            # publish a collision that freezes discovery:
+            # - --reserved-ids
+            # - github-tools,ml-search
+          env:
+            - name: FOLD_DISCOVERY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fold-discovery-token
+                  key: token
+          ports:
+            - name: http
+              containerPort: 8090
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fold-discovery
+  namespace: fold
+spec:
+  selector:
+    app.kubernetes.io/name: fold-discovery
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+# Point the gateway at it:
+#   "discovery": { "url": "http://fold-discovery.fold.svc.cluster.local:8090/upstreams.json",
+#                  "bearerSecretRef": "FOLD_DISCOVERY_TOKEN",
+#                  "allowedCredentialHosts": ["*.svc.cluster.local"] }
+# (fold requires https for discovery.url except loopback; front this Service
+# with TLS — e.g. a service mesh or an in-cluster cert — or run the producer
+# as a sidecar in the gateway pod and use http://127.0.0.1:8090.)
