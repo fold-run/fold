@@ -110,10 +110,10 @@ func (r *rawResult) UnmarshalJSON(b []byte) error {
 // registerTaskMethods wires the task methods as receiving custom methods on
 // the gateway server so they dispatch through the middleware chain to the
 // federation router.
-func (g *Gateway) registerTaskMethods() {
+func (g *Gateway) registerTaskMethods() error {
 	for _, method := range taskMethods {
 		method := method
-		mcp.AddReceivingCustomMethod(g.server, method,
+		if err := mcp.AddReceivingCustomMethod(g.server, method,
 			func(ctx context.Context, _ *mcp.ServerSession, p *rawParams) (*rawResult, error) {
 				var raw json.RawMessage
 				if p != nil {
@@ -124,8 +124,11 @@ func (g *Gateway) registerTaskMethods() {
 					return nil, err
 				}
 				return &rawResult{raw: out}, nil
-			})
+			}); err != nil {
+			return fmt.Errorf("register task method %s: %w", method, err)
+		}
 	}
+	return nil
 }
 
 // extractTaskID reads {"taskId": "..."} from a task params object.

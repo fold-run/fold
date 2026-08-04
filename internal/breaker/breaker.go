@@ -11,6 +11,8 @@ import (
 // State is the breaker's current disposition.
 type State string
 
+// Breaker states: Closed passes traffic, Open rejects it, HalfOpen
+// admits probe requests after the cool-down.
 const (
 	Closed   State = "closed"
 	Open     State = "open"

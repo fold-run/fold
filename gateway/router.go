@@ -175,7 +175,7 @@ func partialFailureMeta(failed []string, total int) (mcp.Meta, error) {
 	return mcp.Meta{metaPartialFailure: map[string]any{"failedUpstreams": failed}}, nil
 }
 
-func (g *Gateway) listTools(ctx context.Context, evt *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listTools(ctx context.Context, _ *audit.Event) (mcp.Result, error) {
 	principal := auth.PrincipalFromContext(ctx)
 	lists, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Tool, error) {
 		return u.listTools(ctx)
@@ -219,7 +219,7 @@ func (g *Gateway) callTool(ctx context.Context, req mcp.Request, evt *audit.Even
 		args = params.Arguments
 	}
 	key, opts := g.bridgeFor(req)
-	defer g.pushCallCtx(key, ctx)()
+	defer g.pushCallCtx(ctx, key)()
 	before := g.bridgeActivity(key)
 	out, err := u.callTool(ctx, key, opts, &mcp.CallToolParams{
 		Name:      bare,
@@ -237,7 +237,7 @@ func (g *Gateway) callTool(ctx context.Context, req mcp.Request, evt *audit.Even
 	return out, nil
 }
 
-func (g *Gateway) listPrompts(ctx context.Context, evt *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listPrompts(ctx context.Context, _ *audit.Event) (mcp.Result, error) {
 	principal := auth.PrincipalFromContext(ctx)
 	lists, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Prompt, error) {
 		return u.listPrompts(ctx)
@@ -275,7 +275,7 @@ func (g *Gateway) getPrompt(ctx context.Context, req mcp.Request, evt *audit.Eve
 		return res, err
 	}
 	key, opts := g.bridgeFor(req)
-	defer g.pushCallCtx(key, ctx)()
+	defer g.pushCallCtx(ctx, key)()
 	before := g.bridgeActivity(key)
 	out, err := u.getPrompt(ctx, key, opts, &mcp.GetPromptParams{
 		Name:      bare,
@@ -290,7 +290,7 @@ func (g *Gateway) getPrompt(ctx context.Context, req mcp.Request, evt *audit.Eve
 	return out, nil
 }
 
-func (g *Gateway) listResources(ctx context.Context, evt *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listResources(ctx context.Context, _ *audit.Event) (mcp.Result, error) {
 	lists, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
 		return u.listResources(ctx)
 	})
@@ -315,7 +315,7 @@ func (g *Gateway) listResources(ctx context.Context, evt *audit.Event) (mcp.Resu
 	return out, nil
 }
 
-func (g *Gateway) listResourceTemplates(ctx context.Context, evt *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listResourceTemplates(ctx context.Context, _ *audit.Event) (mcp.Result, error) {
 	lists, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.ResourceTemplate, error) {
 		return u.listResourceTemplates(ctx)
 	})
@@ -449,7 +449,7 @@ func (g *Gateway) setLevel(ctx context.Context, req mcp.Request, next mcp.Method
 	key, opts := g.bridgeFor(req)
 	if params != nil && key != "" {
 		for _, u := range g.upstreams {
-			u.setLoggingLevel(ctx, key, opts, params.Level)
+			_ = u.setLoggingLevel(ctx, key, opts, params.Level) // best effort per upstream
 		}
 	}
 	return next(ctx, "logging/setLevel", req)

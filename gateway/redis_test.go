@@ -48,7 +48,7 @@ func TestRedisSharedGateways(t *testing.T) {
 	// draw it down (connect handshakes and lists consumed part of it), so
 	// alternating calls must eventually rate-limit on BOTH instances.
 	var limitedA, limitedB bool
-	for i := 0; i < 12 && !(limitedA && limitedB); i++ {
+	for i := 0; i < 12 && (!limitedA || !limitedB); i++ {
 		if _, err := sessA.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool"}); err != nil && strings.Contains(err.Error(), "rate limit") {
 			limitedA = true
 		}

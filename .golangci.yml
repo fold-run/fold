@@ -1,0 +1,32 @@
+version: "2"
+
+# Standard set = errcheck, govet, ineffassign, staticcheck, unused.
+linters:
+  default: standard
+  enable:
+    - gosec
+    - misspell
+    - revive
+  settings:
+    errcheck:
+      exclude-functions:
+        # Cleanup-path closes are deliberately best-effort throughout.
+        - (io.Closer).Close
+  exclusions:
+    rules:
+      # Test fixtures drop errors and take shortcuts deliberately.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - revive
+      # fold is a gateway: it must keep bridging sampling/logging through
+      # the MCP deprecation window (SEP-2577) even though the SDK marks
+      # those APIs deprecated. Revisit when the window closes.
+      - linters:
+          - staticcheck
+        text: "SEP-2577"
+
+formatters:
+  enable:
+    - gofmt

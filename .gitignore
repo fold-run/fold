@@ -1,2 +1,5 @@
 /fold
+/dist/
 *.log
+*.test
+coverage.out

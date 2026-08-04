@@ -100,7 +100,7 @@ func TestServerInitiatedBridging(t *testing.T) {
 		t.Errorf("round-trip = %q, want 4/accept", text)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !(progressed.Load() && logged.Load()) {
+	for time.Now().Before(deadline) && (!progressed.Load() || !logged.Load()) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !progressed.Load() {

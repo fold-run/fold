@@ -215,7 +215,7 @@ func synthetic405(req *http.Request) *http.Response {
 func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.sessionEra && req.Method == http.MethodPost && req.Body != nil {
 		body, err := io.ReadAll(req.Body)
-		req.Body.Close()
+		_ = req.Body.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -322,7 +322,7 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 		// Lost the race; use the winner.
 		s := u.session
 		u.mu.Unlock()
-		session.Close()
+		_ = session.Close()
 		return s, nil
 	}
 	u.session = session
@@ -330,7 +330,7 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 
 	// Restore upstream subscriptions lost with the previous session.
 	for _, uri := range resub {
-		session.Subscribe(ctx, &mcp.SubscribeParams{URI: uri})
+		_ = session.Subscribe(ctx, &mcp.SubscribeParams{URI: uri}) // best effort
 	}
 	return session, nil
 }
@@ -357,7 +357,7 @@ func (u *upstream) bridgedSession(ctx context.Context, key string, opts *mcp.Cli
 		e.lastUsed = time.Now()
 		s := e.session
 		u.mu.Unlock()
-		session.Close()
+		_ = session.Close()
 		return s, nil
 	}
 	u.bridged[key] = &bridgedEntry{session: session, lastUsed: time.Now()}
@@ -383,7 +383,7 @@ func (u *upstream) dropSession(s *mcp.ClientSession) {
 		u.log.Warn("dropped upstream session after transport error; will reconnect on next request")
 	}
 	if s != nil {
-		s.Close()
+		_ = s.Close()
 	}
 }
 
@@ -399,7 +399,7 @@ func (u *upstream) sweepBridged() {
 	}
 	u.mu.Unlock()
 	for _, s := range stale {
-		s.Close()
+		_ = s.Close()
 	}
 }
 
@@ -415,7 +415,7 @@ func (u *upstream) Close() {
 	u.mu.Unlock()
 	for _, s := range sessions {
 		if s != nil {
-			s.Close()
+			_ = s.Close()
 		}
 	}
 }

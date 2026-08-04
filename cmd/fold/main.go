@@ -90,29 +90,43 @@ func main() {
 
 	logger := newLogger(*logFormat, *logLevel)
 
-	gw, err := gateway.New(cfg, gateway.WithLogger(logger))
-	if err != nil {
+	addr := *host + ":" + strconv.Itoa(*port)
+	if err := run(cfg, logger, addr); err != nil {
 		fmt.Fprintf(os.Stderr, "fold: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// run serves the gateway on addr until SIGINT/SIGTERM or a server error,
+// then shuts down gracefully. Kept separate from main so deferred cleanup
+// (gateway sessions, state provider) runs on every exit path.
+func run(cfg *config.Config, logger *slog.Logger, addr string) error {
+	gw, err := gateway.New(cfg, gateway.WithLogger(logger))
+	if err != nil {
+		return err
+	}
 	defer gw.Close()
 
-	addr := *host + ":" + strconv.Itoa(*port)
-	srv := &http.Server{Addr: addr, Handler: gw.Handler()}
+	// No write timeout: MCP responses ride long-lived SSE streams.
+	srv := &http.Server{Addr: addr, Handler: gw.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
+	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("listening", "addr", addr, "mcpPath", cfg.MCPPath())
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error", "err", err)
-			os.Exit(1)
+			errCh <- err
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	select {
+	case err := <-errCh:
+		return err
+	case <-stop:
+	}
 	logger.Info("shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	srv.Shutdown(ctx)
+	return srv.Shutdown(ctx)
 }

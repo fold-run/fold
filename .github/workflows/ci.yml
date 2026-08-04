@@ -19,20 +19,44 @@ jobs:
           go-version-file: go.mod
 
       - name: gofmt
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "gofmt needed on:" && echo "$unformatted" && exit 1
-          fi
+        run: make fmt-check
+
+      - name: go mod tidy
+        run: make tidy-check
 
       - name: vet
-        run: go vet ./...
+        run: make vet
 
       - name: build
-        run: go build ./...
+        run: make build
 
       - name: test
-        run: go test -race ./...
+        run: make race
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: govulncheck
+        run: make vuln
 
   bench:
     runs-on: ubuntu-latest

@@ -41,7 +41,7 @@ func Version() string { return version }
 
 // tokenInfoPrincipalKey carries the verified Principal through the SDK's
 // TokenInfo.Extra map into per-request MCP metadata.
-const tokenInfoPrincipalKey = "run.fold/principal"
+const tokenInfoPrincipalKey = "run.fold/principal" //nolint:gosec // metadata map key, not a credential
 
 // Gateway is a running fold gateway. Create one with New, mount Handler
 // into any http server, and Close it on shutdown.
@@ -195,10 +195,12 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		},
 	)
 	g.server.AddReceivingMiddleware(g.federationMiddleware)
-	g.registerTaskMethods()
+	if err := g.registerTaskMethods(); err != nil {
+		return nil, err
+	}
 	for _, u := range g.upstreams {
 		u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
-			g.server.ResourceUpdated(ctx, params)
+			_ = g.server.ResourceUpdated(ctx, params) // best-effort fan-out
 		}
 		u.onListChanged = g.notifyListChanged
 	}
@@ -394,7 +396,7 @@ func (g *Gateway) Close() {
 	for _, u := range g.upstreams {
 		u.Close()
 	}
-	g.state.Close()
+	_ = g.state.Close()
 }
 
 // ctxStack tracks in-flight invocation contexts for one downstream session,
@@ -458,7 +460,7 @@ func (g *Gateway) drainBridge(key string, before int64) {
 // pushCallCtx records ctx as the current invocation context for the
 // downstream session key, returning a func that pops it. A no-op for
 // unbridged requests (empty key).
-func (g *Gateway) pushCallCtx(key string, ctx context.Context) func() {
+func (g *Gateway) pushCallCtx(ctx context.Context, key string) func() {
 	if key == "" {
 		return func() {}
 	}
@@ -485,7 +487,7 @@ func (g *Gateway) pushCallCtx(key string, ctx context.Context) func() {
 
 // invocationCtx returns the most recent live invocation context for the
 // downstream session key, or fallback when none is in flight.
-func (g *Gateway) invocationCtx(key string, fallback context.Context) context.Context {
+func (g *Gateway) invocationCtx(fallback context.Context, key string) context.Context {
 	v, ok := g.callCtx.Load(key)
 	if !ok {
 		return fallback
@@ -513,11 +515,11 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
 		Capabilities: &mcp.ClientCapabilities{},
 		LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) {
 			g.bumpBridgeActivity(key)
-			ss.Log(g.invocationCtx(key, ctx), req.Params)
+			_ = ss.Log(g.invocationCtx(ctx, key), req.Params) // notification; client gone is fine
 		},
 		ProgressNotificationHandler: func(ctx context.Context, req *mcp.ProgressNotificationClientRequest) {
 			g.bumpBridgeActivity(key)
-			ss.NotifyProgress(g.invocationCtx(key, ctx), req.Params)
+			_ = ss.NotifyProgress(g.invocationCtx(ctx, key), req.Params) // notification; client gone is fine
 		},
 	}
 	var caps *mcp.ClientCapabilities
@@ -527,13 +529,13 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
 	if caps != nil && caps.Sampling != nil {
 		opts.CreateMessageHandler = func(ctx context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
 			g.bumpBridgeActivity(key)
-			return ss.CreateMessage(g.invocationCtx(key, ctx), req.Params)
+			return ss.CreateMessage(g.invocationCtx(ctx, key), req.Params)
 		}
 	}
 	if caps != nil && caps.Elicitation != nil {
 		opts.ElicitationHandler = func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 			g.bumpBridgeActivity(key)
-			return ss.Elicit(g.invocationCtx(key, ctx), req.Params)
+			return ss.Elicit(g.invocationCtx(ctx, key), req.Params)
 		}
 	}
 	return opts
@@ -617,12 +619,12 @@ func (g *Gateway) protectedResourceHandler() http.Handler {
 	}
 	doc, _ := json.Marshal(meta)
 	extended := map[string]any{}
-	json.Unmarshal(doc, &extended)
+	_ = json.Unmarshal(doc, &extended) // doc was marshaled just above
 	extended["io.modelcontextprotocol/enterprise-managed-authorization"] = map[string]string{"version": "stable"}
 	body, _ := json.Marshal(extended)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
+		_, _ = w.Write(body)
 	})
 }
 
@@ -638,7 +640,7 @@ func (g *Gateway) tokenRateLimit(next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 			w.WriteHeader(http.StatusTooManyRequests)
-			json.NewEncoder(w).Encode(map[string]string{"error": "slow_down", "error_description": "too many token requests"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "slow_down", "error_description": "too many token requests"})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -875,7 +877,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":    map[bool]string{true: "ok", false: "degraded"}[healthy == len(statuses)],
 		"version":   version,
 		"upstreams": statuses,

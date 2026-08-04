@@ -32,14 +32,16 @@ func NewRedis(url string) (*Redis, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, fmt.Errorf("redis ping: %w", err)
 	}
 	return &Redis{client: client}, nil
 }
 
+// Close implements Provider.
 func (r *Redis) Close() error { return r.client.Close() }
 
+// Limiter implements Provider.
 func (r *Redis) Limiter(scope string, rpm int) Limiter {
 	if rpm <= 0 {
 		return memLimiter{l: nil} // unlimited
@@ -47,6 +49,7 @@ func (r *Redis) Limiter(scope string, rpm int) Limiter {
 	return &redisLimiter{client: r.client, scope: scope, rpm: rpm, window: time.Minute}
 }
 
+// Breaker implements Provider.
 func (r *Redis) Breaker(scope string, threshold int, halfOpenAfter time.Duration) Breaker {
 	if threshold <= 0 {
 		return memBreaker{b: nil}
@@ -54,10 +57,12 @@ func (r *Redis) Breaker(scope string, threshold int, halfOpenAfter time.Duration
 	return &redisBreaker{client: r.client, scope: scope, threshold: threshold, halfOpenAfter: halfOpenAfter}
 }
 
+// ListCache implements Provider.
 func (r *Redis) ListCache(scope string) ListCache {
 	return &redisCache{client: r.client, scope: scope}
 }
 
+// Once implements Provider.
 func (r *Redis) Once(scope string) Once {
 	return &redisOnce{client: r.client, scope: scope, fallback: NewMemOnce()}
 }
@@ -182,7 +187,7 @@ func (b *redisBreaker) Record(ctx context.Context, success bool) {
 		pipe := b.client.Pipeline()
 		pipe.Set(ctx, b.openKey(), until, b.halfOpenAfter+time.Hour)
 		pipe.Del(ctx, b.probeKey())
-		pipe.Exec(ctx)
+		_, _ = pipe.Exec(ctx) // fail open on Redis errors
 	}
 }
 

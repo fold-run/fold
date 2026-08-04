@@ -1,5 +1,10 @@
 # fold
 
+[![CI](https://github.com/fold-run/fold/actions/workflows/ci.yml/badge.svg)](https://github.com/fold-run/fold/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/fold-run/fold.svg)](https://pkg.go.dev/github.com/fold-run/fold)
+[![Go Report Card](https://goreportcard.com/badge/github.com/fold-run/fold)](https://goreportcard.com/report/github.com/fold-run/fold)
+[![Release](https://img.shields.io/github/v/release/fold-run/fold)](https://github.com/fold-run/fold/releases)
+
 **fold: the enterprise MCP gateway — one governed endpoint between every MCP client and every MCP server.**
 
 fold sits in front of any number of upstream MCP servers — in any language, on any SDK, from any team or vendor — providing federation, enterprise auth, policy, caching, rate limiting, and audit. It is built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk), so the wire protocol (streamable HTTP, both request/response and SSE) is the SDK's own implementation on both the client-facing and upstream-facing sides.
@@ -255,13 +260,22 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 ## Development
 
 ```bash
-go build ./...
-go test ./...              # unit + integration (real SDK client/server fixtures)
-go test -race ./...
-./scripts/conformance.sh   # official conformance suite through the gateway (needs node)
+make build
+make test          # unit + integration (real SDK client/server fixtures)
+make race          # what CI runs
+make lint          # golangci-lint (config in .golangci.yml)
+make check         # fmt-check + tidy-check + vet + build + race + lint
+make bench         # added-latency gate (p50 < 5 ms through the proxy path)
+make conformance   # official conformance suite through the gateway (needs node)
 ```
 
+CI runs these same targets (`.github/workflows/ci.yml`), plus `govulncheck` (`make vuln`).
+
 The integration suite spins up real MCP servers from the official Go SDK behind the gateway and exercises federation, namespacing, policy filtering and denial, partial failure, credential injection (static and passthrough), rate limits, the breaker, JWT auth against a fixture JWKS issuer, RFC 9728 metadata, and the full server-initiated bridging loop (sampling, elicitation, logging, progress).
+
+## API stability
+
+fold is pre-1.0. The supported surfaces are the `fold` binary (CLI flags, the JSON config document, error codes, operational endpoints) and embedding via `gateway.New` + `Gateway.Handler` + `Gateway.Close` with a `config.Config` — see the [package example](https://pkg.go.dev/github.com/fold-run/fold/gateway). The `auth`, `policy`, and `audit` packages are exported because the gateway wires through them, but their Go APIs may change between minor versions until v1.0. `internal/` packages are not API.
 
 ## Not implemented
 

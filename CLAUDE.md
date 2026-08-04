@@ -4,23 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-This repo is fold, the enterprise MCP gateway — one governed endpoint federating any number of upstream MCP servers into a single virtual server, adding auth, policy, caching, rate limiting, and audit. Single Go module, no build system beyond the Go toolchain. The wire protocol (streamable HTTP, request/response and SSE) is the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)'s implementation on both the client-facing and upstream-facing sides — fold never hand-rolls protocol framing.
+This repo is fold, the enterprise MCP gateway — one governed endpoint federating any number of upstream MCP servers into a single virtual server, adding auth, policy, caching, rate limiting, and audit. Single Go module; the Makefile is a thin wrapper over the Go toolchain and is the source of truth for dev/CI commands. The wire protocol (streamable HTTP, request/response and SSE) is the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)'s implementation on both the client-facing and upstream-facing sides — fold never hand-rolls protocol framing.
 
 ## Commands
 
 ```bash
-go build ./...
-go test ./...                                # unit + integration (real SDK client/server fixtures)
-go test -race ./...                          # what CI runs
-go vet ./...
-gofmt -l .                                   # CI fails on unformatted files
+make build
+make test                                    # unit + integration (real SDK client/server fixtures)
+make race                                    # what CI runs
+make lint                                    # golangci-lint (config in .golangci.yml)
+make check                                   # fmt-check + tidy-check + vet + build + race + lint
 
 go test ./gateway -run TestName -v           # one test
-FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v   # latency gate (skipped without FOLD_BENCH)
-./scripts/conformance.sh                     # official MCP conformance suite through the gateway (needs node/npx)
+make bench                                   # latency gate (FOLD_BENCH=1; skipped without it)
+make conformance                             # official MCP conformance suite through the gateway (needs node/npx)
 ```
 
-CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, vet, build, `go test -race`, the added-latency benchmark (added p50 < 5 ms through the proxy path), and the conformance suite (40/40 checks, pinned to a commit in `scripts/conformance.sh` — bump deliberately).
+CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, `go mod tidy -diff`, vet, build, `go test -race`, golangci-lint, govulncheck, the added-latency benchmark (added p50 < 5 ms through the proxy path), and the conformance suite (40/40 checks, pinned to a commit in `scripts/conformance.sh` — bump deliberately).
 
 ## Architecture
 

@@ -58,7 +58,10 @@ func NewEMA(cfg *config.Auth, client *http.Client, replay state.Once) (*EMA, err
 	if !ok || key.Curve != elliptic.P256() {
 		return nil, fmt.Errorf("ema: signing key must be an ES256 (P-256 ECDSA) key")
 	}
-	kid, jwksJSON := publicJWKS(&key.PublicKey)
+	kid, jwksJSON, err := publicJWKS(&key.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("ema: encode public key: %w", err)
+	}
 	return &EMA{
 		issuer:   cfg.Resource,
 		cfg:      cfg.EMA,
@@ -80,7 +83,7 @@ func (m *EMA) PublicKey() *ecdsa.PublicKey { return &m.key.PublicKey }
 // ServeJWKS answers GET /.well-known/jwks.json with the public key set.
 func (m *EMA) ServeJWKS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(m.jwksJSON)
+	_, _ = w.Write(m.jwksJSON)
 }
 
 // ServeToken answers POST /oauth/token — the ID-JAG exchange. The caller is
@@ -174,7 +177,7 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"access_token": signed,
 		"token_type":   "Bearer",
 		"expires_in":   int(m.ttl.Seconds()),
@@ -184,20 +187,20 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 func oauthError(w http.ResponseWriter, status int, code, description string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": code, "error_description": description})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "error_description": description})
 }
 
 // publicJWKS builds the RFC 7638 thumbprint (the kid) and the marshaled
 // public JWK set for a P-256 key.
-func publicJWKS(pub *ecdsa.PublicKey) (kid string, jwksJSON []byte) {
-	b64 := base64.RawURLEncoding.EncodeToString
-	coord := func(b []byte) string {
-		// Fixed-width big-endian coordinates, zero-padded to the curve size.
-		padded := make([]byte, 32)
-		copy(padded[32-len(b):], b)
-		return b64(padded)
+func publicJWKS(pub *ecdsa.PublicKey) (kid string, jwksJSON []byte, err error) {
+	// Uncompressed SEC1 point: 0x04 || X || Y with fixed-width 32-byte
+	// coordinates for P-256.
+	raw, err := pub.Bytes()
+	if err != nil {
+		return "", nil, err
 	}
-	x, y := coord(pub.X.Bytes()), coord(pub.Y.Bytes())
+	b64 := base64.RawURLEncoding.EncodeToString
+	x, y := b64(raw[1:33]), b64(raw[33:65])
 	// Thumbprint input is the required members in lexicographic order.
 	thumb := fmt.Sprintf(`{"crv":"P-256","kty":"EC","x":%q,"y":%q}`, x, y)
 	sum := sha256.Sum256([]byte(thumb))
@@ -208,5 +211,5 @@ func publicJWKS(pub *ecdsa.PublicKey) (kid string, jwksJSON []byte) {
 			"kid": kid, "alg": "ES256", "use": "sig",
 		}},
 	})
-	return kid, doc
+	return kid, doc, nil
 }

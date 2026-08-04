@@ -68,20 +68,25 @@ type Memory struct{}
 // NewMemory returns the in-process state provider.
 func NewMemory() *Memory { return &Memory{} }
 
+// Limiter implements Provider.
 func (*Memory) Limiter(_ string, rpm int) Limiter {
 	return memLimiter{l: ratelimit.New(rpm)}
 }
 
+// Breaker implements Provider.
 func (*Memory) Breaker(_ string, threshold int, halfOpenAfter time.Duration) Breaker {
 	return memBreaker{b: breaker.New(threshold, halfOpenAfter)}
 }
 
+// ListCache implements Provider.
 func (*Memory) ListCache(_ string) ListCache {
 	return &memCache{c: cache.New()}
 }
 
+// Once implements Provider.
 func (*Memory) Once(_ string) Once { return NewMemOnce() }
 
+// Close implements Provider.
 func (*Memory) Close() error { return nil }
 
 // MemOnce is the in-process single-use recorder. Exported so the Redis
@@ -94,6 +99,7 @@ type MemOnce struct {
 // NewMemOnce returns an in-process single-use recorder.
 func NewMemOnce() *MemOnce { return &MemOnce{seen: map[string]time.Time{}} }
 
+// TryOnce reports whether key is fresh, recording it for ttl.
 func (o *MemOnce) TryOnce(_ context.Context, key string, ttl time.Duration) bool {
 	now := time.Now()
 	o.mu.Lock()

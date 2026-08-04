@@ -17,6 +17,8 @@ import (
 // Outcome classifies how a request terminated.
 type Outcome string
 
+// Outcomes mirror the terminal responses the gateway can produce; every
+// audit event carries exactly one.
 const (
 	OutcomeOK              Outcome = "ok"
 	OutcomeError           Outcome = "error"
@@ -91,7 +93,7 @@ func (s *stdoutSink) Emit(e Event) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fmt.Fprintln(os.Stdout, string(data))
+	_, _ = fmt.Fprintln(os.Stdout, string(data))
 }
 
 // webhookSink POSTs batches of events, delivered asynchronously so audit
@@ -154,5 +156,5 @@ func (s *webhookSink) post(batch []Event) {
 	if err != nil {
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }

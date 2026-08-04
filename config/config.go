@@ -250,7 +250,7 @@ func requireSecureEndpoint(what, endpoint string) error {
 
 // Load reads and validates a config file.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is the operator-supplied config location
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
