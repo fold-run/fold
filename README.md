@@ -348,6 +348,13 @@ Known gaps, documented deliberately:
 
 ## Changelog
 
+### v0.7.0 — 2026-08-04
+
+The road to v1.0.
+
+- **Config JSON Schema** — [`config/fold.config.schema.json`](config/fold.config.schema.json) is the machine-readable structural contract for the config document, printed by `fold --schema`, shipped in release archives, and kept in lockstep with the code by test. Point your editor at it for completion and validation.
+- **The v1 compatibility contract** — README "API stability" now states exactly what v1.0 will freeze (config document, CLI, wire surface, embedder Go API) and what remains internal wiring.
+
 ### v0.6.0 — 2026-08-04
 
 Self-serve federation.
