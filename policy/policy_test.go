@@ -118,3 +118,72 @@ func TestIssuerScoping(t *testing.T) {
 		t.Error("partner-issuer principal must not match a corp-scoped rule")
 	}
 }
+
+func TestClaimsMatching(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID: "eng-dept",
+			Subjects: &config.PolicySubjects{
+				Claims: map[string]any{"dept": "eng", "level": float64(3)},
+			},
+			Allow: []config.PolicyAllow{{Server: "*"}},
+		}},
+	})
+	allow := func(p *auth.Principal) bool { return e.Decide(p, "x", "tools/call", "t").Allowed }
+
+	// All required claims present and equal → match (ABAC without naming subjects).
+	if !allow(&auth.Principal{Subject: "a", Claims: map[string]any{"dept": "eng", "level": float64(3)}}) {
+		t.Error("matching claims should allow")
+	}
+	// Every required claim must match — one wrong value denies.
+	if allow(&auth.Principal{Subject: "a", Claims: map[string]any{"dept": "eng", "level": float64(2)}}) {
+		t.Error("wrong level should deny")
+	}
+	// Missing claim denies.
+	if allow(&auth.Principal{Subject: "a", Claims: map[string]any{"dept": "eng"}}) {
+		t.Error("missing level should deny")
+	}
+	// An array-valued token claim matches by membership.
+	if !allow(&auth.Principal{Subject: "a", Claims: map[string]any{"dept": []any{"sales", "eng"}, "level": float64(3)}}) {
+		t.Error("array claim containing the value should allow")
+	}
+	if allow(&auth.Principal{Subject: "a", Claims: map[string]any{"dept": []any{"sales"}, "level": float64(3)}}) {
+		t.Error("array claim without the value should deny")
+	}
+	// No claims at all (e.g. a hand-built principal) denies.
+	if allow(&auth.Principal{Subject: "a"}) {
+		t.Error("principal without claims should deny")
+	}
+	// Nil principal (auth disabled) never matches a subjects-scoped rule.
+	if allow(nil) {
+		t.Error("nil principal should deny")
+	}
+}
+
+func TestClaimsCombineWithGroups(t *testing.T) {
+	// Claims gate like issuers: they are an additional requirement on top of
+	// the subs/groups match, not an alternative to it.
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID: "eng-admins",
+			Subjects: &config.PolicySubjects{
+				Groups: []string{"admins"},
+				Claims: map[string]any{"mfa": true},
+			},
+			Allow: []config.PolicyAllow{{Server: "*"}},
+		}},
+	})
+	allow := func(p *auth.Principal) bool { return e.Decide(p, "x", "tools/call", "t").Allowed }
+
+	if !allow(&auth.Principal{Subject: "a", Groups: []string{"admins"}, Claims: map[string]any{"mfa": true}}) {
+		t.Error("group + claim should allow")
+	}
+	if allow(&auth.Principal{Subject: "a", Groups: []string{"admins"}, Claims: map[string]any{"mfa": false}}) {
+		t.Error("group without claim gate should deny")
+	}
+	if allow(&auth.Principal{Subject: "a", Groups: []string{"users"}, Claims: map[string]any{"mfa": true}}) {
+		t.Error("claim without group should deny")
+	}
+}

@@ -216,13 +216,20 @@ type PolicyRule struct {
 }
 
 // PolicySubjects matches principals by group membership and/or subject,
-// optionally scoped to specific token issuers. Because subjects and groups
-// are only unique within an issuer, scope rules to an issuer whenever more
-// than one issuer is trusted.
+// optionally scoped to specific token issuers and gated on token claims.
+// Because subjects, groups, and claims are only meaningful within an
+// issuer, scope rules to an issuer whenever more than one is trusted.
 type PolicySubjects struct {
 	Groups  []string `json:"groups,omitempty"`
 	Subs    []string `json:"subs,omitempty"`
 	Issuers []string `json:"issuers,omitempty"`
+
+	// Claims gates the rule on verified token claims (attribute-based
+	// access control): every entry must match — the claim equals the value,
+	// or, when the token claim is an array, contains it. Values must be
+	// JSON scalars (string, number, bool). Combines with subs/groups as an
+	// additional requirement, like issuers.
+	Claims map[string]any `json:"claims,omitempty"`
 }
 
 // PolicyAllow grants methods/names on one upstream. Names support "*" globs.
@@ -467,6 +474,21 @@ func (c *Config) Validate() error {
 			for _, a := range r.Allow {
 				if a.Server != "" && a.Server != "*" && !seenID[a.Server] {
 					return fmt.Errorf("policy rule %q: unknown server %q", r.ID, a.Server)
+				}
+			}
+			if r.Subjects != nil {
+				for k, v := range r.Subjects.Claims {
+					if k == "" {
+						return fmt.Errorf("policy rule %q: claims keys must not be empty", r.ID)
+					}
+					switch v.(type) {
+					case string, float64, bool:
+					default:
+						// Arrays and objects would need deep-equality
+						// semantics nobody can predict from a config file;
+						// scalar-or-membership is the whole contract.
+						return fmt.Errorf("policy rule %q: claim %q must be a JSON scalar (string, number, or bool)", r.ID, k)
+					}
 				}
 			}
 		}

@@ -15,6 +15,11 @@ type Principal struct {
 	Groups  []string  // from the issuer's configured groups claim
 	Token   string    // the raw bearer token (for passthrough / token-exchange)
 	Expiry  time.Time // token expiration
+
+	// Claims is the verified token's full claim set, for attribute-based
+	// policy (policy subjects' "claims" matcher). Values are as decoded
+	// from JSON: string, float64, bool, nil, []any, map[string]any.
+	Claims map[string]any
 }
 
 type principalKey struct{}

@@ -5,6 +5,7 @@
 package policy
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 
@@ -88,9 +89,13 @@ func subjectsMatch(s *config.PolicySubjects, p *auth.Principal) bool {
 	if len(s.Issuers) > 0 && !contains(s.Issuers, p.Issuer) {
 		return false
 	}
-	// If only issuers are named, matching the issuer is sufficient.
+	// Claims gate like issuers: every required claim must match (ABAC).
+	if !claimsMatch(s.Claims, p.Claims) {
+		return false
+	}
+	// If only gates (issuers, claims) are named, passing them is sufficient.
 	if len(s.Subs) == 0 && len(s.Groups) == 0 {
-		return len(s.Issuers) > 0
+		return len(s.Issuers) > 0 || len(s.Claims) > 0
 	}
 	if len(s.Subs) > 0 && contains(s.Subs, p.Subject) {
 		return true
@@ -107,6 +112,29 @@ func subjectsMatch(s *config.PolicySubjects, p *auth.Principal) bool {
 
 func contains(list []string, v string) bool {
 	return slices.Contains(list, v)
+}
+
+// claimsMatch reports whether the verified token claims satisfy every
+// required entry: the claim equals the required value, or — when the token
+// claim is an array — contains it. Both sides come from JSON decoding, so
+// scalars compare as string/float64/bool and DeepEqual is exact.
+func claimsMatch(required map[string]any, claims map[string]any) bool {
+	for key, want := range required {
+		got, ok := claims[key]
+		if !ok {
+			return false
+		}
+		if arr, isArr := got.([]any); isArr {
+			if !slices.ContainsFunc(arr, func(v any) bool { return reflect.DeepEqual(v, want) }) {
+				return false
+			}
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			return false
+		}
+	}
+	return true
 }
 
 // globAny reports whether name matches any pattern. Patterns support "*"

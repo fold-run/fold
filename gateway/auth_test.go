@@ -275,3 +275,75 @@ func TestPerPrincipalRateLimit(t *testing.T) {
 		t.Error("another principal's flood starved an unrelated caller")
 	}
 }
+
+// TestClaimsBasedPolicy: ABAC end to end — a rule gated on a token claim
+// admits only callers whose verified JWT carries it, and list filtering
+// follows the same decision.
+func TestClaimsBasedPolicy(t *testing.T) {
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "get_thing", "delete_thing")
+	ts, _ := startGateway(t, authedConfig(iss,
+		[]config.Upstream{{ID: "things", URL: up.URL, Namespace: "things"}},
+		&config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID: "eng-dept-mfa",
+				Subjects: &config.PolicySubjects{
+					Claims: map[string]any{"dept": "eng", "mfa": true},
+				},
+				Allow: []config.PolicyAllow{{Server: "things"}},
+			}},
+		}))
+
+	mint := func(sub string, extra jwt.MapClaims) string {
+		claims := jwt.MapClaims{
+			"sub": sub,
+			"aud": "https://gw.example.com",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		}
+		for k, v := range extra {
+			claims[k] = v
+		}
+		return iss.mintClaims(t, claims)
+	}
+
+	// Both required claims present → full access.
+	eng := connect(t, ts.URL, map[string]string{
+		"Authorization": "Bearer " + mint("alice", jwt.MapClaims{"dept": "eng", "mfa": true}),
+	})
+	res, err := eng.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tools) != 2 {
+		t.Errorf("eng+mfa sees %d tools, want 2", len(res.Tools))
+	}
+	if _, err := eng.CallTool(context.Background(), &mcp.CallToolParams{Name: "things__get_thing"}); err != nil {
+		t.Errorf("eng+mfa CallTool: %v", err)
+	}
+
+	// Right department, no MFA claim → invisible and denied.
+	noMFA := connect(t, ts.URL, map[string]string{
+		"Authorization": "Bearer " + mint("bob", jwt.MapClaims{"dept": "eng"}),
+	})
+	res, err = noMFA.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tools) != 0 {
+		t.Errorf("missing-claim caller sees %d tools, want 0", len(res.Tools))
+	}
+	if _, err := noMFA.CallTool(context.Background(), &mcp.CallToolParams{Name: "things__get_thing"}); err == nil {
+		t.Error("expected denial for caller missing the mfa claim")
+	} else if !strings.Contains(err.Error(), "policy denied") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// An array-valued claim matches by membership.
+	multi := connect(t, ts.URL, map[string]string{
+		"Authorization": "Bearer " + mint("carol", jwt.MapClaims{"dept": []string{"sales", "eng"}, "mfa": true}),
+	})
+	if _, err := multi.CallTool(context.Background(), &mcp.CallToolParams{Name: "things__get_thing"}); err != nil {
+		t.Errorf("array-claim caller CallTool: %v", err)
+	}
+}
