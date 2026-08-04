@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -8,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/fold-run/fold/config"
@@ -90,23 +90,34 @@ func (d *discoverer) sync() {
 	// reported once, not every interval; any fix changes the hash.
 	d.lastHash, d.seen = hash, true
 
-	var parsed struct {
-		Upstreams []config.Upstream `json:"upstreams"`
-	}
-	dec := json.NewDecoder(strings.NewReader(string(doc)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&parsed); err != nil {
+	ups, err := parseDiscoveryDoc(doc)
+	if err != nil {
 		d.g.metrics.discoverySync("rejected")
 		d.g.log.Warn("discovery document malformed; keeping current upstream set", "url", d.cfg.URL, "err", err)
 		return
 	}
-	if err := d.g.setDiscovered(parsed.Upstreams); err != nil {
+	if err := d.g.setDiscovered(ups); err != nil {
 		d.g.metrics.discoverySync("rejected")
 		d.g.log.Warn("discovery document rejected; keeping current upstream set", "url", d.cfg.URL, "err", err)
 		return
 	}
 	d.g.metrics.discoverySync("applied")
-	d.g.log.Info("discovery applied", "upstreams", len(parsed.Upstreams))
+	d.g.log.Info("discovery applied", "upstreams", len(ups))
+}
+
+// parseDiscoveryDoc strictly decodes a discovery document — the same
+// unknown-field rejection as the main config parser, so a registry typo
+// fails loudly instead of silently shipping a half-read upstream.
+func parseDiscoveryDoc(data []byte) ([]config.Upstream, error) {
+	var parsed struct {
+		Upstreams []config.Upstream `json:"upstreams"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&parsed); err != nil {
+		return nil, err
+	}
+	return parsed.Upstreams, nil
 }
 
 func (d *discoverer) fetch() ([]byte, error) {

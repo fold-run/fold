@@ -42,6 +42,8 @@ bench:
 fuzz:
 	go test ./config -run '^$$' -fuzz FuzzParse -fuzztime 30s
 	go test ./gateway -run '^$$' -fuzz FuzzResolve -fuzztime 30s
+	go test ./gateway -run '^$$' -fuzz FuzzListCursor -fuzztime 30s
+	go test ./gateway -run '^$$' -fuzz FuzzDiscoveryDoc -fuzztime 30s
 
 conformance:
 	./scripts/conformance.sh
