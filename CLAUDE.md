@@ -46,3 +46,7 @@ CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, `go mod tidy -diff`
 2. **The gateway stays invisible**: behavior through the gateway must match hitting the upstream directly; the conformance suite enforces this. Don't buffer or rewrite responses unless federation requires it (namespacing, list merging, policy filtering).
 3. **Performance is a test**: the bench job gates merges on added latency; keep the proxy path allocation-light.
 4. **Known gaps are documented**: deliberately unimplemented features (`subscriptions/listen` fan-in, content inspection) live in README "Not implemented" — update it if you close or widen a gap.
+
+## Claude Code tooling
+
+`.claude/` (see `.claude/README.md`) carries project skills, subagents, and hooks that encode this file's invariants as workflows. Reach for them instead of improvising: `/preflight` (local merge gate), `/fold-release`, `/reloadable-state` (new config/state checklist), `/conformance`, `/update-docs`, `/perf`, `/watch-ci`. Subagents: gateway-reviewer (invariant review), integration-test-author, docs-sync, bench-profiler, security-auditor. Hooks auto-gofmt edited Go files, guard force-push/`--no-verify`, prompt on release tags, and block ending a turn with unformatted files or undocumented behavior changes.

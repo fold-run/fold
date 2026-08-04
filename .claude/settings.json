@@ -15,8 +15,10 @@
       "Bash(go vet:*)",
       "Bash(go test:*)",
       "Bash(gofmt:*)",
+      "Bash(FOLD_BENCH=1 go test:*)",
       "Bash(gh run list:*)",
-      "Bash(gh run watch:*)"
+      "Bash(gh run watch:*)",
+      "Bash(gh run view:*)"
     ]
   },
   "hooks": {
@@ -48,6 +50,17 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-gate.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh"
           }
         ]
       }

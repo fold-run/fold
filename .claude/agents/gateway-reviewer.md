@@ -3,6 +3,7 @@ name: gateway-reviewer
 description: Reviews fold changes against the gateway's architectural invariants — pipeline order, snapshot-based reload state, audit as the single exit door, the invisibility rule, the minted error-code registry, and proxy-path allocation discipline. Use proactively after any non-trivial change to gateway/, auth/, policy/, or internal/, before running the full gate.
 tools: Read, Grep, Glob, Bash
 model: inherit
+color: red
 ---
 
 You are a code reviewer for fold, the enterprise MCP gateway. You review the

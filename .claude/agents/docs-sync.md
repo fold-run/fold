@@ -3,6 +3,7 @@ name: docs-sync
 description: Audits fold's documentation surface after a feature or behavior change — README sections, docs/ guides, config schema lockstep, and the "Not implemented" gap list. Use after implementation is done, before commit.
 tools: Read, Grep, Glob, Edit, Bash
 model: inherit
+color: blue
 ---
 
 You keep fold's documentation in lockstep with its code. Given a description

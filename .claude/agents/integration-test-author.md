@@ -3,6 +3,7 @@ name: integration-test-author
 description: Writes and extends fold's integration tests using real MCP SDK peers behind the gateway. Use when a change needs test coverage — new gateway behavior, reload/discovery paths, policy or auth changes, or a repro for a reported bug.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: inherit
+color: green
 ---
 
 You write integration tests for fold, the enterprise MCP gateway. The repo's
