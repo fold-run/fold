@@ -1,6 +1,6 @@
 # Single source of truth for dev/CI commands; CI calls these same targets.
 
-.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench conformance check fuzz cover
+.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench conformance check fuzz cover helm-check
 
 build:
 	go build ./...
@@ -45,6 +45,20 @@ fuzz:
 
 conformance:
 	./scripts/conformance.sh
+
+# Lints the Helm chart and renders it against each ci values file. Not part
+# of `check` (keeps the contributor toolchain Go-only); CI runs it in its own
+# job. --api-versions lets the ServiceMonitor render without a cluster.
+helm-check:
+	helm lint deploy/helm/fold -f deploy/helm/fold/ci/default-values.yaml
+	@for f in deploy/helm/fold/ci/*.yaml; do \
+		echo "helm template -f $$f"; \
+		helm template fold deploy/helm/fold -f $$f \
+			--api-versions monitoring.coreos.com/v1 >/dev/null || exit 1; \
+	done
+	@if helm template fold deploy/helm/fold >/dev/null 2>&1; then \
+		echo "expected render without a config to fail"; exit 1; \
+	else echo "required-config guard OK"; fi
 
 # Everything CI gates on except the bench and conformance jobs.
 check: fmt-check tidy-check vet build race lint

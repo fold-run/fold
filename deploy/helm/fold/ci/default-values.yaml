@@ -1,0 +1,6 @@
+# Minimal render: inline config, no allowedHosts (probe Host header must
+# fall back to "localhost").
+config:
+  upstreams:
+    - id: example
+      url: https://mcp.example.com/mcp

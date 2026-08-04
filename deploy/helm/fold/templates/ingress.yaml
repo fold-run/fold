@@ -1,0 +1,41 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+Reminder: MCP responses ride long-lived SSE streams. Raise the ingress
+read/idle timeout and disable response buffering (see values.yaml comments),
+and make sure every host below is present in the gateway config's
+server.allowedHosts — the gateway 403s hostnames outside its allowlist.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "fold.fullname" . }}
+  labels:
+    {{- include "fold.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "fold.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}

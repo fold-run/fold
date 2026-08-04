@@ -1,0 +1,174 @@
+# Default values for the fold chart.
+#
+# The gateway config itself is required: set exactly one of `config`
+# (inline, rendered into a ConfigMap) or `existingConfigMap` (the name of a
+# ConfigMap you manage, holding the document under the key fold.config.json).
+
+image:
+  repository: ghcr.io/fold-run/fold
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Ignored when autoscaling.enabled is true.
+replicaCount: 2
+
+# The fold config document (see fold.config.example.json in the repo root),
+# rendered verbatim into a ConfigMap as fold.config.json. In production set
+# config.server.allowedHosts to your public hostname(s) — the gateway's
+# DNS-rebinding protection rejects unknown Host headers, and the chart derives
+# the probe Host header from the first entry (see probes.hostHeader).
+config: {}
+#  upstreams:
+#    - id: github-tools
+#      url: https://mcp.platform.acme.com/mcp
+#      namespace: gh
+#  server:
+#    allowedHosts: ["gw.example.com"]
+
+# Alternative to `config`: name of an existing ConfigMap whose key
+# fold.config.json holds the document. Requires probes.hostHeader, since the
+# chart cannot see your allowedHosts. Config changes do not restart pods by
+# themselves — use Reloader or `kubectl rollout restart`.
+existingConfigMap: ""
+
+# fold's config never contains secret material — auth strategies name
+# environment variables via secretRef fields. Inject those variables from
+# Kubernetes Secrets here.
+envFrom: []
+#  - secretRef:
+#      name: fold-upstream-secrets
+
+# Extra environment entries (name/value or valueFrom), merged after envFrom.
+env: []
+
+redis:
+  # Optional: shares rate-limit, circuit-breaker, cache, and replay state
+  # across replicas so the fleet behaves as one gateway. Without it each pod
+  # keeps in-memory state (fine for replicaCount: 1). External Redis/Valkey
+  # only — the chart deliberately ships no Redis subchart.
+  # Plain redis:// URL. Prefer existingSecret when the URL carries a password.
+  url: ""
+  # Name of a Secret holding the URL, and the key within it.
+  existingSecret: ""
+  existingSecretKey: "redis-url"
+
+server:
+  port: 8080
+  logFormat: json
+  logLevel: info
+  # Additional CLI arguments appended to the container args.
+  extraArgs: []
+
+probes:
+  # Host header sent with httpGet probes. Must be a hostname the gateway's
+  # allowedHosts admits, or probes are answered 403 and the pod never becomes
+  # ready. Empty = derived: first non-"*" entry of config.server.allowedHosts,
+  # falling back to "localhost" (which the gateway's default allowlist
+  # admits). Required when existingConfigMap is set.
+  hostHeader: ""
+  # /healthz pings every upstream on each call (5s internal budget), so it
+  # doubles as a real upstream health check: timeouts stay above 5s and
+  # periods conservative. Liveness is a TCP probe on purpose — it should only
+  # detect a wedged process, not generate upstream traffic.
+  startup:
+    enabled: true
+    periodSeconds: 5
+    timeoutSeconds: 8
+    failureThreshold: 24
+  readiness:
+    enabled: true
+    periodSeconds: 15
+    timeoutSeconds: 8
+    failureThreshold: 3
+  liveness:
+    enabled: true
+    periodSeconds: 20
+    failureThreshold: 3
+
+# Runs `fold --validate` against the mounted config before the gateway
+# starts, so a bad config fails the rollout instead of crash-looping.
+# Validation never resolves secretRef env vars, so no secrets are needed.
+validateInitContainer:
+  enabled: true
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  # MCP responses ride long-lived SSE streams: raise idle/read timeouts and
+  # disable response buffering at the ingress. For ingress-nginx:
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #   nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  annotations: {}
+  hosts: []
+  #  - host: gw.example.com
+  #    paths:
+  #      - path: /
+  #        pathType: Prefix
+  tls: []
+  #  - secretName: fold-tls
+  #    hosts: [gw.example.com]
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+metrics:
+  serviceMonitor:
+    # Requires the prometheus-operator CRDs.
+    enabled: false
+    interval: 30s
+    # Extra labels for Prometheus discovery, e.g. release: prometheus
+    labels: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# The image is distroless nonroot and the binary never writes to disk, so
+# the strictest settings work as-is.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# Must exceed the gateway's 10s graceful-shutdown bound (SIGTERM →
+# http.Server.Shutdown with a 10s timeout; long-lived SSE streams are cut at
+# that bound).
+terminationGracePeriodSeconds: 30
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []

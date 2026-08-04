@@ -1,0 +1,30 @@
+fold {{ .Chart.AppVersion }} deployed as {{ include "fold.fullname" . }}.
+
+MCP endpoint (in-cluster):
+  http://{{ include "fold.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}{{ dig "server" "mcpPath" "/mcp" .Values.config }}
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+External: https://{{ .host }}{{ dig "server" "mcpPath" "/mcp" $.Values.config }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.config }}
+{{- $hosts := dig "server" "allowedHosts" (list) .Values.config }}
+{{- if not $hosts }}
+
+WARNING: config.server.allowedHosts is not set. The gateway's DNS-rebinding
+protection then admits only localhost — external clients (including Ingress
+traffic) will be answered 403. Set it to your public hostname(s), e.g.
+  config:
+    server:
+      allowedHosts: ["gw.example.com"]
+{{- end }}
+{{- else }}
+
+Config comes from ConfigMap {{ .Values.existingConfigMap | quote }}. Changing
+it does NOT restart pods — use a reloader controller or:
+  kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "fold.fullname" . }}
+{{- end }}
+
+Health:   GET /healthz   (send a Host header the allowlist admits)
+Metrics:  GET /metrics

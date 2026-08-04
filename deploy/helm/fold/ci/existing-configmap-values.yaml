@@ -1,0 +1,7 @@
+# Config supplied by an operator-managed ConfigMap; probes.hostHeader is
+# mandatory in this mode (the chart cannot see the allowlist).
+existingConfigMap: fold-config
+probes:
+  hostHeader: gw.example.com
+redis:
+  url: redis://redis.infra.svc:6379

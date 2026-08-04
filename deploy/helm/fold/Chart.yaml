@@ -1,0 +1,19 @@
+apiVersion: v2
+name: fold
+description: >-
+  fold, the enterprise MCP gateway — one governed endpoint federating any
+  number of upstream MCP servers, adding auth, policy, caching, rate
+  limiting, and audit.
+type: application
+# TODO: when this chart starts publishing to an OCI registry
+# (oci://ghcr.io/fold-run/charts), bump `version` on every chart change as
+# part of the release flow. While repo-only, it tracks notable chart changes.
+version: 0.1.0
+appVersion: "v0.4.0"
+home: https://github.com/fold-run/fold
+sources:
+  - https://github.com/fold-run/fold
+keywords:
+  - mcp
+  - gateway
+  - model-context-protocol

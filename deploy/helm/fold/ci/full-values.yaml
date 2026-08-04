@@ -1,0 +1,63 @@
+# Everything on: ingress, HPA, PDB, ServiceMonitor, Redis via secret,
+# secrets via envFrom. Probe Host header must derive from allowedHosts[0].
+# Rendering requires --api-versions monitoring.coreos.com/v1 (make helm-check
+# passes it).
+config:
+  upstreams:
+    - id: github-tools
+      url: https://mcp.platform.acme.com/mcp
+      namespace: gh
+      auth:
+        strategy: static
+        secretRef: GH_TOOLS_API_KEY
+        header: x-api-key
+        scheme: ""
+    - id: ml-search
+      url: https://mcp.ml.acquired-co.com/mcp
+      namespace: search
+  auth:
+    mode: required
+    resource: https://gw.example.com
+    issuers:
+      - issuer: https://acme.okta.com
+        groupsClaim: groups
+  audit:
+    sinks:
+      - type: stdout
+  server:
+    allowedHosts: ["gw.example.com"]
+
+envFrom:
+  - secretRef:
+      name: fold-upstream-secrets
+
+redis:
+  existingSecret: fold-redis
+  existingSecretKey: url
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  hosts:
+    - host: gw.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: fold-tls
+      hosts: [gw.example.com]
+
+autoscaling:
+  enabled: true
+
+podDisruptionBudget:
+  enabled: true
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: prometheus

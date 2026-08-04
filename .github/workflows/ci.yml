@@ -84,6 +84,16 @@ jobs:
       - name: added-latency gate
         run: FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v
 
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v4
+
+      - name: helm lint + template
+        run: make helm-check
+
   conformance:
     runs-on: ubuntu-latest
     steps:
