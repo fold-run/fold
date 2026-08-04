@@ -209,6 +209,12 @@ type AuditSink struct {
 // Routing tunes name federation.
 type Routing struct {
 	NamespaceSeparator string `json:"namespaceSeparator,omitempty"` // default "__"
+
+	// PageSize bounds federated list results (tools/prompts/resources/
+	// templates) per page. 0 uses the default (200); negative disables
+	// pagination and returns the full merged list as a single page.
+	// tasks/list is always a single merged page.
+	PageSize int `json:"pageSize,omitempty"`
 }
 
 // ServerSection configures the gateway's own HTTP server.
@@ -468,6 +474,19 @@ func (u *Upstream) validateAuth() error {
 }
 
 // Defaults, resolved at read time.
+
+// PageSize returns the per-page bound for federated list results: the
+// configured value, defaulting to 200; 0 means pagination is disabled
+// (configured negative).
+func (c *Config) PageSize() int {
+	if c.Routing == nil || c.Routing.PageSize == 0 {
+		return 200
+	}
+	if c.Routing.PageSize < 0 {
+		return 0
+	}
+	return c.Routing.PageSize
+}
 
 // NamespaceSeparator returns the configured separator (default "__").
 func (c *Config) NamespaceSeparator() string {

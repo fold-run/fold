@@ -217,6 +217,13 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `maxBodyBytes` | 1 MiB | Request body cap; larger bodies are answered `413` (chunked bodies are cut off at the cap). |
 | `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
 
+### `routing`
+
+| Field | Default | Notes |
+|---|---|---|
+| `namespaceSeparator` | `__` | Separator between namespace and bare name in public tool/prompt names. Must not contain lowercase letters, digits, or hyphens (the namespace alphabet). |
+| `pageSize` | `200` | Per-page bound on federated list results (tools, prompts, resources, templates). Fold merges and policy-filters every upstream's full list, then serves it in pages; cursors are opaque, bound to the calling principal, and expire when the underlying snapshot changes (the client receives `-32602` and restarts the list — `list_changed` notifications already prompt refetches). Negative disables pagination (single merged page). `tasks/list` is always a single merged page. |
+
 ## Error codes
 
 Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
@@ -283,7 +290,7 @@ fold is pre-1.0. The supported surfaces are the `fold` binary (CLI flags, the JS
 Known gaps, documented deliberately:
 
 - **SEP-2575 `subscriptions/listen` streams** — the Go SDK supports the 2026-07-28 protocol on its streamable HTTP server only in stateless mode, which fold cannot use: session-keyed bridging (sampling, elicitation, per-client streams) requires stateful sessions. Clients on the legacy handshake — which is what the SDK negotiates against stateful servers today — get full notification fan-in (list-changed and resource-updated, tested in `gateway/listen_test.go`). fold's fan-in already sits on the surfaces the SDK reuses for listen streams, and a drift canary in that test fails when the SDK lifts the restriction. Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
-- **Composite federated pagination** — list results are merged and returned as a single page.
+- **`tasks/list` pagination** — federated task lists are merged and returned as a single page (the typed lists — tools, prompts, resources, templates — paginate; see `routing.pageSize`).
 
 ## License
 

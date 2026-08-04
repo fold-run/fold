@@ -88,17 +88,17 @@ func classify(err error) audit.Outcome {
 func (g *Gateway) route(ctx context.Context, method string, req mcp.Request, evt *audit.Event, next mcp.MethodHandler) (mcp.Result, error) {
 	switch method {
 	case "tools/list":
-		return g.listTools(ctx, evt)
+		return g.listTools(ctx, req, evt)
 	case "tools/call":
 		return g.callTool(ctx, req, evt)
 	case "prompts/list":
-		return g.listPrompts(ctx, evt)
+		return g.listPrompts(ctx, req, evt)
 	case "prompts/get":
 		return g.getPrompt(ctx, req, evt)
 	case "resources/list":
-		return g.listResources(ctx, evt)
+		return g.listResources(ctx, req, evt)
 	case "resources/templates/list":
-		return g.listResourceTemplates(ctx, evt)
+		return g.listResourceTemplates(ctx, req, evt)
 	case "resources/read":
 		return g.readResource(ctx, req, evt)
 	case "completion/complete":
@@ -173,7 +173,7 @@ func partialFailureMeta(failed []string, total int) (mcp.Meta, error) {
 	return mcp.Meta{metaPartialFailure: map[string]any{"failedUpstreams": failed}}, nil
 }
 
-func (g *Gateway) listTools(ctx context.Context, _ *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listTools(ctx context.Context, req mcp.Request, _ *audit.Event) (mcp.Result, error) {
 	principal := auth.PrincipalFromContext(ctx)
 	lists, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Tool, error) {
 		return u.listTools(ctx)
@@ -193,6 +193,16 @@ func (g *Gateway) listTools(ctx context.Context, _ *audit.Event) (mcp.Result, er
 			out.Tools = append(out.Tools, &nt)
 		}
 	}
+	cursor := ""
+	if p, ok := req.GetParams().(*mcp.ListToolsParams); ok && p != nil {
+		cursor = p.Cursor
+	}
+	page, next, jerr := paginate(out.Tools, func(t *mcp.Tool) string { return t.Name },
+		"tools", cursor, g.pageSize, principal)
+	if jerr != nil {
+		return nil, jerr
+	}
+	out.Tools, out.NextCursor = page, next
 	return out, nil
 }
 
@@ -235,7 +245,7 @@ func (g *Gateway) callTool(ctx context.Context, req mcp.Request, evt *audit.Even
 	return out, nil
 }
 
-func (g *Gateway) listPrompts(ctx context.Context, _ *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listPrompts(ctx context.Context, req mcp.Request, _ *audit.Event) (mcp.Result, error) {
 	principal := auth.PrincipalFromContext(ctx)
 	lists, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Prompt, error) {
 		return u.listPrompts(ctx)
@@ -255,6 +265,16 @@ func (g *Gateway) listPrompts(ctx context.Context, _ *audit.Event) (mcp.Result, 
 			out.Prompts = append(out.Prompts, &np)
 		}
 	}
+	cursor := ""
+	if p, ok := req.GetParams().(*mcp.ListPromptsParams); ok && p != nil {
+		cursor = p.Cursor
+	}
+	page, next, jerr := paginate(out.Prompts, func(p *mcp.Prompt) string { return p.Name },
+		"prompts", cursor, g.pageSize, principal)
+	if jerr != nil {
+		return nil, jerr
+	}
+	out.Prompts, out.NextCursor = page, next
 	return out, nil
 }
 
@@ -288,7 +308,7 @@ func (g *Gateway) getPrompt(ctx context.Context, req mcp.Request, evt *audit.Eve
 	return out, nil
 }
 
-func (g *Gateway) listResources(ctx context.Context, _ *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listResources(ctx context.Context, req mcp.Request, _ *audit.Event) (mcp.Result, error) {
 	lists, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
 		return u.listResources(ctx)
 	})
@@ -310,10 +330,20 @@ func (g *Gateway) listResources(ctx context.Context, _ *audit.Event) (mcp.Result
 			out.Resources = append(out.Resources, r)
 		}
 	}
+	cursor := ""
+	if p, ok := req.GetParams().(*mcp.ListResourcesParams); ok && p != nil {
+		cursor = p.Cursor
+	}
+	page, next, jerr := paginate(out.Resources, func(r *mcp.Resource) string { return r.URI },
+		"resources", cursor, g.pageSize, principal)
+	if jerr != nil {
+		return nil, jerr
+	}
+	out.Resources, out.NextCursor = page, next
 	return out, nil
 }
 
-func (g *Gateway) listResourceTemplates(ctx context.Context, _ *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listResourceTemplates(ctx context.Context, req mcp.Request, _ *audit.Event) (mcp.Result, error) {
 	lists, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.ResourceTemplate, error) {
 		return u.listResourceTemplates(ctx)
 	})
@@ -331,6 +361,16 @@ func (g *Gateway) listResourceTemplates(ctx context.Context, _ *audit.Event) (mc
 			out.ResourceTemplates = append(out.ResourceTemplates, tpl)
 		}
 	}
+	cursor := ""
+	if p, ok := req.GetParams().(*mcp.ListResourceTemplatesParams); ok && p != nil {
+		cursor = p.Cursor
+	}
+	page, next, jerr := paginate(out.ResourceTemplates, func(t *mcp.ResourceTemplate) string { return t.URITemplate },
+		"resourceTemplates", cursor, g.pageSize, principal)
+	if jerr != nil {
+		return nil, jerr
+	}
+	out.ResourceTemplates, out.NextCursor = page, next
 	return out, nil
 }
 

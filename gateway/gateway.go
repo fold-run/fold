@@ -50,6 +50,7 @@ type Gateway struct {
 	cfg         *config.Config
 	sep         string
 	passthrough bool
+	pageSize    int // per-page bound for federated lists; 0 = single page
 
 	upstreams   []*upstream
 	byNamespace map[string]*upstream
@@ -128,6 +129,7 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		cfg:         cfg,
 		sep:         cfg.NamespaceSeparator(),
 		passthrough: cfg.Passthrough(),
+		pageSize:    cfg.PageSize(),
 		byNamespace: map[string]*upstream{},
 		byID:        map[string]*upstream{},
 		policy:      policy.New(cfg.Policy),
