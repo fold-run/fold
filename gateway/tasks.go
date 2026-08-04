@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/auth"
+	"github.com/fold-run/fold/auth"
 )
 
 // Federated task support. MCP task ids are opaque and clients persist them

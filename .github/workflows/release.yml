@@ -27,7 +27,7 @@ jobs:
             goos="${platform%/*}" goarch="${platform#*/}"
             out="dist/fold_${version}_${goos}_${goarch}"
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
-              -ldflags="-s -w -X github.com/fold-run/fold-go/gateway.version=${version}" \
+              -ldflags="-s -w -X github.com/fold-run/fold/gateway.version=${version}" \
               -o "$out/fold" ./cmd/fold
             cp README.md LICENSE fold.config.example.json "$out/"
             tar -czf "$out.tar.gz" -C dist "$(basename "$out")"
@@ -62,5 +62,5 @@ jobs:
           push: true
           build-args: VERSION=${{ github.ref_name }}
           tags: |
-            ghcr.io/fold-run/fold-go:${{ github.ref_name }}
-            ghcr.io/fold-run/fold-go:latest
+            ghcr.io/fold-run/fold:${{ github.ref_name }}
+            ghcr.io/fold-run/fold:latest

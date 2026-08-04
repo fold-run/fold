@@ -16,7 +16,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/config"
+	"github.com/fold-run/fold/config"
 )
 
 // fixtureIssuer is a minimal identity provider: an RSA key served as JWKS,

@@ -14,7 +14,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/config"
+	"github.com/fold-run/fold/config"
 )
 
 // TestNoCrossHostCredentialLeak proves a hostile upstream cannot capture the

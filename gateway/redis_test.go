@@ -8,7 +8,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/config"
+	"github.com/fold-run/fold/config"
 )
 
 // TestRedisSharedGateways runs two gateway instances against one Redis and

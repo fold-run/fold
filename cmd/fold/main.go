@@ -1,4 +1,4 @@
-// Command fold runs the fold-go MCP gateway: one governed endpoint between
+// Command fold runs the fold MCP gateway: one governed endpoint between
 // every MCP client and every MCP server.
 //
 //	fold --config fold.config.json --port 8080
@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fold-run/fold-go/config"
-	"github.com/fold-run/fold-go/gateway"
+	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/gateway"
 )
 
 // newLogger builds the structured logger from the CLI flags.

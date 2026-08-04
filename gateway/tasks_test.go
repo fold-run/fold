@@ -13,7 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/config"
+	"github.com/fold-run/fold/config"
 )
 
 // taskFixture is an MCP server that mints tasks from a tool call and answers

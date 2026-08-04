@@ -7,8 +7,8 @@ package policy
 import (
 	"strings"
 
-	"github.com/fold-run/fold-go/auth"
-	"github.com/fold-run/fold-go/config"
+	"github.com/fold-run/fold/auth"
+	"github.com/fold-run/fold/config"
 )
 
 // Decision is the outcome of a policy check.

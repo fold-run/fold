@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-fold-go is the primary implementation of fold: an enterprise MCP gateway — one governed endpoint federating any number of upstream MCP servers into a single virtual server, adding auth, policy, caching, rate limiting, and audit. (The original [TypeScript implementation](https://github.com/fold-run/fold) is archived; it is history, not an upstream — nothing gets ported from it anymore.) Single Go module, no build system beyond the Go toolchain. The wire protocol (streamable HTTP, request/response and SSE) is the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)'s implementation on both the client-facing and upstream-facing sides — fold-go never hand-rolls protocol framing.
+This repo is fold, the enterprise MCP gateway — one governed endpoint federating any number of upstream MCP servers into a single virtual server, adding auth, policy, caching, rate limiting, and audit. (The original [TypeScript implementation](https://github.com/fold-run/fold-ts) is archived; it is history, not an upstream — nothing gets ported from it anymore.) Single Go module, no build system beyond the Go toolchain. The wire protocol (streamable HTTP, request/response and SSE) is the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)'s implementation on both the client-facing and upstream-facing sides — fold never hand-rolls protocol framing.
 
 ## Commands
 
@@ -36,7 +36,7 @@ CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, vet, build, `go tes
 
 **Errors**: the gateway mints only `-32040` (upstream rate limit), `-32041` (upstream unavailable/circuit open), `-32042` (policy denied), `-32043` (unknown namespace). Upstream errors pass through verbatim.
 
-**Config**: one JSON document (`config` package), validated in `gateway.New` and by `fold --validate`. `FOLD_CONFIG` accepts a file path or inline JSON. The version string is stamped via `-ldflags "-X github.com/fold-run/fold-go/gateway.version=..."`.
+**Config**: one JSON document (`config` package), validated in `gateway.New` and by `fold --validate`. `FOLD_CONFIG` accepts a file path or inline JSON. The version string is stamped via `-ldflags "-X github.com/fold-run/fold/gateway.version=..."`.
 
 ## Rules the repo follows
 

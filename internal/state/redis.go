@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/fold-run/fold-go/internal/breaker"
+	"github.com/fold-run/fold/internal/breaker"
 )
 
 // redisOpTimeout caps every Redis operation so a stalled Redis cannot stall

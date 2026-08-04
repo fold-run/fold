@@ -8,9 +8,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/fold-run/fold-go/internal/breaker"
-	"github.com/fold-run/fold-go/internal/cache"
-	"github.com/fold-run/fold-go/internal/ratelimit"
+	"github.com/fold-run/fold/internal/breaker"
+	"github.com/fold-run/fold/internal/cache"
+	"github.com/fold-run/fold/internal/ratelimit"
 )
 
 // Limiter admits requests against a shared budget.

@@ -1,16 +1,16 @@
-# fold-go
+# fold
 
 **fold: the enterprise MCP gateway — one governed endpoint between every MCP client and every MCP server.**
 
-This is the primary fold implementation. The original [TypeScript implementation](https://github.com/fold-run/fold) is archived; see [Differences from the TypeScript fold](#differences-from-the-typescript-fold-archived) for what was intentionally left behind.
+This is the primary fold implementation. The original [TypeScript implementation](https://github.com/fold-run/fold-ts) is archived; see [Differences from the TypeScript fold](#differences-from-the-typescript-fold-archived) for what was intentionally left behind.
 
-fold-go sits in front of any number of upstream MCP servers — in any language, on any SDK, from any team or vendor — providing federation, enterprise auth, policy, caching, rate limiting, and audit. It is built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk), so the wire protocol (streamable HTTP, both request/response and SSE) is the SDK's own implementation on both the client-facing and upstream-facing sides.
+fold sits in front of any number of upstream MCP servers — in any language, on any SDK, from any team or vendor — providing federation, enterprise auth, policy, caching, rate limiting, and audit. It is built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk), so the wire protocol (streamable HTTP, both request/response and SSE) is the SDK's own implementation on both the client-facing and upstream-facing sides.
 
-**Conformant, provably.** The official [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) suite runs against fold-go fronting the reference everything-server on every merge — **40/40 checks**, including sampling, elicitation, logging, progress, and resource subscriptions bridged through the gateway (`conformance` job in [CI](.github/workflows/ci.yml); reproduce with `./scripts/conformance.sh`).
+**Conformant, provably.** The official [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) suite runs against fold fronting the reference everything-server on every merge — **40/40 checks**, including sampling, elicitation, logging, progress, and resource subscriptions bridged through the gateway (`conformance` job in [CI](.github/workflows/ci.yml); reproduce with `./scripts/conformance.sh`).
 
 ## Use cases
 
-- **Unify a federation.** Acquisitions, child orgs, and teams each ship their own MCP servers; fold-go presents them as one virtual server with namespaced tools — no team rewrites anything.
+- **Unify a federation.** Acquisitions, child orgs, and teams each ship their own MCP servers; fold presents them as one virtual server with namespaced tools — no team rewrites anything.
 - **Draw the security boundary.** One choke point for authentication, deny-by-default tool allowlists, per-principal visibility, and an audit event for every request including denials.
 - **Broker credentials.** Clients hold one token with the gateway as audience; the gateway exchanges it per upstream (RFC 8693) or injects service credentials — API keys never reach agents.
 - **Protect fragile services.** Caching, global and per-upstream rate limits, and circuit breakers stand between agent traffic storms and your internal systems.
@@ -27,7 +27,7 @@ cat > fold.config.json <<'EOF'
 }
 EOF
 
-go run github.com/fold-run/fold-go/cmd/fold@latest --config fold.config.json --port 8080
+go run github.com/fold-run/fold/cmd/fold@latest --config fold.config.json --port 8080
 # MCP endpoint: http://localhost:8080/mcp
 # Binds 127.0.0.1 by default; pass --host 0.0.0.0 to expose beyond loopback.
 ```
@@ -37,10 +37,10 @@ Or run the container (~18 MB, distroless):
 ```bash
 docker run --rm -p 8080:8080 \
   -e FOLD_CONFIG="$(cat fold.config.json)" \
-  ghcr.io/fold-run/fold-go:latest
+  ghcr.io/fold-run/fold:latest
 ```
 
-`FOLD_CONFIG` accepts either a file path or the JSON document itself (convenient for container env injection). Prebuilt binaries for linux/darwin (amd64/arm64) are on the [releases page](https://github.com/fold-run/fold-go/releases), or `go install github.com/fold-run/fold-go/cmd/fold@latest`.
+`FOLD_CONFIG` accepts either a file path or the JSON document itself (convenient for container env injection). Prebuilt binaries for linux/darwin (amd64/arm64) are on the [releases page](https://github.com/fold-run/fold/releases), or `go install github.com/fold-run/fold/cmd/fold@latest`.
 
 A single upstream without a `namespace` runs in passthrough mode (no name rewriting). Multiple upstreams require namespaces; tools and prompts are exposed as `{namespace}__{name}`.
 
@@ -77,7 +77,7 @@ A federated multi-org config — each upstream owned by a different team, in any
 }
 ```
 
-fold-go fans list requests out across all upstreams concurrently, merges and namespaces the results, degrades gracefully when an upstream is down (`_meta["run.fold/partialFailure"]` lists the failed upstream ids), and short-circuits unhealthy upstreams with a per-upstream circuit breaker. Proxied results are tagged with their origin in `_meta["run.fold/upstream"]`. Set `REDIS_URL` (or `server.redisUrl`) to share cache, rate-limit, and circuit-breaker state across instances — a fleet of gateways behaves as one. See [`fold.config.example.json`](fold.config.example.json) for a full example.
+fold fans list requests out across all upstreams concurrently, merges and namespaces the results, degrades gracefully when an upstream is down (`_meta["run.fold/partialFailure"]` lists the failed upstream ids), and short-circuits unhealthy upstreams with a per-upstream circuit breaker. Proxied results are tagged with their origin in `_meta["run.fold/upstream"]`. Set `REDIS_URL` (or `server.redisUrl`) to share cache, rate-limit, and circuit-breaker state across instances — a fleet of gateways behaves as one. See [`fold.config.example.json`](fold.config.example.json) for a full example.
 
 ## Request pipeline
 
@@ -246,9 +246,9 @@ The integration suite spins up real MCP servers from the official Go SDK behind 
 
 fold began as a TypeScript implementation targeting Cloudflare Workers; this Go implementation carries the full core feature set on a single runtime and superseded it. Intentionally not carried over:
 
-- **Era translation** (legacy 2025 ↔ stateless 2026 bridging, MRTR parking) — fold-go pins upstream connections to the session era by default (see `protocol`) so server-initiated traffic bridges; the TypeScript held-session legacy bridge and header-based body-free routing are not replicated.
+- **Era translation** (legacy 2025 ↔ stateless 2026 bridging, MRTR parking) — fold pins upstream connections to the session era by default (see `protocol`) so server-initiated traffic bridges; the TypeScript held-session legacy bridge and header-based body-free routing are not replicated.
 - **Enterprise-Managed Authorization** (ID-JAG token endpoint) — planned; standard OAuth resource-server auth and RFC 8693 token exchange are implemented.
-- **Cloudflare Workers runtime** — fold-go is a single-binary deployment (Docker/k8s friendly). Redis-shared state (`REDIS_URL`) *is* implemented: rate limits, breakers, and list caches are fleet-wide when configured.
+- **Cloudflare Workers runtime** — fold is a single-binary deployment (Docker/k8s friendly). Redis-shared state (`REDIS_URL`) *is* implemented: rate limits, breakers, and list caches are fleet-wide when configured.
 - **`subscriptions/listen` fan-in** — the notification-stream fan-in is not carried over (the Go SDK exposes no public API for it). Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
 - **Composite federated pagination** — list results are merged and returned as a single page.
 

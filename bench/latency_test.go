@@ -1,5 +1,5 @@
 // Package bench measures the gateway's added latency on the proxy path:
-// the same client, the same upstream, with and without fold-go in between.
+// the same client, the same upstream, with and without fold in between.
 // Run with FOLD_BENCH=1 (skipped otherwise); CI gates on the p50 bound.
 package bench
 
@@ -16,8 +16,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/config"
-	"github.com/fold-run/fold-go/gateway"
+	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/gateway"
 )
 
 const (

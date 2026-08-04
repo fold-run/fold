@@ -9,7 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/fold-run/fold-go/internal/breaker"
+	"github.com/fold-run/fold/internal/breaker"
 )
 
 // metricsSet is the gateway's Prometheus instrumentation. Each Gateway owns

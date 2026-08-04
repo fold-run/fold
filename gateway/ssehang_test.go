@@ -10,7 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/config"
+	"github.com/fold-run/fold/config"
 )
 
 // TestHangingStandaloneSSE reproduces a real-world upstream (observed in the

@@ -5,7 +5,7 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags="-s -w -X github.com/fold-run/fold-go/gateway.version=${VERSION}" \
+    -ldflags="-s -w -X github.com/fold-run/fold/gateway.version=${VERSION}" \
     -o /fold ./cmd/fold
 
 # distroless/static ships CA certificates (needed for JWKS and token

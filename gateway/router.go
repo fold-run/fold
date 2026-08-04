@@ -11,8 +11,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/audit"
-	"github.com/fold-run/fold-go/auth"
+	"github.com/fold-run/fold/audit"
+	"github.com/fold-run/fold/auth"
 )
 
 // metaPartialFailure marks list results assembled while one or more

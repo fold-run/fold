@@ -18,9 +18,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fold-run/fold-go/auth"
-	"github.com/fold-run/fold-go/config"
-	"github.com/fold-run/fold-go/internal/state"
+	"github.com/fold-run/fold/auth"
+	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/state"
 )
 
 // Gateway-minted JSON-RPC error codes, documented in the README.

@@ -1,4 +1,4 @@
-// Package gateway implements the fold-go MCP gateway engine: one governed
+// Package gateway implements the fold MCP gateway engine: one governed
 // endpoint federating any number of upstream MCP servers, with namespaced
 // tools, enterprise auth, policy, caching, rate limiting, and audit.
 package gateway
@@ -24,16 +24,16 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 
-	"github.com/fold-run/fold-go/audit"
-	"github.com/fold-run/fold-go/auth"
-	"github.com/fold-run/fold-go/config"
-	"github.com/fold-run/fold-go/internal/breaker"
-	"github.com/fold-run/fold-go/internal/state"
-	"github.com/fold-run/fold-go/policy"
+	"github.com/fold-run/fold/audit"
+	"github.com/fold-run/fold/auth"
+	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/breaker"
+	"github.com/fold-run/fold/internal/state"
+	"github.com/fold-run/fold/policy"
 )
 
 // version is stamped at build time via
-// -ldflags="-X github.com/fold-run/fold-go/gateway.version=v...".
+// -ldflags="-X github.com/fold-run/fold/gateway.version=v...".
 var version = "dev"
 
 // Version reports the gateway build version.

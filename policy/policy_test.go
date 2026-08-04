@@ -3,8 +3,8 @@ package policy
 import (
 	"testing"
 
-	"github.com/fold-run/fold-go/auth"
-	"github.com/fold-run/fold-go/config"
+	"github.com/fold-run/fold/auth"
+	"github.com/fold-run/fold/config"
 )
 
 func TestAllowAllWhenAbsent(t *testing.T) {

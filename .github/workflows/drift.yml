@@ -1,8 +1,8 @@
 name: drift
 
-# Weekly check that fold-go still builds, tests, and conforms against the
+# Weekly check that fold still builds, tests, and conforms against the
 # LATEST upstream MCP SDK and conformance suite — not the pinned versions CI
-# gates on. A failure here means the spec/SDK moved and fold-go needs
+# gates on. A failure here means the spec/SDK moved and fold needs
 # attention; it opens a tracking issue rather than blocking any PR.
 
 on:
@@ -72,8 +72,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Drift: fold-go fails against latest MCP SDK / conformance"
-          body="The weekly drift check failed — the MCP SDK or conformance suite moved and fold-go needs attention.
+          title="Drift: fold fails against latest MCP SDK / conformance"
+          body="The weekly drift check failed — the MCP SDK or conformance suite moved and fold needs attention.
 
           Run: $RUN_URL
 

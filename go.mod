@@ -1,4 +1,4 @@
-module github.com/fold-run/fold-go
+module github.com/fold-run/fold
 
 go 1.26.4
 

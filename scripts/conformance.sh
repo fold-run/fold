@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the official MCP conformance suite against fold-go fronting the
+# Runs the official MCP conformance suite against fold fronting the
 # conformance repo's everything-server (passthrough mode). Used locally and
 # as the CI conformance gate.
 #

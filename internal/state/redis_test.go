@@ -7,7 +7,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
-	"github.com/fold-run/fold-go/internal/breaker"
+	"github.com/fold-run/fold/internal/breaker"
 )
 
 // twoProviders simulates two gateway instances sharing one Redis.

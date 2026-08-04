@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fold-run/fold-go/config"
+	"github.com/fold-run/fold/config"
 )
 
 // Outcome classifies how a request terminated.
