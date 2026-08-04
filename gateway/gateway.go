@@ -5,6 +5,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -61,12 +63,18 @@ type Gateway struct {
 
 	globalLimit state.Limiter
 
+	// perPrincipalRPM caps each authenticated principal on its own bucket;
+	// principalLimits memoizes those limiters per hashed identity.
+	perPrincipalRPM int
+	principalLimits sync.Map
+
 	// resourceOwner remembers which upstream listed each resource URI
 	// (URIs are opaque and never rewritten; ownership is remembered).
 	resourceOwner sync.Map
 
 	// taskOwner remembers which upstream owns each task id (opaque, never
-	// rewritten). Pinned at mint or on first probe; refreshed on use.
+	// rewritten) and which principal it was minted for. Pinned at mint or on
+	// first probe; refreshed on use. Values are taskRecord.
 	taskOwner sync.Map
 
 	// callCtx tracks the context of each in-flight named invocation per
@@ -136,6 +144,7 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	globalRPM := 0
 	if cfg.Server != nil && cfg.Server.RateLimit != nil {
 		globalRPM = cfg.Server.RateLimit.RequestsPerMinute
+		g.perPrincipalRPM = cfg.Server.RateLimit.PerPrincipalPerMinute
 	}
 	g.globalLimit = provider.Limiter("global", globalRPM)
 	if cfg.AuthRequired() {
@@ -535,7 +544,27 @@ func (g *Gateway) buildHandler() http.Handler {
 	if g.cfg.AuthRequired() {
 		mux.Handle("/.well-known/oauth-protected-resource", sdkauth.ProtectedResourceMetadataHandler(g.protectedResourceMetadata()))
 	}
-	return g.hostValidation(mux)
+	return g.hostValidation(g.bodyCapMiddleware(mux))
+}
+
+// bodyCapMiddleware bounds request bodies so one large POST cannot exhaust
+// gateway memory: a declared Content-Length over the cap is answered 413
+// before any read, and a chunked body with no honest length is bounded by
+// MaxBytesReader so it cannot slip past the cap.
+func (g *Gateway) bodyCapMiddleware(next http.Handler) http.Handler {
+	limit := g.cfg.MaxBodyBytes()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > limit {
+			g.metrics.reject("body_too_large")
+			g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeError, Error: "request body exceeds maxBodyBytes"})
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (g *Gateway) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata {
@@ -578,9 +607,13 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 		return strings.ToLower(strings.Trim(hostport, "[]"))
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Rejections flow through audit like any other terminal response —
+		// audit is the single exit door, and a DNS-rebinding attempt is
+		// exactly the kind of event an operator wants recorded.
 		if !wildcard {
 			if !allowed[hostname(r.Host)] {
 				g.metrics.reject("forbidden_host")
+				g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeForbidden, Error: fmt.Sprintf("forbidden host %q", r.Host)})
 				http.Error(w, "forbidden host", http.StatusForbidden)
 				return
 			}
@@ -594,6 +627,7 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 				}
 				if !allowed[host] {
 					g.metrics.reject("forbidden_origin")
+					g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeForbidden, Error: fmt.Sprintf("forbidden origin %q", origin)})
 					http.Error(w, "forbidden origin", http.StatusForbidden)
 					return
 				}
@@ -635,18 +669,62 @@ func (g *Gateway) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// rateLimitMiddleware enforces the global request budget: 429 + Retry-After.
+// rateLimitMiddleware enforces the request budgets: the global bucket, then
+// — for authenticated callers — a per-principal bucket, so one tenant's
+// flood cannot consume the shared budget and 429 every other tenant. Runs
+// after auth, so the principal is verified. 429 + Retry-After.
 func (g *Gateway) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ok, retry := g.globalLimit.Allow(r.Context()); !ok {
-			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
-			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
-			g.metrics.reject("rate_limited")
-			g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeRateLimited})
+			g.rejectRateLimited(w, retry, nil)
 			return
+		}
+		if g.perPrincipalRPM > 0 {
+			if p := principalFromRequest(r); p != nil {
+				if ok, retry := g.principalLimiter(p).Allow(r.Context()); !ok {
+					g.rejectRateLimited(w, retry, p)
+					return
+				}
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// rejectRateLimited answers 429 with Retry-After and records the rejection.
+func (g *Gateway) rejectRateLimited(w http.ResponseWriter, retry time.Duration, p *auth.Principal) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+	g.metrics.reject("rate_limited")
+	evt := audit.Event{Method: "http", Outcome: audit.OutcomeRateLimited}
+	if p != nil {
+		evt.Principal, evt.Issuer = p.Subject, p.Issuer
+	}
+	g.audit.Emit(evt)
+}
+
+// principalFromRequest reads the verified principal the auth middleware
+// stored in the request context (nil when auth is disabled).
+func principalFromRequest(r *http.Request) *auth.Principal {
+	ti := sdkauth.TokenInfoFromContext(r.Context())
+	if ti == nil {
+		return nil
+	}
+	p, _ := ti.Extra[tokenInfoPrincipalKey].(*auth.Principal)
+	return p
+}
+
+// principalLimiter returns the per-principal limiter, memoized per identity.
+// The scope hashes the client-influenced issuer+subject so raw values never
+// become shared-state keys.
+func (g *Gateway) principalLimiter(p *auth.Principal) state.Limiter {
+	sum := sha256.Sum256([]byte(p.Issuer + "\x00" + p.Subject))
+	scope := "sub:" + hex.EncodeToString(sum[:])
+	if v, ok := g.principalLimits.Load(scope); ok {
+		return v.(state.Limiter)
+	}
+	v, _ := g.principalLimits.LoadOrStore(scope, g.state.Limiter(scope, g.perPrincipalRPM))
+	return v.(state.Limiter)
 }
 
 type statusRecorder struct {

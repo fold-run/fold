@@ -45,6 +45,9 @@ func TestValidationErrors(t *testing.T) {
 		{"policy unknown server", `{"upstreams":[{"id":"a","url":"http://x.test"}],"policy":{"rules":[{"id":"r","allow":[{"server":"nope"}]}]}}`, "unknown server"},
 		{"webhook without url", `{"upstreams":[{"id":"a","url":"http://x.test"}],"audit":{"sinks":[{"type":"webhook"}]}}`, "url"},
 		{"unknown field", `{"upstreams":[{"id":"a","url":"http://x.test"}],"nope":true}`, "nope"},
+		{"passthrough without auth", `{"upstreams":[{"id":"a","url":"http://x.test","auth":{"strategy":"passthrough"}}]}`, `auth.mode "required"`},
+		{"exchange without auth", `{"upstreams":[{"id":"a","url":"http://x.test","auth":{"strategy":"token-exchange","tokenEndpoint":"https://t.test","clientId":"c","clientAuth":{"type":"client_secret_post","secretRef":"S"},"audience":"aud"}}]}`, `auth.mode "required"`},
+		{"negative body cap", `{"upstreams":[{"id":"a","url":"http://x.test"}],"server":{"maxBodyBytes":-1}}`, "maxBodyBytes"},
 	}
 	for _, c := range cases {
 		_, err := Parse([]byte(c.json))

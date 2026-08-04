@@ -226,3 +226,42 @@ func TestRejectsTokenWithoutSubject(t *testing.T) {
 		t.Errorf("token without sub should be rejected, got %d", resp.StatusCode)
 	}
 }
+
+// One principal flooding its own per-principal budget is 429'd without
+// consuming any other principal's — the global bucket alone let a single
+// tenant starve every other tenant.
+func TestPerPrincipalRateLimit(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	iss := newFixtureIssuer(t)
+	cfg := authedConfig(iss, []config.Upstream{{ID: "u", URL: up.URL}}, nil)
+	cfg.Server = &config.ServerSection{RateLimit: &config.RateLimit{PerPrincipalPerMinute: 3}}
+	ts, _ := startGateway(t, cfg)
+
+	post := func(token string) int {
+		req, err := http.NewRequest("POST", ts.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	aliceTok := iss.mint(t, "alice", "https://gw.example.com", nil)
+	bobTok := iss.mint(t, "bob", "https://gw.example.com", nil)
+
+	last := 0
+	for i := 0; i < 6; i++ {
+		last = post(aliceTok)
+	}
+	if last != http.StatusTooManyRequests {
+		t.Errorf("flooding principal should be 429'd, got %d", last)
+	}
+	if got := post(bobTok); got == http.StatusTooManyRequests {
+		t.Error("another principal's flood starved an unrelated caller")
+	}
+}

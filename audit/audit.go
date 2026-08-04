@@ -24,6 +24,7 @@ const (
 	OutcomeRateLimited     Outcome = "rate_limited"
 	OutcomeUnauthenticated Outcome = "unauthenticated"
 	OutcomeUpstreamDown    Outcome = "upstream_down"
+	OutcomeForbidden       Outcome = "forbidden" // host/origin rejected (DNS rebinding)
 )
 
 // Event is one audit record.

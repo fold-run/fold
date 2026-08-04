@@ -99,6 +99,11 @@ type CircuitBreaker struct {
 // RateLimit is a fixed-window request budget.
 type RateLimit struct {
 	RequestsPerMinute int `json:"requestsPerMinute"`
+	// PerPrincipalPerMinute additionally caps each authenticated principal
+	// on its own bucket, so one tenant's flood cannot consume the shared
+	// budget and starve every other tenant. Server-level only; requires
+	// auth (anonymous callers are governed by the global budget alone).
+	PerPrincipalPerMinute int `json:"perPrincipalPerMinute,omitempty"`
 }
 
 // Auth configures the gateway's OAuth 2.0 resource server.
@@ -167,6 +172,10 @@ type ServerSection struct {
 	MCPPath      string     `json:"mcpPath,omitempty"`      // default "/mcp"
 	AllowedHosts []string   `json:"allowedHosts,omitempty"` // default localhost set; ["*"] disables
 	RateLimit    *RateLimit `json:"rateLimit,omitempty"`    // global, across all upstreams
+
+	// MaxBodyBytes caps request body size (413 beyond it), bounding the
+	// memory one request can pin. Default 1 MiB.
+	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 
 	// RedisURL shares cache, rate-limit, and circuit-breaker state across
 	// gateway instances (redis:// URL). Defaults to the REDIS_URL
@@ -255,6 +264,14 @@ func (c *Config) Validate() error {
 		if err := u.validateAuth(); err != nil {
 			return err
 		}
+		// Per-principal credential strategies are meaningless without a
+		// verified caller identity: passthrough would forward whatever
+		// header an anonymous caller supplied, and token-exchange has no
+		// subject to exchange for (its cache would pool tokens across
+		// callers).
+		if u.Auth != nil && (u.Auth.Strategy == "passthrough" || u.Auth.Strategy == "token-exchange") && !c.AuthRequired() {
+			return fmt.Errorf("upstream %q: auth strategy %q requires auth.mode %q", u.ID, u.Auth.Strategy, "required")
+		}
 	}
 	if len(c.Upstreams) > 1 {
 		for i := range c.Upstreams {
@@ -262,6 +279,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("upstream %q: namespace is required when multiple upstreams are configured", c.Upstreams[i].ID)
 			}
 		}
+	}
+	if c.Server != nil && c.Server.MaxBodyBytes < 0 {
+		return fmt.Errorf("server: maxBodyBytes must be positive")
 	}
 	if c.Auth != nil {
 		switch c.Auth.Mode {
@@ -378,6 +398,14 @@ func (c *Config) NamespaceSeparator() string {
 		return c.Routing.NamespaceSeparator
 	}
 	return "__"
+}
+
+// MaxBodyBytes returns the request body cap (default 1 MiB).
+func (c *Config) MaxBodyBytes() int64 {
+	if c.Server != nil && c.Server.MaxBodyBytes > 0 {
+		return c.Server.MaxBodyBytes
+	}
+	return 1 << 20
 }
 
 // MCPPath returns the path the gateway serves MCP on (default "/mcp").

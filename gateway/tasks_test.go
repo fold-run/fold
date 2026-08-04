@@ -117,7 +117,7 @@ func callTaskMethod(t *testing.T, session *mcp.ClientSession, method string, par
 	return res.raw, nil
 }
 
-func taskClient(t *testing.T, url string) *mcp.ClientSession {
+func taskClient(t *testing.T, url string, headers map[string]string) *mcp.ClientSession {
 	t.Helper()
 	client := mcp.NewClient(&mcp.Implementation{Name: "task-client", Version: "1.0"}, nil)
 	for _, m := range taskMethods {
@@ -125,7 +125,14 @@ func taskClient(t *testing.T, url string) *mcp.ClientSession {
 			t.Fatal(err)
 		}
 	}
-	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: url + "/mcp"}, nil)
+	httpClient := http.DefaultClient
+	if headers != nil {
+		httpClient = &http.Client{Transport: headerTransport{headers: headers}}
+	}
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint:   url + "/mcp",
+		HTTPClient: httpClient,
+	}, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -140,7 +147,7 @@ func TestFederatedTasks(t *testing.T) {
 		{ID: "a", URL: upA.URL, Namespace: "a"},
 		{ID: "b", URL: upB.URL, Namespace: "b"},
 	}})
-	session := taskClient(t, ts.URL)
+	session := taskClient(t, ts.URL, nil)
 
 	// Mint a task on upstream A via a tool call. Affinity is pinned from the
 	// result _meta.
@@ -155,8 +162,8 @@ func TestFederatedTasks(t *testing.T) {
 	if taskID == "" {
 		t.Fatalf("no task minted; meta=%v", out.Meta)
 	}
-	if owner, ok := gw.taskOwner.Load(taskID); !ok || owner.(string) != "a" {
-		t.Errorf("affinity not pinned to a: %v", owner)
+	if rec, ok := gw.taskOwner.Load(taskID); !ok || rec.(taskRecord).upstreamID != "a" {
+		t.Errorf("affinity not pinned to a: %v", rec)
 	}
 
 	// tasks/get routes to the owner by affinity.
@@ -177,8 +184,8 @@ func TestFederatedTasks(t *testing.T) {
 	if !strings.Contains(string(res), taskID) {
 		t.Errorf("probe fallback failed: %s", res)
 	}
-	if owner, ok := gw.taskOwner.Load(taskID); !ok || owner.(string) != "a" {
-		t.Errorf("probe did not re-pin affinity: %v", owner)
+	if rec, ok := gw.taskOwner.Load(taskID); !ok || rec.(taskRecord).upstreamID != "a" {
+		t.Errorf("probe did not re-pin affinity: %v", rec)
 	}
 
 	// A mutating method (cancel) reaches only the owner.
@@ -224,5 +231,95 @@ func TestFederatedTasks(t *testing.T) {
 	}
 	if !sawA || !sawB {
 		t.Errorf("tasks/list did not merge both upstreams (a=%v b=%v): %s", sawA, sawB, list)
+	}
+}
+
+// listedTaskIDs runs tasks/list and returns the task ids the caller can see.
+func listedTaskIDs(t *testing.T, session *mcp.ClientSession) []string {
+	t.Helper()
+	list, err := callTaskMethod(t, session, "tasks/list", nil)
+	if err != nil {
+		t.Fatalf("tasks/list: %v", err)
+	}
+	var page struct {
+		Tasks []map[string]any `json:"tasks"`
+	}
+	if err := json.Unmarshal(list, &page); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, tk := range page.Tasks {
+		if id, _ := tk["taskId"].(string); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// A task minted by one principal is invisible to every other: task-scoped
+// calls answer -32002 exactly like an unknown id (no existence leak, no
+// probe, no upstream contact), and tasks/list hides it. Tasks fold has no
+// ownership record for (out-of-band or evicted) stay reachable by anyone,
+// matching the locate-by-probe fallback.
+func TestTaskPrincipalIsolation(t *testing.T) {
+	up := newTaskFixture(t, "a")
+	iss := newFixtureIssuer(t)
+	ts, gw := startGateway(t, authedConfig(iss,
+		[]config.Upstream{{ID: "a", URL: up.URL, Namespace: "a"}}, nil))
+
+	aud := "https://gw.example.com"
+	alice := taskClient(t, ts.URL, map[string]string{"Authorization": "Bearer " + iss.mint(t, "alice", aud, nil)})
+	bob := taskClient(t, ts.URL, map[string]string{"Authorization": "Bearer " + iss.mint(t, "bob", aud, nil)})
+
+	out, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "a__start_job", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("start_job: %v", err)
+	}
+	taskID := ""
+	if task, ok := out.Meta["task"].(map[string]any); ok {
+		taskID, _ = task["taskId"].(string)
+	}
+	if taskID == "" {
+		t.Fatalf("no task minted; meta=%v", out.Meta)
+	}
+
+	// Bob cannot read or cancel alice's task, and the denial is
+	// indistinguishable from an unknown task id.
+	for _, m := range []string{"tasks/get", "tasks/cancel", "tasks/result", "tasks/update"} {
+		if _, err := callTaskMethod(t, bob, m, map[string]any{"taskId": taskID}); err == nil {
+			t.Errorf("%s: bob reached alice's task", m)
+		} else if !strings.Contains(err.Error(), "no upstream owns") {
+			t.Errorf("%s: denial should read like not-found, got: %v", m, err)
+		}
+	}
+	// The denials never reached the upstream: bob's cancel did not take.
+	res, err := callTaskMethod(t, alice, "tasks/get", map[string]any{"taskId": taskID})
+	if err != nil {
+		t.Fatalf("alice tasks/get: %v", err)
+	}
+	if !strings.Contains(string(res), `"status":"working"`) {
+		t.Errorf("bob's denied cancel reached the upstream: %s", res)
+	}
+
+	// tasks/list shows the task to alice only.
+	if ids := listedTaskIDs(t, bob); len(ids) != 0 {
+		t.Errorf("bob's tasks/list leaked: %v", ids)
+	}
+	if ids := listedTaskIDs(t, alice); len(ids) != 1 || ids[0] != taskID {
+		t.Errorf("alice's tasks/list = %v, want [%s]", ids, taskID)
+	}
+
+	// A task with no ownership record (fold restarted, or minted out of
+	// band) stays reachable by any caller via the probe fallback, and the
+	// probe never claims ownership for the prober.
+	gw.taskOwner.Delete(taskID)
+	if _, err := callTaskMethod(t, bob, "tasks/get", map[string]any{"taskId": taskID}); err != nil {
+		t.Errorf("unowned task should be probe-reachable: %v", err)
+	}
+	if v, ok := gw.taskOwner.Load(taskID); !ok || v.(taskRecord).owner != "" {
+		t.Errorf("probe must not assign ownership: %+v", v)
+	}
+	if _, err := callTaskMethod(t, alice, "tasks/get", map[string]any{"taskId": taskID}); err != nil {
+		t.Errorf("minter locked out of rediscovered task: %v", err)
 	}
 }

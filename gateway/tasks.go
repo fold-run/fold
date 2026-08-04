@@ -7,6 +7,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/fold-run/fold-go/auth"
 )
 
 // Federated task support. MCP task ids are opaque and clients persist them
@@ -38,6 +40,36 @@ const (
 // API for it).
 var taskMethods = []string{
 	methodTasksGet, methodTasksList, methodTasksCancel, methodTasksResult, methodTasksUpdate,
+}
+
+// taskRecord is one taskOwner entry: the upstream that owns the task plus
+// the identity of the principal it was minted for. An empty owner means fold
+// never saw the mint (out-of-band, or evicted and rediscovered) — such tasks
+// stay reachable by any caller, matching the locate-by-probe fallback.
+type taskRecord struct {
+	upstreamID string
+	owner      string
+}
+
+// taskOwnerKey collapses a principal to the identity that owns its tasks.
+// Anonymous callers share one bucket, so no-auth deployments are unchanged.
+func taskOwnerKey(p *auth.Principal) string {
+	if p == nil {
+		return ""
+	}
+	return p.Issuer + "\x00" + p.Subject
+}
+
+// storeTaskAffinity pins taskID → upstream. An owner already on record is
+// preserved: discovery via list or probe updates routing but never reassigns
+// ownership to the discovering caller.
+func (g *Gateway) storeTaskAffinity(taskID, upstreamID, owner string) {
+	if v, ok := g.taskOwner.Load(taskID); ok {
+		if prev := v.(taskRecord); prev.owner != "" {
+			owner = prev.owner
+		}
+	}
+	g.taskOwner.Store(taskID, taskRecord{upstreamID: upstreamID, owner: owner})
 }
 
 // rawParams forwards an opaque JSON params object through the SDK custom
@@ -108,8 +140,9 @@ func extractTaskID(raw json.RawMessage) string {
 // routeTask dispatches one task method. tasks/list fans out; the others
 // route to the owning upstream by affinity, falling back to a probe.
 func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMessage) (json.RawMessage, error) {
+	caller := taskOwnerKey(auth.PrincipalFromContext(ctx))
 	if method == methodTasksList {
-		return g.listTasks(ctx)
+		return g.listTasks(ctx, caller)
 	}
 	taskID := extractTaskID(raw)
 	if taskID == "" {
@@ -117,10 +150,17 @@ func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMess
 	}
 
 	// Affinity: route straight to the remembered owner. Its own errors
-	// (including a genuine not-found) pass through verbatim.
-	if id, ok := g.taskOwner.Load(taskID); ok {
-		if u := g.byID[id.(string)]; u != nil {
-			g.taskOwner.Store(taskID, u.cfg.ID) // refresh on use
+	// (including a genuine not-found) pass through verbatim. A task minted
+	// for a different principal is answered exactly like an unknown id —
+	// the denial must not reveal existence — and is never probed or
+	// forwarded on this caller's behalf.
+	if v, ok := g.taskOwner.Load(taskID); ok {
+		rec := v.(taskRecord)
+		if rec.owner != "" && rec.owner != caller {
+			return nil, &jsonrpc.Error{Code: codeTaskNotFound, Message: fmt.Sprintf("no upstream owns task %q", taskID)}
+		}
+		if u := g.byID[rec.upstreamID]; u != nil {
+			g.taskOwner.Store(taskID, rec) // refresh on use
 			return u.callTask(ctx, method, raw)
 		}
 	}
@@ -128,12 +168,13 @@ func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMess
 	// Probe fallback: locate the owner with a read-only tasks/get across
 	// upstreams — the owner answers, everyone else is a "no". Never fan a
 	// mutating method (cancel/result/update) out; locate first, then act on
-	// the owner alone.
+	// the owner alone. Fold cannot know who minted a task it never saw, so
+	// the record stays ownerless (out-of-band sharing keeps working).
 	owner := g.locateTaskOwner(ctx, taskID)
 	if owner == nil {
 		return nil, &jsonrpc.Error{Code: codeTaskNotFound, Message: fmt.Sprintf("no upstream owns task %q", taskID)}
 	}
-	g.taskOwner.Store(taskID, owner.cfg.ID)
+	g.storeTaskAffinity(taskID, owner.cfg.ID, "")
 	return owner.callTask(ctx, method, raw)
 }
 
@@ -152,9 +193,12 @@ func (g *Gateway) locateTaskOwner(ctx context.Context, taskID string) *upstream 
 	return nil
 }
 
-// listTasks merges tasks/list across every upstream. Ids no upstream knows
-// simply do not appear; a partial-failure marker records any that were down.
-func (g *Gateway) listTasks(ctx context.Context) (json.RawMessage, error) {
+// listTasks merges tasks/list across every upstream, filtered to the calling
+// principal: upstreams see fold as one client, so the merged list would
+// otherwise expose every caller's tasks. Tasks with no ownership record
+// (out-of-band or evicted) are kept, matching the locate-by-probe fallback.
+// A partial-failure marker records any upstreams that were down.
+func (g *Gateway) listTasks(ctx context.Context, caller string) (json.RawMessage, error) {
 	empty, _ := json.Marshal(map[string]any{})
 	results, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
 		return u.callTask(ctx, methodTasksList, empty)
@@ -174,10 +218,16 @@ func (g *Gateway) listTasks(ctx context.Context) (json.RawMessage, error) {
 		if err := json.Unmarshal(r, &page); err != nil {
 			continue
 		}
-		// Pin affinity for every listed task to the upstream that returned it.
+		// Pin affinity for every listed task to the upstream that returned
+		// it (never reassigning ownership), then hide other callers' tasks.
 		for _, t := range page.Tasks {
 			if id := extractTaskID(t); id != "" {
-				g.taskOwner.Store(id, g.upstreams[i].cfg.ID)
+				g.storeTaskAffinity(id, g.upstreams[i].cfg.ID, "")
+				if v, ok := g.taskOwner.Load(id); ok {
+					if rec := v.(taskRecord); rec.owner != "" && rec.owner != caller {
+						continue
+					}
+				}
 			}
 			merged = append(merged, t)
 		}
@@ -190,8 +240,10 @@ func (g *Gateway) listTasks(ctx context.Context) (json.RawMessage, error) {
 }
 
 // noteMintedTask pins affinity when a tools/call result advertises a task it
-// created, so later task calls skip the probe.
-func (g *Gateway) noteMintedTask(u *upstream, meta mcp.Meta) {
+// created, so later task calls skip the probe. The mint records the calling
+// principal as the task's owner: task-scoped calls and tasks/list answer only
+// that principal from then on.
+func (g *Gateway) noteMintedTask(ctx context.Context, u *upstream, meta mcp.Meta) {
 	if meta == nil {
 		return
 	}
@@ -200,6 +252,6 @@ func (g *Gateway) noteMintedTask(u *upstream, meta mcp.Meta) {
 		return
 	}
 	if id, ok := task["taskId"].(string); ok && id != "" {
-		g.taskOwner.Store(id, u.cfg.ID)
+		g.storeTaskAffinity(id, u.cfg.ID, taskOwnerKey(auth.PrincipalFromContext(ctx)))
 	}
 }

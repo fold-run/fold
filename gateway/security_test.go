@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -239,5 +240,89 @@ func TestLoggerReceivesOperationalEvents(t *testing.T) {
 	// The upstream label must be attached to per-upstream events.
 	if !strings.Contains(logs, `upstream=u`) {
 		t.Errorf("per-upstream logs missing upstream label; got:\n%s", logs)
+	}
+}
+
+// One large POST must not pin unbounded gateway memory: a declared
+// Content-Length beyond server.maxBodyBytes is answered 413 before any read,
+// and a chunked body with no honest length is cut off at the cap.
+func TestRequestBodyCap(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Server:    &config.ServerSection{MaxBodyBytes: 1024},
+	})
+	oversized := strings.Repeat("x", 4096)
+
+	resp, err := http.Post(ts.URL+"/mcp", "application/json", strings.NewReader(oversized))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("over-length POST: want 413, got %d", resp.StatusCode)
+	}
+
+	// Hiding the length behind chunked encoding must not slip past the cap.
+	req, err := http.NewRequest("POST", ts.URL+"/mcp", struct{ io.Reader }{strings.NewReader(oversized)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 400 {
+		t.Errorf("chunked oversized body accepted: %d", resp.StatusCode)
+	}
+
+	// Normal-size traffic is unaffected.
+	session := connect(t, ts.URL, nil)
+	if _, err := session.ListTools(context.Background(), nil); err != nil {
+		t.Fatalf("normal request through the cap: %v", err)
+	}
+}
+
+// A DNS-rebinding rejection is a terminal response like any other: it must
+// flow through the audit exit, not vanish with only a metrics bump.
+func TestHostRejectionAudited(t *testing.T) {
+	events := make(chan []byte, 1)
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		select {
+		case events <- b:
+		default:
+		}
+	}))
+	t.Cleanup(sink.Close)
+
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Audit:     &config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: sink.URL}}},
+	})
+
+	req, err := http.NewRequest("POST", ts.URL+"/mcp", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "evil.example.com"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("want 403 for forbidden host, got %d", resp.StatusCode)
+	}
+	select {
+	case b := <-events:
+		if !bytes.Contains(b, []byte(`"forbidden"`)) {
+			t.Errorf("audit event does not record the forbidden outcome: %s", b)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("host rejection was not audited")
 	}
 }

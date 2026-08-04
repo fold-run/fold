@@ -232,7 +232,7 @@ func (g *Gateway) callTool(ctx context.Context, req mcp.Request, evt *audit.Even
 	}
 	// If the call minted a task, pin its ownership so later task calls skip
 	// the probe.
-	g.noteMintedTask(u, out.Meta)
+	g.noteMintedTask(ctx, u, out.Meta)
 	tagUpstream(&out.Meta, u)
 	return out, nil
 }

@@ -49,7 +49,7 @@ func main() {
 	var (
 		configPath  = flag.String("config", "", "path to fold.config.json (or set FOLD_CONFIG to a path or inline JSON)")
 		port        = flag.Int("port", 8080, "port to listen on")
-		host        = flag.String("host", "", "address to bind (default all interfaces)")
+		host        = flag.String("host", "127.0.0.1", "address to bind; set 0.0.0.0 to expose beyond loopback")
 		validate    = flag.Bool("validate", false, "validate the config and exit")
 		showVersion = flag.Bool("version", false, "print the version and exit")
 		logFormat   = flag.String("log-format", "text", "log format: text | json")
