@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/fold-run/fold/security/advisories/new
+    about: Auth/policy bypass, credential leakage, audit evasion — report privately, never as a public issue. See SECURITY.md.

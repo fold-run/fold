@@ -1,0 +1,54 @@
+name: Bug report
+description: Behavior through the gateway is wrong, or fold crashes/hangs.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Security vulnerabilities (auth/policy bypass, credential leakage,
+        audit evasion) must be reported privately — see
+        [SECURITY.md](https://github.com/fold-run/fold/blob/main/SECURITY.md),
+        not filed here.
+  - type: input
+    id: version
+    attributes:
+      label: fold version
+      description: Output of `fold --version` (or the commit if built from source).
+      placeholder: fold v0.3.0
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >
+        What you did, what fold did, and what you expected instead. The rule
+        of thumb: behavior through the gateway should match hitting the
+        upstream directly — say whether the upstream behaves correctly when
+        hit without fold.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Config
+      description: >
+        The fold config document that reproduces this, **with secrets and
+        internal hostnames redacted**. Trim to the upstreams/sections involved.
+      render: json
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >
+        Anything relevant about the setup — client (which MCP client/SDK),
+        upstream server (language/SDK), Redis vs in-memory state, single
+        instance vs fleet, container vs binary.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: >
+        fold logs (`--log-level debug` if possible), the JSON-RPC error the
+        client saw, or audit events. Redact tokens and secrets.
+      render: text
