@@ -282,7 +282,7 @@ fold is pre-1.0. The supported surfaces are the `fold` binary (CLI flags, the JS
 
 Known gaps, documented deliberately:
 
-- **`subscriptions/listen` fan-in** — the notification-stream fan-in awaits a public Go SDK API. Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
+- **SEP-2575 `subscriptions/listen` streams** — the Go SDK supports the 2026-07-28 protocol on its streamable HTTP server only in stateless mode, which fold cannot use: session-keyed bridging (sampling, elicitation, per-client streams) requires stateful sessions. Clients on the legacy handshake — which is what the SDK negotiates against stateful servers today — get full notification fan-in (list-changed and resource-updated, tested in `gateway/listen_test.go`). fold's fan-in already sits on the surfaces the SDK reuses for listen streams, and a drift canary in that test fails when the SDK lifts the restriction. Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
 - **Composite federated pagination** — list results are merged and returned as a single page.
 
 ## License

@@ -36,8 +36,10 @@ const (
 )
 
 // taskMethods are the request/response task methods fold federates.
-// subscriptions/listen fan-in is not included (the SDK exposes no public
-// API for it).
+// subscriptions/listen streams are not included: the SDK serves the
+// 2026-07-28 protocol only on stateless HTTP servers, which fold's
+// session-keyed bridging cannot use — see README "Not implemented" and the
+// drift canary in listen_test.go.
 var taskMethods = []string{
 	methodTasksGet, methodTasksList, methodTasksCancel, methodTasksResult, methodTasksUpdate,
 }
