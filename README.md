@@ -337,6 +337,13 @@ Known gaps, documented deliberately:
 
 ## Changelog
 
+### v0.6.0 — 2026-08-04
+
+Self-serve federation.
+
+- **Dynamic upstream discovery** — fold polls `discovery.url` for an upstreams document and hot-swaps the discovered set into the federation alongside the static config: a team ships an MCP server, the registry lists it, and it appears behind the gateway. Fail-safe (a bad document or dead source keeps the last good set) and composable with base config reloads.
+- **`tasks/list` pagination** — the merged federated task list now pages with the same principal-bound snapshot-offset cursors as the typed lists, in deterministic id order.
+
 ### v0.5.0 — 2026-08-04
 
 Running a federation in production: balancing, live reconfiguration, and deeper observability.
