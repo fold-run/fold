@@ -72,6 +72,11 @@ type upstream struct {
 	metrics *metricsSet
 	// log is the owning gateway's logger, tagged with this upstream id.
 	log *slog.Logger
+
+	// probeStop ends the active health-probe loop (nil when healthCheck is
+	// not configured); stopProbeOnce makes Close safe to call repeatedly.
+	probeStop     chan struct{}
+	stopProbeOnce sync.Once
 	// breaker-transition logging state.
 	hadFailure       atomic.Bool
 	lastBreakerState atomic.Value // string
@@ -267,20 +272,7 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 func (u *upstream) connect(ctx context.Context, opts *mcp.ClientOptions) (*mcp.ClientSession, error) {
 	var lastErr error
 	for _, endpoint := range u.endpoints.candidates() {
-		client := mcp.NewClient(&mcp.Implementation{Name: "fold-gateway", Version: version}, opts)
-		// Register the federated task methods so the client may forward them
-		// to this upstream as opaque custom methods.
-		for _, method := range taskMethods {
-			if err := mcp.AddSendingCustomMethod[*rawParams, *rawResult](client, method); err != nil {
-				return nil, fmt.Errorf("register task method %q: %w", method, err)
-			}
-		}
-		cctx, cancel := context.WithTimeout(ctx, u.connectTimeout)
-		session, err := client.Connect(cctx, &mcp.StreamableClientTransport{
-			Endpoint:   endpoint,
-			HTTPClient: u.httpClient,
-		}, nil)
-		cancel()
+		session, err := u.connectTo(ctx, endpoint, opts)
 		if err != nil {
 			u.endpoints.markDown(endpoint)
 			u.log.Warn("upstream connect failed", "endpoint", endpoint, "err", err)
@@ -292,6 +284,80 @@ func (u *upstream) connect(ctx context.Context, opts *mcp.ClientOptions) (*mcp.C
 		return session, nil
 	}
 	return nil, fmt.Errorf("connect upstream %q: %w", u.cfg.ID, lastErr)
+}
+
+// connectTo establishes one session against a specific endpoint.
+func (u *upstream) connectTo(ctx context.Context, endpoint string, opts *mcp.ClientOptions) (*mcp.ClientSession, error) {
+	client := mcp.NewClient(&mcp.Implementation{Name: "fold-gateway", Version: version}, opts)
+	// Register the federated task methods so the client may forward them to
+	// this upstream as opaque custom methods.
+	for _, method := range taskMethods {
+		if err := mcp.AddSendingCustomMethod[*rawParams, *rawResult](client, method); err != nil {
+			return nil, fmt.Errorf("register task method %q: %w", method, err)
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, u.connectTimeout)
+	defer cancel()
+	return client.Connect(cctx, &mcp.StreamableClientTransport{
+		Endpoint:   endpoint,
+		HTTPClient: u.httpClient,
+	}, nil)
+}
+
+// startHealthProbes begins the active endpoint probe loop when healthCheck
+// is configured. Called after the upstream is wired (logger set), so the
+// goroutine never races construction. Idempotent.
+func (u *upstream) startHealthProbes() {
+	hc := u.cfg.HealthCheck
+	if hc == nil || hc.IntervalMs <= 0 || u.probeStop != nil {
+		return
+	}
+	u.probeStop = make(chan struct{})
+	go u.probeLoop(time.Duration(hc.IntervalMs) * time.Millisecond)
+}
+
+// probeLoop probes every endpoint once immediately — a replica that is
+// already dead is ejected before the first client request — then on each
+// interval until the upstream closes.
+func (u *upstream) probeLoop(interval time.Duration) {
+	u.probeEndpoints()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			u.probeEndpoints()
+		case <-u.probeStop:
+			return
+		}
+	}
+}
+
+// probeEndpoints connects to each endpoint concurrently (a full MCP
+// handshake — the only honest liveness check an MCP server offers) and
+// updates the balancer: failures eject, successes restore, transitions log.
+// Probe sessions are separate from the root and bridged sessions and are
+// closed immediately.
+func (u *upstream) probeEndpoints() {
+	var wg sync.WaitGroup
+	for _, endpoint := range u.endpoints.all() {
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), u.connectTimeout)
+			defer cancel()
+			session, err := u.connectTo(ctx, endpoint, &mcp.ClientOptions{})
+			if err != nil {
+				if u.endpoints.markDown(endpoint) {
+					u.log.Warn("health probe ejected endpoint", "endpoint", endpoint, "err", err)
+				}
+				return
+			}
+			_ = session.Close()
+			if u.endpoints.markUp(endpoint) {
+				u.log.Info("health probe restored endpoint", "endpoint", endpoint)
+			}
+		})
+	}
+	wg.Wait()
 }
 
 // rootSession connects (or reuses) the shared upstream session. List-changed
@@ -437,8 +503,11 @@ func (u *upstream) sweepBridged() {
 	}
 }
 
-// Close shuts all held sessions down.
+// Close shuts all held sessions down and stops the health-probe loop.
 func (u *upstream) Close() {
+	if u.probeStop != nil {
+		u.stopProbeOnce.Do(func() { close(u.probeStop) })
+	}
 	u.mu.Lock()
 	sessions := []*mcp.ClientSession{u.session}
 	u.session = nil

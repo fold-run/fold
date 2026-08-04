@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -137,6 +138,62 @@ func TestLoadBalanceFailover(t *testing.T) {
 	if len(health.Upstreams) != 1 || len(health.Upstreams[0].Endpoints) != 2 {
 		t.Fatalf("healthz missing per-endpoint view: %+v", health)
 	}
+}
+
+// TestActiveHealthProbes: with healthCheck configured, the probe loop ejects
+// a dead replica with zero client traffic and restores it when it comes back
+// — no live request ever has to pay for the discovery.
+func TestActiveHealthProbes(t *testing.T) {
+	// Reserve an address, then leave it dead (connection refused).
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := l.Addr().String()
+	deadURL := "http://" + deadAddr
+	l.Close()
+
+	live, _ := countingUpstreamServer(t, "ping_tool")
+	_, gw := startGateway(t, &config.Config{Upstreams: []config.Upstream{{
+		ID:          "lb",
+		URLs:        []string{deadURL, live.URL},
+		HealthCheck: &config.HealthCheck{IntervalMs: 50},
+	}}})
+
+	waitHealthy := func(url string, want bool, msg string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, s := range gw.rt().byID["lb"].endpoints.snapshot(true) {
+				if s.URL == url && s.Healthy == want {
+					return
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal(msg)
+	}
+
+	// No client has sent a single request: the probe alone ejects the dead
+	// replica and keeps the live one in rotation.
+	waitHealthy(deadURL, false, "probe never ejected the dead endpoint")
+	waitHealthy(live.URL, true, "probe ejected the live endpoint")
+
+	// The replica returns on the same address: the probe restores it without
+	// waiting for a cooldown expiry or a client-request retry.
+	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1.0"}, nil)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	revived := httptest.NewUnstartedServer(handler)
+	l2, err := net.Listen("tcp", deadAddr)
+	if err != nil {
+		t.Skipf("could not rebind %s: %v", deadAddr, err)
+	}
+	revived.Listener.Close()
+	revived.Listener = l2
+	revived.Start()
+	t.Cleanup(revived.Close)
+
+	waitHealthy(deadURL, true, "probe never restored the revived endpoint")
 }
 
 // TestEndpointPoolRotationAndCooldown covers the balancer's contract:

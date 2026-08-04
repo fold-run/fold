@@ -253,6 +253,7 @@ func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
 		_ = g.server.ResourceUpdated(ctx, params) // best-effort fan-out
 	}
 	u.onListChanged = g.notifyListChanged
+	u.startHealthProbes()
 	return u
 }
 

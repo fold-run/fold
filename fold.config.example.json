@@ -14,7 +14,8 @@
       "owner": { "org": "acquired-co", "team": "ml" },
       "auth": { "strategy": "static", "secretRef": "ML_SEARCH_API_KEY", "header": "x-api-key", "scheme": "" },
       "rateLimit": { "requestsPerMinute": 600 },
-      "circuitBreaker": { "failureThreshold": 5, "halfOpenAfterMs": 30000 }
+      "circuitBreaker": { "failureThreshold": 5, "halfOpenAfterMs": 30000 },
+      "healthCheck": { "intervalMs": 30000 }
     }
   ],
   "auth": {

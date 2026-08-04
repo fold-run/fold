@@ -52,6 +52,13 @@ type Upstream struct {
 	CircuitBreaker *CircuitBreaker `json:"circuitBreaker,omitempty"`
 	RateLimit      *RateLimit      `json:"rateLimit,omitempty"`
 
+	// HealthCheck enables active endpoint probing: every intervalMs the
+	// gateway connects to each endpoint, ejecting dead replicas from the
+	// balancer before client traffic hits them and restoring recovered ones
+	// without waiting for a live-request retry. Absent → passive health only
+	// (connect failures eject, cooldown restores).
+	HealthCheck *HealthCheck `json:"healthCheck,omitempty"`
+
 	// CacheTTLMs bounds staleness of cached list results (tools/prompts/
 	// resources) for this upstream. 0 uses the gateway default (30s);
 	// negative disables caching.
@@ -96,6 +103,11 @@ type Timeouts struct {
 	ConnectMs    int `json:"connectMs,omitempty"`    // default 5000
 	RequestMs    int `json:"requestMs,omitempty"`    // default 60000
 	StreamIdleMs int `json:"streamIdleMs,omitempty"` // default 120000
+}
+
+// HealthCheck configures active endpoint probing.
+type HealthCheck struct {
+	IntervalMs int `json:"intervalMs"`
 }
 
 // CircuitBreaker short-circuits an unhealthy upstream.
@@ -333,6 +345,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("upstream %q: duplicate namespace %q", u.ID, u.Namespace)
 			}
 			seenNS[u.Namespace] = true
+		}
+		if u.HealthCheck != nil && u.HealthCheck.IntervalMs <= 0 {
+			return fmt.Errorf("upstream %q: healthCheck.intervalMs must be positive", u.ID)
 		}
 		switch u.Protocol {
 		case "", "session", "auto", "2026-07-28":

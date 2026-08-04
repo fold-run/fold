@@ -47,19 +47,29 @@ func (p *endpointPool) candidates() []string {
 	return append(healthy, cooling...)
 }
 
-// markDown ejects an endpoint for the cooldown after a connect failure.
-func (p *endpointPool) markDown(url string) {
+// markDown ejects an endpoint for the cooldown after a connect failure,
+// reporting whether this newly took it out of rotation.
+func (p *endpointPool) markDown(url string) (ejected bool) {
+	now := time.Now()
 	p.mu.Lock()
-	p.downUntil[url] = time.Now().Add(p.cooldown)
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	ejected = !p.downUntil[url].After(now)
+	p.downUntil[url] = now.Add(p.cooldown)
+	return ejected
 }
 
-// markUp clears an endpoint's ejection after a successful connect.
-func (p *endpointPool) markUp(url string) {
+// markUp clears an endpoint's ejection after a successful connect,
+// reporting whether this newly returned it to rotation.
+func (p *endpointPool) markUp(url string) (restored bool) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	restored = p.downUntil[url].After(time.Now())
 	delete(p.downUntil, url)
-	p.mu.Unlock()
+	return restored
 }
+
+// all returns every endpoint regardless of health (probe targets).
+func (p *endpointPool) all() []string { return p.urls }
 
 // endpointStatus is one endpoint's balancer view, surfaced in /healthz and
 // the endpoint-health metric.

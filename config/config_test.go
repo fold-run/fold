@@ -56,6 +56,7 @@ func TestValidationErrors(t *testing.T) {
 		{"url and urls", `{"upstreams":[{"id":"a","url":"http://x.test","urls":["http://y.test"]}]}`, "not both"},
 		{"bad urls entry", `{"upstreams":[{"id":"a","urls":["http://x.test","nope"]}]}`, "http(s)"},
 		{"duplicate urls entry", `{"upstreams":[{"id":"a","urls":["http://x.test","http://x.test"]}]}`, "duplicate endpoint"},
+		{"bad health interval", `{"upstreams":[{"id":"a","url":"http://x.test","healthCheck":{"intervalMs":0}}]}`, "healthCheck.intervalMs"},
 		{"auth without resource", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","issuers":[{"issuer":"https://idp.test"}]}}`, "resource"},
 		{"auth without issuers", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","resource":"https://gw.test"}}`, "issuer"},
 		{"static without secret", `{"upstreams":[{"id":"a","url":"http://x.test","auth":{"strategy":"static"}}]}`, "secretRef"},
