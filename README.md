@@ -150,6 +150,29 @@ List freshness works end to end: when an upstream emits a `list_changed` notific
 
 With `mode: "required"`, every `/mcp` request needs a valid Bearer token: trusted issuer (checked before any network I/O), verified signature via cached JWKS, exact audience match, a non-empty `sub`, asymmetric algorithms only (RS/ES/EdDSA). Failures answer 401 with a `WWW-Authenticate` challenge pointing at `/.well-known/oauth-protected-resource` (RFC 9728), which the gateway publishes. Issuer and JWKS URLs must use `https` (loopback exempt) — they are the inbound trust anchor. The JWKS fetch is single-flighted, size-bounded, and timeout-bounded so an unauthenticated flood of unknown-`kid` tokens cannot be amplified into requests against the IdP.
 
+#### `auth.ema` (Enterprise-Managed Authorization)
+
+fold can embed a deliberately one-grant-wide MCP Authorization Server: `POST /oauth/token` exchanges an enterprise-IdP-issued **ID-JAG** (Identity Assertion JWT Authorization Grant, RFC 7523 `jwt-bearer`) for a short-lived fold-signed access token. Everything the gateway then accepts has `aud` = fold, which keeps upstream token exchange coherent.
+
+```jsonc
+{
+  "mode": "required",
+  "resource": "https://gw.example.com",
+  "issuers": [
+    { "issuer": "https://acme.okta.com", "mode": "exchange" }  // ID-JAGs only — never accepted directly
+  ],
+  "ema": {
+    "idpIssuer": "https://acme.okta.com",
+    "idpJwksUri": "https://acme.okta.com/oauth2/v1/keys",  // default: {idpIssuer}/.well-known/jwks.json
+    "signingKeyRef": "FOLD_EMA_KEY",   // env var: ES256 private key, PKCS#8 PEM
+    "tokenTtlSec": 600,                // minted-token lifetime (default 600)
+    "tokenRateLimitPerMinute": 600     // cap on the unauthenticated /oauth/token endpoint (default 600)
+  }
+}
+```
+
+An assertion must be issued by `idpIssuer` for the `resource` audience and carry `exp` and `jti`; each `jti` is single-use until it expires (recorded fleet-wide via Redis when configured), so a captured ID-JAG cannot be redeemed twice. Issuers with `mode: "exchange"` are excluded from direct token presentation and from the advertised `authorization_servers` — fold itself is the authorization server for those, publishing its minting key at `/.well-known/jwks.json` and announcing the `io.modelcontextprotocol/enterprise-managed-authorization` extension in the protected-resource metadata. The token endpoint is unauthenticated by design (the assertion is the credential) and rate-limited against amplification. Generate a key with `openssl ecparam -genkey -name prime256v1 | openssl pkcs8 -topk8 -nocrypt`.
+
 ### `policy`
 
 ```jsonc
@@ -244,7 +267,6 @@ The integration suite spins up real MCP servers from the official Go SDK behind 
 
 Known gaps, documented deliberately:
 
-- **Enterprise-Managed Authorization** (ID-JAG token endpoint) — planned; standard OAuth resource-server auth and RFC 8693 token exchange are implemented.
 - **`subscriptions/listen` fan-in** — the notification-stream fan-in awaits a public Go SDK API. Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
 - **Composite federated pagination** — list results are merged and returned as a single page.
 

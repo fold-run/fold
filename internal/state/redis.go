@@ -58,6 +58,30 @@ func (r *Redis) ListCache(scope string) ListCache {
 	return &redisCache{client: r.client, scope: scope}
 }
 
+func (r *Redis) Once(scope string) Once {
+	return &redisOnce{client: r.client, scope: scope, fallback: NewMemOnce()}
+}
+
+// redisOnce records single-use keys fleet-wide with SET NX. A Redis outage
+// falls back to the per-instance recorder rather than failing open outright:
+// replays on the same instance are still caught, which keeps the common
+// replay (immediate re-redemption) blocked even while Redis is down.
+type redisOnce struct {
+	client   *redis.Client
+	scope    string
+	fallback *MemOnce
+}
+
+func (o *redisOnce) TryOnce(ctx context.Context, key string, ttl time.Duration) bool {
+	rctx, cancel := opCtx(ctx)
+	defer cancel()
+	ok, err := o.client.SetNX(rctx, fmt.Sprintf("fold:once:%s:%s", o.scope, key), "1", ttl).Result()
+	if err != nil {
+		return o.fallback.TryOnce(ctx, key, ttl)
+	}
+	return ok
+}
+
 func opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), redisOpTimeout)
 }

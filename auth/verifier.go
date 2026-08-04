@@ -19,20 +19,35 @@ var allowedAlgs = []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512",
 type Verifier struct {
 	resource string
 	issuers  map[string]config.Issuer // issuer URL → config
+	local    map[string]any           // issuer URL → locally held public key
 	jwks     *jwksCache
 }
 
-// NewVerifier builds a verifier from the auth config section.
+// NewVerifier builds a verifier from the auth config section. Only "direct"
+// issuers are trusted for straight token presentation: an "exchange"
+// issuer's tokens (ID-JAGs) must go through the EMA exchange — accepting
+// one directly would let it stand in for a fold access token.
 func NewVerifier(cfg *config.Auth, client *http.Client) *Verifier {
 	v := &Verifier{
 		resource: cfg.Resource,
 		issuers:  map[string]config.Issuer{},
+		local:    map[string]any{},
 		jwks:     newJWKSCache(client),
 	}
 	for _, iss := range cfg.Issuers {
+		if iss.Mode == "exchange" {
+			continue
+		}
 		v.issuers[iss.Issuer] = iss
 	}
 	return v
+}
+
+// TrustLocal registers an issuer whose tokens verify against a locally held
+// public key — fold's own EMA-minted tokens — with no JWKS fetch.
+func (v *Verifier) TrustLocal(issuer string, key any) {
+	v.issuers[issuer] = config.Issuer{Issuer: issuer}
+	v.local[issuer] = key
 }
 
 // Verify validates a raw bearer token and returns the principal it names.
@@ -61,6 +76,9 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Principal, error) {
 		jwt.WithExpirationRequired(),
 		jwt.WithLeeway(30*time.Second),
 	).ParseWithClaims(raw, claims, func(t *jwt.Token) (any, error) {
+		if key, ok := v.local[issuer]; ok {
+			return key, nil
+		}
 		kid, _ := t.Header["kid"].(string)
 		return v.jwks.key(ctx, jwksURI, kid)
 	})

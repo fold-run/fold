@@ -6,6 +6,7 @@ package state
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/fold-run/fold/internal/breaker"
@@ -37,6 +38,13 @@ type ListCache interface {
 	Invalidate(ctx context.Context, prefix string)
 }
 
+// Once records single-use keys (e.g. token replay protection).
+type Once interface {
+	// TryOnce records key for ttl and reports whether this was the first
+	// use. false means the key was already recorded — a replay.
+	TryOnce(ctx context.Context, key string, ttl time.Duration) bool
+}
+
 // Provider constructs the gateway's shared-state primitives.
 type Provider interface {
 	// Limiter returns a rate limiter for scope admitting rpm requests per
@@ -46,6 +54,8 @@ type Provider interface {
 	Breaker(scope string, threshold int, halfOpenAfter time.Duration) Breaker
 	// ListCache returns the list cache for scope.
 	ListCache(scope string) ListCache
+	// Once returns the single-use recorder for scope.
+	Once(scope string) Once
 	// Close releases provider resources.
 	Close() error
 }
@@ -70,7 +80,36 @@ func (*Memory) ListCache(_ string) ListCache {
 	return &memCache{c: cache.New()}
 }
 
+func (*Memory) Once(_ string) Once { return NewMemOnce() }
+
 func (*Memory) Close() error { return nil }
+
+// MemOnce is the in-process single-use recorder. Exported so the Redis
+// provider can fall back to it during an outage.
+type MemOnce struct {
+	mu   sync.Mutex
+	seen map[string]time.Time // key → expiry
+}
+
+// NewMemOnce returns an in-process single-use recorder.
+func NewMemOnce() *MemOnce { return &MemOnce{seen: map[string]time.Time{}} }
+
+func (o *MemOnce) TryOnce(_ context.Context, key string, ttl time.Duration) bool {
+	now := time.Now()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// Lazily drop expired records so the map tracks only live keys.
+	for k, exp := range o.seen {
+		if exp.Before(now) {
+			delete(o.seen, k)
+		}
+	}
+	if exp, ok := o.seen[key]; ok && exp.After(now) {
+		return false
+	}
+	o.seen[key] = now.Add(ttl)
+	return true
+}
 
 type memLimiter struct{ l *ratelimit.Limiter }
 

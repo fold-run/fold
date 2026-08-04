@@ -51,13 +51,23 @@ func newFixtureIssuer(t *testing.T) *fixtureIssuer {
 
 func (f *fixtureIssuer) mint(t *testing.T, sub, aud string, groups []string) string {
 	t.Helper()
-	claims := jwt.MapClaims{
-		"iss":    f.server.URL,
+	return f.mintClaims(t, jwt.MapClaims{
 		"sub":    sub,
 		"aud":    aud,
 		"exp":    time.Now().Add(time.Hour).Unix(),
-		"iat":    time.Now().Unix(),
 		"groups": groups,
+	})
+}
+
+// mintClaims signs an arbitrary claim set (iss/iat filled in when absent),
+// so tests can mint ID-JAGs and negative-case tokens.
+func (f *fixtureIssuer) mintClaims(t *testing.T, claims jwt.MapClaims) string {
+	t.Helper()
+	if _, ok := claims["iss"]; !ok {
+		claims["iss"] = f.server.URL
+	}
+	if _, ok := claims["iat"]; !ok {
+		claims["iat"] = time.Now().Unix()
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	tok.Header["kid"] = "k1"

@@ -61,6 +61,11 @@ type Gateway struct {
 	state    state.Provider
 	log      *slog.Logger
 
+	// ema is fold's embedded ID-JAG token endpoint (nil unless configured);
+	// emaTokenLimit caps the unauthenticated exchange endpoint.
+	ema           *auth.EMA
+	emaTokenLimit state.Limiter
+
 	globalLimit state.Limiter
 
 	// perPrincipalRPM caps each authenticated principal on its own bucket;
@@ -149,6 +154,17 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	g.globalLimit = provider.Limiter("global", globalRPM)
 	if cfg.AuthRequired() {
 		g.verifier = auth.NewVerifier(cfg.Auth, http.DefaultClient)
+		if cfg.Auth.EMA != nil {
+			ema, err := auth.NewEMA(cfg.Auth, http.DefaultClient, provider.Once("emajti"))
+			if err != nil {
+				return nil, err
+			}
+			g.ema = ema
+			g.emaTokenLimit = provider.Limiter("oauth-token", cfg.Auth.EMA.ResolvedTokenRateLimit())
+			// Tokens fold mints are presented back to fold: trust them via
+			// the local key, no JWKS round-trip.
+			g.verifier.TrustLocal(ema.Issuer(), ema.PublicKey())
+		}
 	}
 	g.metrics = newMetricsSet(g.upstreams)
 	for _, u := range g.upstreams {
@@ -542,7 +558,11 @@ func (g *Gateway) buildHandler() http.Handler {
 	mux.HandleFunc("/healthz", g.handleHealth)
 	mux.Handle("/metrics", g.metrics.handler())
 	if g.cfg.AuthRequired() {
-		mux.Handle("/.well-known/oauth-protected-resource", sdkauth.ProtectedResourceMetadataHandler(g.protectedResourceMetadata()))
+		mux.Handle("/.well-known/oauth-protected-resource", g.protectedResourceHandler())
+		if g.ema != nil {
+			mux.HandleFunc("/.well-known/jwks.json", g.ema.ServeJWKS)
+			mux.Handle("/oauth/token", g.tokenRateLimit(http.HandlerFunc(g.ema.ServeToken)))
+		}
 	}
 	return g.hostValidation(g.bodyCapMiddleware(mux))
 }
@@ -568,15 +588,61 @@ func (g *Gateway) bodyCapMiddleware(next http.Handler) http.Handler {
 }
 
 func (g *Gateway) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata {
+	// Only direct issuers are authorization servers a client can present
+	// tokens from; an exchange issuer's ID-JAGs enter via /oauth/token, and
+	// with EMA enabled fold itself is the authorization server for those.
 	var issuers []string
 	for _, iss := range g.cfg.Auth.Issuers {
+		if iss.Mode == "exchange" {
+			continue
+		}
 		issuers = append(issuers, iss.Issuer)
+	}
+	if g.ema != nil {
+		issuers = append(issuers, g.ema.Issuer())
 	}
 	return &oauthex.ProtectedResourceMetadata{
 		Resource:               g.cfg.Auth.Resource,
 		AuthorizationServers:   issuers,
 		BearerMethodsSupported: []string{"header"},
 	}
+}
+
+// protectedResourceHandler serves the RFC 9728 metadata, announcing the EMA
+// extension when the embedded token endpoint is enabled.
+func (g *Gateway) protectedResourceHandler() http.Handler {
+	meta := g.protectedResourceMetadata()
+	if g.ema == nil {
+		return sdkauth.ProtectedResourceMetadataHandler(meta)
+	}
+	doc, _ := json.Marshal(meta)
+	extended := map[string]any{}
+	json.Unmarshal(doc, &extended)
+	extended["io.modelcontextprotocol/enterprise-managed-authorization"] = map[string]string{"version": "stable"}
+	body, _ := json.Marshal(extended)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+	})
+}
+
+// tokenRateLimit caps the EMA token endpoint: it is unauthenticated by
+// design (the ID-JAG is the credential) and does a JWKS resolve, an
+// asymmetric verify, and a state write per call — unbounded, that is an
+// unauthenticated CPU/memory amplification vector.
+func (g *Gateway) tokenRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ok, retry := g.emaTokenLimit.Allow(r.Context()); !ok {
+			g.metrics.reject("oauth_token_rate_limited")
+			g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeRateLimited, Error: "oauth token endpoint rate limit"})
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]string{"error": "slow_down", "error_description": "too many token requests"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // hostValidation is DNS-rebinding protection: requests must carry an

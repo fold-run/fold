@@ -111,6 +111,11 @@ type Auth struct {
 	Mode     string   `json:"mode,omitempty"` // "disabled" (default) | "required"
 	Resource string   `json:"resource,omitempty"`
 	Issuers  []Issuer `json:"issuers,omitempty"`
+
+	// EMA enables Enterprise-Managed Authorization: fold's embedded
+	// one-grant token endpoint exchanging enterprise-IdP ID-JAGs for
+	// fold-signed access tokens.
+	EMA *EMAConfig `json:"ema,omitempty"`
 }
 
 // Issuer is a trusted token issuer.
@@ -118,6 +123,45 @@ type Issuer struct {
 	Issuer      string `json:"issuer"`
 	JWKSURI     string `json:"jwksUri,omitempty"`     // default {issuer}/.well-known/jwks.json
 	GroupsClaim string `json:"groupsClaim,omitempty"` // default "groups"
+
+	// Mode is "direct" (default): clients present this issuer's access
+	// tokens straight to fold — or "exchange": this issuer's tokens are
+	// ID-JAGs redeemable only at the EMA token endpoint; presenting one
+	// directly as a fold token is rejected.
+	Mode string `json:"mode,omitempty"`
+}
+
+// EMAConfig is the Enterprise-Managed Authorization section.
+type EMAConfig struct {
+	// IdpIssuer is the enterprise IdP that issues ID-JAGs.
+	IdpIssuer  string `json:"idpIssuer"`
+	IdpJWKSURI string `json:"idpJwksUri,omitempty"` // default {idpIssuer}/.well-known/jwks.json
+
+	// SigningKeyRef names an environment variable holding fold's ES256
+	// private key (PKCS#8 PEM) for signing minted access tokens.
+	SigningKeyRef string `json:"signingKeyRef"`
+
+	TokenTTLSec int `json:"tokenTtlSec,omitempty"` // minted-token lifetime; default 600
+
+	// TokenRateLimitPerMinute caps the unauthenticated /oauth/token
+	// endpoint (anti-amplification). Default 600.
+	TokenRateLimitPerMinute int `json:"tokenRateLimitPerMinute,omitempty"`
+}
+
+// ResolvedTokenTTLSec returns the minted-token lifetime (default 600).
+func (e *EMAConfig) ResolvedTokenTTLSec() int {
+	if e.TokenTTLSec > 0 {
+		return e.TokenTTLSec
+	}
+	return 600
+}
+
+// ResolvedTokenRateLimit returns the /oauth/token cap (default 600/min).
+func (e *EMAConfig) ResolvedTokenRateLimit() int {
+	if e.TokenRateLimitPerMinute > 0 {
+		return e.TokenRateLimitPerMinute
+	}
+	return 600
 }
 
 // Policy is the deny-by-default allowlist engine configuration.
@@ -308,9 +352,33 @@ func (c *Config) Validate() error {
 						return err
 					}
 				}
+				switch iss.Mode {
+				case "", "direct", "exchange":
+				default:
+					return fmt.Errorf("auth: issuer %q: mode must be %q or %q", iss.Issuer, "direct", "exchange")
+				}
 			}
 		default:
 			return fmt.Errorf("auth: mode must be %q or %q", "disabled", "required")
+		}
+		if ema := c.Auth.EMA; ema != nil {
+			if !c.AuthRequired() {
+				return fmt.Errorf(`auth: ema requires mode "required"`)
+			}
+			if ema.IdpIssuer == "" || ema.SigningKeyRef == "" {
+				return fmt.Errorf("auth: ema requires idpIssuer and signingKeyRef")
+			}
+			if err := requireSecureEndpoint("auth.ema idpIssuer", ema.IdpIssuer); err != nil {
+				return err
+			}
+			if ema.IdpJWKSURI != "" {
+				if err := requireSecureEndpoint("auth.ema idpJwksUri", ema.IdpJWKSURI); err != nil {
+					return err
+				}
+			}
+			if ema.TokenTTLSec < 0 || ema.TokenRateLimitPerMinute < 0 {
+				return fmt.Errorf("auth: ema tokenTtlSec and tokenRateLimitPerMinute must be positive")
+			}
 		}
 	}
 	if c.Policy != nil {

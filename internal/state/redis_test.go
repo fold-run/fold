@@ -199,3 +199,43 @@ func TestRedisFailOpen(t *testing.T) {
 		t.Errorf("cache must fall through to fill when Redis is down: %v %s", err, v)
 	}
 }
+
+// A single-use key admitted on one instance is a replay on every instance.
+func TestRedisOnceSharedAcrossInstances(t *testing.T) {
+	a, b := twoProviders(t)
+	ctx := context.Background()
+
+	oa := a.Once("emajti")
+	ob := b.Once("emajti")
+
+	if !oa.TryOnce(ctx, "jti-1", time.Minute) {
+		t.Fatal("first use should be admitted")
+	}
+	if ob.TryOnce(ctx, "jti-1", time.Minute) {
+		t.Error("replay on another instance was admitted")
+	}
+	if !ob.TryOnce(ctx, "jti-2", time.Minute) {
+		t.Error("distinct key should be admitted")
+	}
+}
+
+// A Redis outage falls back to the per-instance recorder: same-instance
+// replays stay blocked rather than failing open outright.
+func TestRedisOnceOutageFallback(t *testing.T) {
+	mr := miniredis.RunT(t)
+	r, err := NewRedis("redis://" + mr.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close() })
+	o := r.Once("emajti")
+	mr.Close() // outage
+
+	ctx := context.Background()
+	if !o.TryOnce(ctx, "jti-1", time.Minute) {
+		t.Fatal("first use during outage should be admitted via fallback")
+	}
+	if o.TryOnce(ctx, "jti-1", time.Minute) {
+		t.Error("same-instance replay during outage was admitted")
+	}
+}
