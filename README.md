@@ -337,7 +337,7 @@ The integration suite spins up real MCP servers from the official Go SDK behind 
 
 ## API stability
 
-fold is pre-1.0; this section is the compatibility contract v1.0 will adopt, stated now so the remaining pre-1.0 releases can settle into it.
+This is the v1 compatibility contract, in force as of v1.0.0.
 
 **Frozen at v1.0** (breaking changes only with a new major version):
 
@@ -358,6 +358,10 @@ Known gaps, documented deliberately:
 - **Content inspection (DLP / PII filtering / prompt-injection detection)** — deliberately out of scope. Inspecting request and response bodies means buffering and rewriting traffic, which conflicts with fold's invisibility rule (behavior through the gateway matches hitting the upstream directly) and its latency gate — and inline detection is a product of its own, not a gateway feature. fold's security model is structural instead: deny-by-default tool allowlists, per-principal invisibility, claim-gated (ABAC) rules, credential brokering so agents never hold upstream keys, and a full audit trail to feed the SIEM that does the detecting. If inline inspection becomes table stakes, the fold-shaped answer is an opt-in content-inspection hook (an external policy endpoint on the ingress/egress path), not built-in scanning.
 
 ## Changelog
+
+### v1.0.0 — 2026-08-04
+
+The compatibility contract is in force. No behavior changes from v0.8.0 — this release is the promise: the config document (schema-verified), CLI, wire surface (error codes, endpoints, metric names, audit shape), and embedder Go API are frozen; breaking changes now require a new major version. See [API stability](#api-stability) for the contract and [SECURITY.md](SECURITY.md) for the support policy.
 
 ### v0.8.0 — 2026-08-04
 
