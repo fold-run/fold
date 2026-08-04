@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,16 +48,16 @@ const tokenInfoPrincipalKey = "run.fold/principal" //nolint:gosec // metadata ma
 // Gateway is a running fold gateway. Create one with New, mount Handler
 // into any http server, and Close it on shutdown.
 type Gateway struct {
-	cfg         *config.Config
-	sep         string
-	passthrough bool
-	pageSize    int // per-page bound for federated lists; 0 = single page
+	cfg      *config.Config
+	sep      string
+	pageSize int // per-page bound for federated lists; 0 = single page
 
-	upstreams   []*upstream
-	byNamespace map[string]*upstream
-	byID        map[string]*upstream
+	// routes is the reloadable routing state — the upstream set, its
+	// indexes, and the policy engine — swapped atomically by Reload. Every
+	// request loads the pointer once so it sees one consistent world.
+	routes   atomic.Pointer[routes]
+	reloadMu sync.Mutex // serializes Reload; the swap itself is atomic
 
-	policy   *policy.Engine
 	audit    *audit.Logger
 	verifier *auth.Verifier
 	metrics  *metricsSet
@@ -103,6 +104,20 @@ type Gateway struct {
 	stopSweeper chan struct{}
 }
 
+// routes is one immutable snapshot of the gateway's reloadable state. cfg is
+// the config document the snapshot was built from — Reload diffs against it.
+type routes struct {
+	cfg         *config.Config
+	upstreams   []*upstream
+	byNamespace map[string]*upstream
+	byID        map[string]*upstream
+	passthrough bool
+	policy      *policy.Engine
+}
+
+// rt returns the current routing snapshot.
+func (g *Gateway) rt() *routes { return g.routes.Load() }
+
 // Option configures a Gateway at construction.
 type Option func(*Gateway)
 
@@ -128,11 +143,7 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	g := &Gateway{
 		cfg:         cfg,
 		sep:         cfg.NamespaceSeparator(),
-		passthrough: cfg.Passthrough(),
 		pageSize:    cfg.PageSize(),
-		byNamespace: map[string]*upstream{},
-		byID:        map[string]*upstream{},
-		policy:      policy.New(cfg.Policy),
 		audit:       audit.New(cfg.Audit),
 		state:       provider,
 		subscribers: map[string]map[string]bool{},
@@ -141,14 +152,13 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	for _, opt := range opts {
 		opt(g)
 	}
-	for _, ucfg := range cfg.Upstreams {
-		u := newUpstream(ucfg, provider)
-		g.upstreams = append(g.upstreams, u)
-		g.byID[ucfg.ID] = u
-		if ucfg.Namespace != "" {
-			g.byNamespace[ucfg.Namespace] = u
+	g.metrics = newMetricsSet(func() []*upstream {
+		if rt := g.routes.Load(); rt != nil {
+			return rt.upstreams
 		}
-	}
+		return nil
+	})
+	g.routes.Store(g.buildRoutes(cfg, nil))
 	globalRPM := 0
 	if cfg.Server != nil && cfg.Server.RateLimit != nil {
 		globalRPM = cfg.Server.RateLimit.RequestsPerMinute
@@ -169,16 +179,11 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 			g.verifier.TrustLocal(ema.Issuer(), ema.PublicKey())
 		}
 	}
-	g.metrics = newMetricsSet(g.upstreams)
-	for _, u := range g.upstreams {
-		u.metrics = g.metrics
-		u.log = g.log.With("upstream", u.cfg.ID)
-	}
 	redisOn := (cfg.Server != nil && cfg.Server.RedisURL != "") || os.Getenv("REDIS_URL") != ""
 	g.log.Info("gateway configured",
 		"version", version,
-		"upstreams", len(g.upstreams),
-		"passthrough", g.passthrough,
+		"upstreams", len(g.rt().upstreams),
+		"passthrough", g.rt().passthrough,
 		"authRequired", cfg.AuthRequired(),
 		"sharedState", redisOn)
 
@@ -201,16 +206,137 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	if err := g.registerTaskMethods(); err != nil {
 		return nil, err
 	}
-	for _, u := range g.upstreams {
-		u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
-			_ = g.server.ResourceUpdated(ctx, params) // best-effort fan-out
-		}
-		u.onListChanged = g.notifyListChanged
-	}
 	g.stopSweeper = make(chan struct{})
 	go g.sweepLoop()
 	g.handler = g.buildHandler()
 	return g, nil
+}
+
+// buildRoutes assembles a routing snapshot for cfg. When prev is non-nil,
+// upstreams whose configuration is unchanged are carried over live — their
+// sessions, caches, and breaker state survive the reload.
+func (g *Gateway) buildRoutes(cfg *config.Config, prev *routes) *routes {
+	rt := &routes{
+		cfg:         cfg,
+		byNamespace: map[string]*upstream{},
+		byID:        map[string]*upstream{},
+		passthrough: cfg.Passthrough(),
+		policy:      policy.New(cfg.Policy),
+	}
+	for _, ucfg := range cfg.Upstreams {
+		var u *upstream
+		if prev != nil {
+			if ex := prev.byID[ucfg.ID]; ex != nil && reflect.DeepEqual(ex.cfg, ucfg) {
+				u = ex
+			}
+		}
+		if u == nil {
+			u = g.newWiredUpstream(ucfg)
+		}
+		rt.upstreams = append(rt.upstreams, u)
+		rt.byID[ucfg.ID] = u
+		if ucfg.Namespace != "" {
+			rt.byNamespace[ucfg.Namespace] = u
+		}
+	}
+	return rt
+}
+
+// newWiredUpstream builds an upstream wired into this gateway's metrics,
+// logging, and notification fan-out. The handler closures read g.server at
+// notification time, so construction order does not matter.
+func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
+	u := newUpstream(ucfg, g.state)
+	u.metrics = g.metrics
+	u.log = g.log.With("upstream", ucfg.ID)
+	u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
+		_ = g.server.ResourceUpdated(ctx, params) // best-effort fan-out
+	}
+	u.onListChanged = g.notifyListChanged
+	return u
+}
+
+// Reload applies a new configuration without a restart. The upstream set and
+// the policy engine swap atomically: in-flight requests finish against the
+// snapshot they started on, new requests see the new one. Upstreams whose
+// configuration is unchanged keep their live sessions, caches, and breaker
+// state; removed or changed upstreams are drained (closed after their
+// request timeout, so in-flight calls complete) and a changed upstream's
+// resource subscriptions are re-established on its replacement. Clients
+// receive list_changed notifications so they refetch.
+//
+// The auth, server, routing, and audit sections are wired into the HTTP
+// handler at construction and cannot hot-swap: changing them returns an
+// error and leaves the running configuration untouched.
+func (g *Gateway) Reload(cfg *config.Config) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	g.reloadMu.Lock()
+	defer g.reloadMu.Unlock()
+	old := g.rt()
+	for _, section := range []struct {
+		name    string
+		changed bool
+	}{
+		{"auth", !reflect.DeepEqual(cfg.Auth, old.cfg.Auth)},
+		{"server", !reflect.DeepEqual(cfg.Server, old.cfg.Server)},
+		{"routing", !reflect.DeepEqual(cfg.Routing, old.cfg.Routing)},
+		{"audit", !reflect.DeepEqual(cfg.Audit, old.cfg.Audit)},
+	} {
+		if section.changed {
+			return fmt.Errorf("reload: the %s section cannot change without a restart", section.name)
+		}
+	}
+
+	next := g.buildRoutes(cfg, old)
+	kept := map[*upstream]bool{}
+	for _, u := range next.upstreams {
+		kept[u] = true
+	}
+	var retired []*upstream
+	for _, u := range old.upstreams {
+		if !kept[u] {
+			retired = append(retired, u)
+		}
+	}
+	g.routes.Store(next)
+
+	for _, r := range retired {
+		// A changed upstream keeps its id: move its live resource
+		// subscriptions to the replacement so subscribed clients keep
+		// hearing resources/updated (best effort, off the reload path).
+		if succ := next.byID[r.cfg.ID]; succ != nil {
+			for _, uri := range r.subscribedURIs() {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), succ.connectTimeout+succ.requestTimeout)
+					defer cancel()
+					if err := succ.subscribe(ctx, uri); err != nil {
+						g.log.Warn("reload: resubscribe failed", "upstream", succ.cfg.ID, "uri", uri, "err", err)
+					}
+				}()
+			}
+		}
+		// Drain: no new requests route to a retired upstream, and closing
+		// after its request timeout lets in-flight calls finish.
+		go func() {
+			timer := time.NewTimer(r.requestTimeout)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-g.stopSweeper:
+			}
+			r.Close()
+		}()
+	}
+	for _, kind := range []string{"tools", "prompts", "resources"} {
+		g.notifyListChanged(kind)
+	}
+	g.log.Info("configuration reloaded",
+		"upstreams", len(next.upstreams),
+		"retired", len(retired),
+		"passthrough", next.passthrough)
+	return nil
 }
 
 // notifyListChanged re-emits an upstream's list_changed notification to
@@ -250,7 +376,7 @@ func (g *Gateway) sweepLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			for _, u := range g.upstreams {
+			for _, u := range g.rt().upstreams {
 				u.sweepBridged()
 			}
 		case <-g.stopSweeper:
@@ -264,11 +390,12 @@ func (g *Gateway) sweepLoop() {
 // shared across all downstream subscribers, ref-counted per session so one
 // client's unsubscribe cannot tear down another's.
 func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest) error {
-	u, err := g.ownerForURI(ctx, req.Params.URI)
+	rt := g.rt()
+	u, err := g.ownerForURI(ctx, rt, req.Params.URI)
 	if err != nil {
 		return err
 	}
-	if !g.policy.Decide(auth.PrincipalFromContext(ctx), u.cfg.ID, "resources/read", req.Params.URI).Allowed {
+	if !rt.policy.Decide(auth.PrincipalFromContext(ctx), u.cfg.ID, "resources/read", req.Params.URI).Allowed {
 		return &jsonrpc.Error{Code: codeDenied, Message: fmt.Sprintf("policy denied resources/subscribe %q", req.Params.URI)}
 	}
 	sessionID := ""
@@ -302,7 +429,7 @@ func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest
 }
 
 func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeRequest) error {
-	u, err := g.ownerForURI(ctx, req.Params.URI)
+	u, err := g.ownerForURI(ctx, g.rt(), req.Params.URI)
 	if err != nil {
 		return err
 	}
@@ -334,26 +461,26 @@ func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeReq
 
 // ownerForURI resolves which upstream serves a resource URI, refreshing the
 // resource index once when the URI is unknown.
-func (g *Gateway) ownerForURI(ctx context.Context, uri string) (*upstream, error) {
-	if g.passthrough {
-		return g.upstreams[0], nil
+func (g *Gateway) ownerForURI(ctx context.Context, rt *routes, uri string) (*upstream, error) {
+	if rt.passthrough {
+		return rt.upstreams[0], nil
 	}
 	if id, ok := g.resourceOwner.Load(uri); ok {
-		if u := g.byID[id.(string)]; u != nil {
+		if u := rt.byID[id.(string)]; u != nil {
 			return u, nil
 		}
 	}
 	// Refresh the index via a list fan-out, then retry.
-	lists, _ := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
+	lists, _ := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
 		return u.listResources(ctx)
 	})
-	for i, u := range g.upstreams {
+	for i, u := range rt.upstreams {
 		for _, r := range lists[i] {
 			g.resourceOwner.Store(r.URI, u.cfg.ID)
 		}
 	}
 	if id, ok := g.resourceOwner.Load(uri); ok {
-		if u := g.byID[id.(string)]; u != nil {
+		if u := rt.byID[id.(string)]; u != nil {
 			return u, nil
 		}
 	}
@@ -361,7 +488,7 @@ func (g *Gateway) ownerForURI(ctx context.Context, uri string) (*upstream, error
 }
 
 func (g *Gateway) instructions() string {
-	if g.passthrough {
+	if g.cfg.Passthrough() {
 		return fmt.Sprintf("fold gateway in passthrough mode for upstream %q.", g.cfg.Upstreams[0].ID)
 	}
 	var ns []string
@@ -396,7 +523,7 @@ func buildStateProvider(cfg *config.Config) (state.Provider, error) {
 func (g *Gateway) Close() {
 	g.log.Info("gateway shutting down")
 	close(g.stopSweeper)
-	for _, u := range g.upstreams {
+	for _, u := range g.rt().upstreams {
 		u.Close()
 	}
 	_ = g.state.Close()
@@ -830,20 +957,28 @@ type upstreamHealth struct {
 	Connected bool              `json:"connected"`
 	LatencyMs int64             `json:"latencyMs,omitempty"`
 	Error     string            `json:"error,omitempty"`
+
+	// Endpoints reports the balancer's per-replica view for multi-endpoint
+	// upstreams (URLs only on trusted deployments, like URL above).
+	Endpoints []endpointStatus `json:"endpoints,omitempty"`
 }
 
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	detailed := !g.cfg.AuthRequired()
-	statuses := make([]upstreamHealth, len(g.upstreams))
+	upstreams := g.rt().upstreams
+	statuses := make([]upstreamHealth, len(upstreams))
 	var wg sync.WaitGroup
-	for i, u := range g.upstreams {
+	for i, u := range upstreams {
 		wg.Go(func() {
 			h := upstreamHealth{
 				ID:        u.cfg.ID,
 				Namespace: u.cfg.Namespace,
 				Breaker:   u.breaker.State(ctx),
+			}
+			if len(u.cfg.URLs) > 0 {
+				h.Endpoints = u.endpoints.snapshot(detailed)
 			}
 			if detailed {
 				h.URL = u.cfg.URL

@@ -28,18 +28,18 @@ func FuzzResolve(f *testing.F) {
 		}
 
 		u := &upstream{cfg: cfg.Upstreams[0]}
-		g := &Gateway{
-			sep:         cfg.NamespaceSeparator(),
+		g := &Gateway{sep: cfg.NamespaceSeparator()}
+		rt := &routes{
 			passthrough: cfg.Passthrough(),
 			upstreams:   []*upstream{u},
 			byNamespace: map[string]*upstream{},
 		}
 		if ns != "" {
-			g.byNamespace[ns] = u
+			rt.byNamespace[ns] = u
 		}
 
 		pub := g.public(u, bare)
-		got, gotBare, err := g.resolve(pub)
+		got, gotBare, err := g.resolve(rt, pub)
 		if err != nil {
 			t.Fatalf("resolve(public(%q)) = err %v (sep %q, ns %q, public %q)", bare, err, g.sep, ns, pub)
 		}
@@ -49,7 +49,7 @@ func FuzzResolve(f *testing.F) {
 		}
 
 		// Arbitrary names must never panic, whatever they resolve to.
-		_, _, _ = g.resolve(bare)
-		_, _, _ = g.resolve(sep + bare + sep)
+		_, _, _ = g.resolve(rt, bare)
+		_, _, _ = g.resolve(rt, sep+bare+sep)
 	})
 }

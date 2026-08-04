@@ -81,6 +81,10 @@ A federated multi-org config — each upstream owned by a different team, in any
 
 fold fans list requests out across all upstreams concurrently, merges and namespaces the results, degrades gracefully when an upstream is down (`_meta["run.fold/partialFailure"]` lists the failed upstream ids), and short-circuits unhealthy upstreams with a per-upstream circuit breaker. Proxied results are tagged with their origin in `_meta["run.fold/upstream"]`. Set `REDIS_URL` (or `server.redisUrl`) to share cache, rate-limit, and circuit-breaker state across instances — a fleet of gateways behaves as one. See [`fold.config.example.json`](fold.config.example.json) for a full example.
 
+**Replicated upstreams load-balance.** Give an upstream `urls` instead of `url` and the gateway balances across the replicas: MCP is sessionful, so each new session — the shared root session, and each client's bridged session — connects round-robin to the next healthy endpoint and stays pinned there. An endpoint that refuses a connection is skipped (the connect fails over to the next replica in the same attempt) and rests out of rotation for the breaker's `halfOpenAfterMs` before being retried. Per-endpoint health shows in `/healthz` and the `fold_upstream_endpoint_healthy` metric. Replicas are assumed identical — one namespace, one credential strategy, one policy surface.
+
+**Configuration hot-reloads.** `kill -HUP` the process — or run with `--watch` to poll the config file — and fold revalidates and applies the new document without dropping the listener: the upstream set and the policy engine swap atomically, in-flight requests finish against the snapshot they started on, and connected clients receive `list_changed` notifications so they refetch. Upstreams whose config is unchanged keep their live sessions; removed or changed ones are drained (closed after their request timeout) and a changed upstream's resource subscriptions move to its replacement. Embedders get the same behavior via `gw.Reload(cfg)`. The `auth`, `server`, `routing`, and `audit` sections are wired into the HTTP handler at construction and cannot hot-swap — changing them makes the reload fail loudly, keeping the running configuration; a rejected reload never takes anything down.
+
 ## Request pipeline
 
 ```
@@ -109,7 +113,8 @@ One JSON document, validated on startup (`fold --validate`). Loaded from `--conf
 | Field | Default | Notes |
 |---|---|---|
 | `id` | — | Lowercase alphanumeric + hyphens. Used in policy, audit, health. |
-| `url` | — | The upstream's MCP endpoint. |
+| `url` | — | The upstream's MCP endpoint. Exactly one of `url` / `urls`. |
+| `urls` | — | Multiple equivalent replicas of this upstream. New sessions balance round-robin across them with connect failover; a failed endpoint rests for the breaker's `halfOpenAfterMs`. |
 | `namespace` | none | Tool/prompt name prefix (`{namespace}__{name}`). Omitted → passthrough; only valid with a single upstream. |
 | `protocol` | `session` | `"session"` negotiates the sessionful handshake, required to bridge server-initiated traffic (sampling, elicitation, logging, progress, resource updates). `"auto"`/`"2026-07-28"` lets the SDK prefer the stateless 2026 protocol, which cannot carry server-initiated requests. |
 | `owner` | none | `{ org, team, contact }` — surfaces in audit and health. |
@@ -238,14 +243,14 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 
 ## Observability
 
-- `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_http_rejections_total{reason}`, `fold_build_info{version}`, plus standard Go process/runtime collectors.
+- `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_upstream_endpoint_healthy{upstream,endpoint}` (multi-endpoint upstreams: 1 in rotation, 0 ejected), `fold_http_rejections_total{reason}`, `fold_build_info{version}`, plus standard Go process/runtime collectors.
 - **Distributed tracing** — W3C Trace Context (`traceparent`/`tracestate`) headers on incoming requests are propagated to the upstream calls they cause, so the gateway hop joins the caller's trace.
 - **Latency, measurably** — the `bench` CI job gates every merge on added p50 latency < 5 ms through the proxy path (loose for shared runners). Typical local numbers (Apple Silicon, in-process upstream): **~0.20 ms added p50**, gateway p99 ≈ 0.57 ms. Reproduce: `FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v`.
 - **Structured logging** — operational events (startup, upstream connect/reconnect, session drops, circuit-breaker transitions, refused cross-host redirects, SSE-hang fallbacks, shutdown) log via `log/slog`. `--log-format text|json` and `--log-level debug|info|warn|error` on the CLI; embedders pass `gateway.WithLogger(*slog.Logger)`. Per-request accounting stays in metrics and the audit sink, not the log stream.
 
 ## Operational endpoints
 
-- `GET /healthz` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, and owner. `503` when no upstream is reachable.
+- `GET /healthz` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, owner, and — for multi-endpoint upstreams — the balancer's per-endpoint rotation state. `503` when no upstream is reachable.
 - `GET /metrics` — Prometheus metrics (see Observability).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata (when auth is enabled).
 
@@ -292,7 +297,7 @@ The integration suite spins up real MCP servers from the official Go SDK behind 
 
 ## API stability
 
-fold is pre-1.0. The supported surfaces are the `fold` binary (CLI flags, the JSON config document, error codes, operational endpoints) and embedding via `gateway.New` + `Gateway.Handler` + `Gateway.Close` with a `config.Config` — see the [package example](https://pkg.go.dev/github.com/fold-run/fold/gateway). The `auth`, `policy`, and `audit` packages are exported because the gateway wires through them, but their Go APIs may change between minor versions until v1.0. `internal/` packages are not API.
+fold is pre-1.0. The supported surfaces are the `fold` binary (CLI flags, the JSON config document, error codes, operational endpoints) and embedding via `gateway.New` + `Gateway.Handler` + `Gateway.Reload` + `Gateway.Close` with a `config.Config` — see the [package example](https://pkg.go.dev/github.com/fold-run/fold/gateway). The `auth`, `policy`, and `audit` packages are exported because the gateway wires through them, but their Go APIs may change between minor versions until v1.0. `internal/` packages are not API.
 
 ## Not implemented
 

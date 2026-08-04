@@ -24,8 +24,16 @@ type Config struct {
 
 // Upstream describes one MCP server folded into the gateway.
 type Upstream struct {
-	ID        string `json:"id"`
-	URL       string `json:"url"`
+	ID  string `json:"id"`
+	URL string `json:"url,omitempty"`
+
+	// URLs lists multiple equivalent replicas of this upstream. The gateway
+	// load-balances new sessions across them round-robin, fails over to the
+	// next endpoint when one refuses connections, and rests a failed endpoint
+	// for the circuit breaker's halfOpenAfterMs before retrying it. Exactly
+	// one of url / urls must be set.
+	URLs []string `json:"urls,omitempty"`
+
 	Namespace string `json:"namespace,omitempty"`
 
 	// Protocol selects the era of the upstream connection. "session" (the
@@ -299,9 +307,23 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("upstream %q: duplicate id", u.ID)
 		}
 		seenID[u.ID] = true
-		parsed, err := url.Parse(u.URL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-			return fmt.Errorf("upstream %q: url must be an absolute http(s) URL", u.ID)
+		if u.URL != "" && len(u.URLs) > 0 {
+			return fmt.Errorf("upstream %q: set url or urls, not both", u.ID)
+		}
+		eps := u.Endpoints()
+		if len(eps) == 0 {
+			return fmt.Errorf("upstream %q: url (or urls) is required", u.ID)
+		}
+		seenEp := map[string]bool{}
+		for _, ep := range eps {
+			parsed, err := url.Parse(ep)
+			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return fmt.Errorf("upstream %q: %q must be an absolute http(s) URL", u.ID, ep)
+			}
+			if seenEp[ep] {
+				return fmt.Errorf("upstream %q: duplicate endpoint %q", u.ID, ep)
+			}
+			seenEp[ep] = true
 		}
 		if u.Namespace != "" {
 			if !idRE.MatchString(u.Namespace) {
@@ -510,6 +532,18 @@ func (c *Config) MCPPath() string {
 		return c.Server.MCPPath
 	}
 	return "/mcp"
+}
+
+// Endpoints returns the upstream's endpoint URLs: urls when set, else the
+// single url. Never empty for a validated config.
+func (u *Upstream) Endpoints() []string {
+	if len(u.URLs) > 0 {
+		return u.URLs
+	}
+	if u.URL != "" {
+		return []string{u.URL}
+	}
+	return nil
 }
 
 // AuthRequired reports whether gateway authentication is enabled.

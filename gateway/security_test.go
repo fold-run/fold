@@ -46,7 +46,7 @@ func TestNoCrossHostCredentialLeak(t *testing.T) {
 
 	// Drive a connect through the gateway's upstream client; it will fail
 	// (the redirect is refused), but the point is what the attacker saw.
-	u := gw.upstreams[0]
+	u := gw.rt().upstreams[0]
 	_, _ = u.connect(context.Background(), &mcp.ClientOptions{})
 
 	if got := attackerGotAuth.Load().(string); got != "" {

@@ -24,7 +24,7 @@ type metricsSet struct {
 	httpRejects *prometheus.CounterVec   // HTTP-level rejections by reason
 }
 
-func newMetricsSet(ups []*upstream) *metricsSet {
+func newMetricsSet(current func() []*upstream) *metricsSet {
 	m := &metricsSet{
 		registry: prometheus.NewRegistry(),
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -62,23 +62,53 @@ func newMetricsSet(ups []*upstream) *metricsSet {
 	}, []string{"version"})
 	build.WithLabelValues(version).Set(1)
 	m.registry.MustRegister(build)
-
-	for _, u := range ups {
-		m.registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Name:        "fold_upstream_breaker_state",
-			Help:        "Circuit breaker state per upstream: 0 closed, 1 half-open, 2 open.",
-			ConstLabels: prometheus.Labels{"upstream": u.cfg.ID},
-		}, func() float64 {
-			switch u.breaker.State(context.Background()) {
-			case breaker.Open:
-				return 2
-			case breaker.HalfOpen:
-				return 1
-			}
-			return 0
-		}))
-	}
+	m.registry.MustRegister(&upstreamCollector{current: current})
 	return m
+}
+
+// upstreamCollector exports per-upstream gauges resolved at scrape time
+// against the gateway's current routing snapshot, so hot-reloaded upstreams
+// appear (and retired ones disappear) without re-registration.
+type upstreamCollector struct {
+	current func() []*upstream
+}
+
+var (
+	breakerStateDesc = prometheus.NewDesc(
+		"fold_upstream_breaker_state",
+		"Circuit breaker state per upstream: 0 closed, 1 half-open, 2 open.",
+		[]string{"upstream"}, nil)
+	endpointHealthyDesc = prometheus.NewDesc(
+		"fold_upstream_endpoint_healthy",
+		"Balancer view per endpoint of a multi-endpoint upstream: 1 in rotation, 0 ejected after a connect failure.",
+		[]string{"upstream", "endpoint"}, nil)
+)
+
+func (c *upstreamCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- breakerStateDesc
+	ch <- endpointHealthyDesc
+}
+
+func (c *upstreamCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, u := range c.current() {
+		v := 0.0
+		switch u.breaker.State(context.Background()) {
+		case breaker.Open:
+			v = 2
+		case breaker.HalfOpen:
+			v = 1
+		}
+		ch <- prometheus.MustNewConstMetric(breakerStateDesc, prometheus.GaugeValue, v, u.cfg.ID)
+		if len(u.cfg.URLs) > 0 {
+			for _, ep := range u.endpoints.snapshot(true) {
+				healthy := 0.0
+				if ep.Healthy {
+					healthy = 1
+				}
+				ch <- prometheus.MustNewConstMetric(endpointHealthyDesc, prometheus.GaugeValue, healthy, u.cfg.ID, ep.URL)
+			}
+		}
+	}
 }
 
 func (m *metricsSet) observeRequest(method, outcome string, d time.Duration) {

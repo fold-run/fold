@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -93,6 +94,153 @@ func TestInvalidConfigFails(t *testing.T) {
 		if !strings.Contains(stderr, "fold:") {
 			t.Errorf("%s: stderr %q missing fold: prefix", name, stderr)
 		}
+	}
+}
+
+// syncBuffer is a Buffer safe to read while the subprocess is still writing.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// startServing boots the fold CLI as a subprocess on a free port with the
+// given config file and args, and waits until /healthz answers.
+func startServing(t *testing.T, configPath string, extraArgs ...string) (cmd *exec.Cmd, port int, stderr *syncBuffer) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port = l.Addr().(*net.TCPAddr).Port
+	l.Close()
+
+	args := append([]string{"--config", configPath, "--port", fmt.Sprint(port), "--log-format", "json"}, extraArgs...)
+	cmd = exec.Command(os.Args[0], args...)
+	cmd.Env = append(os.Environ(), "FOLD_TEST_MAIN=1")
+	stderr = &syncBuffer{}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	})
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			return cmd, port, stderr
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("server never answered %s; stderr: %s", url, stderr.String())
+	return nil, 0, nil
+}
+
+// waitHealthzContains polls /healthz until the body contains want.
+func waitHealthzContains(t *testing.T, port int, want string, timeout time.Duration) bool {
+	t.Helper()
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			body := make([]byte, 64<<10)
+			n, _ := resp.Body.Read(body)
+			resp.Body.Close()
+			if strings.Contains(string(body[:n]), want) {
+				return true
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+const twoUpstreamConfig = `{"upstreams":[
+	{"id":"u1","url":"https://example.com/mcp","namespace":"u1"},
+	{"id":"u2","url":"https://example.org/mcp","namespace":"u2"}]}`
+
+// TestSIGHUPReloadsConfig: editing the config file and sending SIGHUP makes
+// the new upstream set live without a restart, visible via /healthz.
+func TestSIGHUPReloadsConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fold.config.json")
+	if err := os.WriteFile(path, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd, port, stderr := startServing(t, path)
+
+	if err := os.WriteFile(path, []byte(twoUpstreamConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	if !waitHealthzContains(t, port, `"u2"`, 5*time.Second) {
+		t.Fatalf("upstream u2 never appeared after SIGHUP; stderr: %s", stderr.String())
+	}
+}
+
+// TestWatchReloadsConfig: with --watch, a config-file change is picked up by
+// the mtime poll with no signal at all.
+func TestWatchReloadsConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fold.config.json")
+	if err := os.WriteFile(path, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd, port, stderr := startServing(t, path, "--watch")
+	_ = cmd
+
+	// A fresh mtime is what the watcher keys on; the write provides it.
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(path, []byte(twoUpstreamConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !waitHealthzContains(t, port, `"u2"`, 10*time.Second) {
+		t.Fatalf("upstream u2 never appeared under --watch; stderr: %s", stderr.String())
+	}
+}
+
+// TestSIGHUPKeepsRunningOnBadConfig: a reload that fails validation is
+// rejected and the server keeps serving the old configuration.
+func TestSIGHUPKeepsRunningOnBadConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fold.config.json")
+	if err := os.WriteFile(path, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd, port, stderr := startServing(t, path)
+
+	if err := os.WriteFile(path, []byte(`{"upstreams":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(stderr.String(), "config rejected") {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !strings.Contains(stderr.String(), "config rejected") {
+		t.Fatalf("expected reload-rejected log; stderr: %s", stderr.String())
+	}
+	if !waitHealthzContains(t, port, `"u"`, 2*time.Second) {
+		t.Fatal("server stopped serving the old config after a bad reload")
 	}
 }
 

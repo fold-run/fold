@@ -144,9 +144,10 @@ func extractTaskID(raw json.RawMessage) string {
 // routeTask dispatches one task method. tasks/list fans out; the others
 // route to the owning upstream by affinity, falling back to a probe.
 func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMessage) (json.RawMessage, error) {
+	rt := g.rt()
 	caller := taskOwnerKey(auth.PrincipalFromContext(ctx))
 	if method == methodTasksList {
-		return g.listTasks(ctx, caller)
+		return g.listTasks(ctx, rt, caller)
 	}
 	taskID := extractTaskID(raw)
 	if taskID == "" {
@@ -163,7 +164,7 @@ func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMess
 		if rec.owner != "" && rec.owner != caller {
 			return nil, &jsonrpc.Error{Code: codeTaskNotFound, Message: fmt.Sprintf("no upstream owns task %q", taskID)}
 		}
-		if u := g.byID[rec.upstreamID]; u != nil {
+		if u := rt.byID[rec.upstreamID]; u != nil {
 			g.taskOwner.Store(taskID, rec) // refresh on use
 			return u.callTask(ctx, method, raw)
 		}
@@ -174,7 +175,7 @@ func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMess
 	// mutating method (cancel/result/update) out; locate first, then act on
 	// the owner alone. Fold cannot know who minted a task it never saw, so
 	// the record stays ownerless (out-of-band sharing keeps working).
-	owner := g.locateTaskOwner(ctx, taskID)
+	owner := g.locateTaskOwner(ctx, rt, taskID)
 	if owner == nil {
 		return nil, &jsonrpc.Error{Code: codeTaskNotFound, Message: fmt.Sprintf("no upstream owns task %q", taskID)}
 	}
@@ -184,14 +185,14 @@ func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMess
 
 // locateTaskOwner probes every upstream with tasks/get and returns the one
 // that recognizes the task, or nil.
-func (g *Gateway) locateTaskOwner(ctx context.Context, taskID string) *upstream {
+func (g *Gateway) locateTaskOwner(ctx context.Context, rt *routes, taskID string) *upstream {
 	probe, _ := json.Marshal(map[string]string{"taskId": taskID})
-	results, _ := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
+	results, _ := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
 		return u.callTask(ctx, methodTasksGet, probe)
 	})
 	for i, r := range results {
 		if r != nil {
-			return g.upstreams[i]
+			return rt.upstreams[i]
 		}
 	}
 	return nil
@@ -202,12 +203,12 @@ func (g *Gateway) locateTaskOwner(ctx context.Context, taskID string) *upstream 
 // otherwise expose every caller's tasks. Tasks with no ownership record
 // (out-of-band or evicted) are kept, matching the locate-by-probe fallback.
 // A partial-failure marker records any upstreams that were down.
-func (g *Gateway) listTasks(ctx context.Context, caller string) (json.RawMessage, error) {
+func (g *Gateway) listTasks(ctx context.Context, rt *routes, caller string) (json.RawMessage, error) {
 	empty, _ := json.Marshal(map[string]any{})
-	results, failed := fanOut(ctx, g.upstreams, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
+	results, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
 		return u.callTask(ctx, methodTasksList, empty)
 	})
-	meta, err := partialFailureMeta(failed, len(g.upstreams))
+	meta, err := partialFailureMeta(failed, len(rt.upstreams))
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +227,7 @@ func (g *Gateway) listTasks(ctx context.Context, caller string) (json.RawMessage
 		// it (never reassigning ownership), then hide other callers' tasks.
 		for _, t := range page.Tasks {
 			if id := extractTaskID(t); id != "" {
-				g.storeTaskAffinity(id, g.upstreams[i].cfg.ID, "")
+				g.storeTaskAffinity(id, rt.upstreams[i].cfg.ID, "")
 				if v, ok := g.taskOwner.Load(id); ok {
 					if rec := v.(taskRecord); rec.owner != "" && rec.owner != caller {
 						continue

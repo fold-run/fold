@@ -9,7 +9,7 @@
     },
     {
       "id": "ml-search",
-      "url": "https://mcp.ml.acquired-co.com/mcp",
+      "urls": ["https://mcp-1.ml.acquired-co.com/mcp", "https://mcp-2.ml.acquired-co.com/mcp"],
       "namespace": "search",
       "owner": { "org": "acquired-co", "team": "ml" },
       "auth": { "strategy": "static", "secretRef": "ML_SEARCH_API_KEY", "header": "x-api-key", "scheme": "" },

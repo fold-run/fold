@@ -28,6 +28,20 @@ func TestPassthroughDetection(t *testing.T) {
 	}
 }
 
+func TestMultiEndpointUpstream(t *testing.T) {
+	cfg, err := Parse([]byte(`{"upstreams":[{"id":"a","urls":["http://x.test","http://y.test"]}]}`))
+	if err != nil {
+		t.Fatalf("urls config rejected: %v", err)
+	}
+	if got := cfg.Upstreams[0].Endpoints(); len(got) != 2 || got[0] != "http://x.test" {
+		t.Errorf("Endpoints() = %v", got)
+	}
+	single := Upstream{ID: "a", URL: "http://x.test"}
+	if got := single.Endpoints(); len(got) != 1 || got[0] != "http://x.test" {
+		t.Errorf("single-url Endpoints() = %v", got)
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	cases := []struct {
 		name, json, wantErr string
@@ -38,6 +52,10 @@ func TestValidationErrors(t *testing.T) {
 		{"missing namespace", `{"upstreams":[{"id":"a","url":"http://x.test","namespace":"a"},{"id":"b","url":"http://y.test"}]}`, "namespace is required"},
 		{"dup namespace", `{"upstreams":[{"id":"a","url":"http://x.test","namespace":"n"},{"id":"b","url":"http://y.test","namespace":"n"}]}`, "duplicate namespace"},
 		{"bad url", `{"upstreams":[{"id":"a","url":"not-a-url"}]}`, "http(s)"},
+		{"no url at all", `{"upstreams":[{"id":"a"}]}`, "url (or urls) is required"},
+		{"url and urls", `{"upstreams":[{"id":"a","url":"http://x.test","urls":["http://y.test"]}]}`, "not both"},
+		{"bad urls entry", `{"upstreams":[{"id":"a","urls":["http://x.test","nope"]}]}`, "http(s)"},
+		{"duplicate urls entry", `{"upstreams":[{"id":"a","urls":["http://x.test","http://x.test"]}]}`, "duplicate endpoint"},
 		{"auth without resource", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","issuers":[{"issuer":"https://idp.test"}]}}`, "resource"},
 		{"auth without issuers", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","resource":"https://gw.test"}}`, "issuer"},
 		{"static without secret", `{"upstreams":[{"id":"a","url":"http://x.test","auth":{"strategy":"static"}}]}`, "secretRef"},

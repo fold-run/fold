@@ -46,6 +46,10 @@ type upstream struct {
 	cfg   config.Upstream
 	creds *auth.UpstreamCredentials
 
+	// endpoints balances new sessions across the upstream's replicas
+	// (single-endpoint upstreams hold a pool of one).
+	endpoints *endpointPool
+
 	limiter state.Limiter
 	breaker state.Breaker
 	lists   state.ListCache
@@ -130,12 +134,17 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 		}
 	}
 	u.breaker = provider.Breaker("up:"+cfg.ID, threshold, halfOpen)
+	// A failed endpoint rests for the breaker's half-open interval — the same
+	// "retry the unhealthy thing after" semantic, applied per replica.
+	u.endpoints = newEndpointPool(cfg.Endpoints(), halfOpen)
 	sessionEra := cfg.Protocol == "" || cfg.Protocol == "session"
-	upstreamHost := ""
-	if parsed, err := url.Parse(cfg.URL); err == nil {
-		upstreamHost = parsed.Host
+	upstreamHosts := map[string]bool{}
+	for _, ep := range cfg.Endpoints() {
+		if parsed, err := url.Parse(ep); err == nil && parsed.Host != "" {
+			upstreamHosts[parsed.Host] = true
+		}
 	}
-	ct := newCredentialTransport(u.creds, sessionEra, upstreamHost)
+	ct := newCredentialTransport(u.creds, sessionEra, upstreamHosts)
 	u.httpClient = &http.Client{
 		Transport: ct,
 		// Never follow a redirect that changes host: credentials are attached
@@ -175,15 +184,15 @@ var sseHeaderTimeout = 3 * time.Second
 // the only era whose connections can carry server-initiated requests
 // (sampling, elicitation) back through the gateway.
 type credentialTransport struct {
-	creds        *auth.UpstreamCredentials
-	base         http.RoundTripper
-	sse          http.RoundTripper // GETs: base + response-header timeout
-	sessionEra   bool
-	upstreamHost string              // credentials/trace attach only to this host
-	log          func() *slog.Logger // resolved lazily (upstream logger set after construction)
+	creds         *auth.UpstreamCredentials
+	base          http.RoundTripper
+	sse           http.RoundTripper // GETs: base + response-header timeout
+	sessionEra    bool
+	upstreamHosts map[string]bool     // credentials/trace attach only to these hosts
+	log           func() *slog.Logger // resolved lazily (upstream logger set after construction)
 }
 
-func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool, upstreamHost string) *credentialTransport {
+func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool, upstreamHosts map[string]bool) *credentialTransport {
 	sse := http.RoundTripper(http.DefaultTransport)
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		clone := t.Clone()
@@ -191,11 +200,11 @@ func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool, up
 		sse = clone
 	}
 	return &credentialTransport{
-		creds:        creds,
-		base:         http.DefaultTransport,
-		sse:          sse,
-		sessionEra:   sessionEra,
-		upstreamHost: upstreamHost,
+		creds:         creds,
+		base:          http.DefaultTransport,
+		sse:           sse,
+		sessionEra:    sessionEra,
+		upstreamHosts: upstreamHosts,
 	}
 }
 
@@ -226,10 +235,10 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	req = req.Clone(req.Context())
 	// Attach credentials and trace context only when the request is actually
-	// bound for the configured upstream host. CheckRedirect already blocks
-	// cross-host redirects; this is defense-in-depth so a credential can
-	// never ride a request to any other host.
-	if t.upstreamHost == "" || req.URL.Host == t.upstreamHost {
+	// bound for one of the configured upstream hosts. CheckRedirect already
+	// blocks cross-host redirects; this is defense-in-depth so a credential
+	// can never ride a request to any other host.
+	if len(t.upstreamHosts) == 0 || t.upstreamHosts[req.URL.Host] {
 		if err := t.creds.Apply(req.Context(), req.Header); err != nil {
 			return nil, fmt.Errorf("upstream credentials: %w", err)
 		}
@@ -249,27 +258,40 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return t.base.RoundTrip(req)
 }
 
+// connect establishes a new session, load-balancing across the upstream's
+// endpoints: candidates come back round-robin with recently-failed replicas
+// last, each is tried in turn, and a connect failure ejects that endpoint
+// for the pool's cooldown. Sessions stay pinned to the endpoint they
+// connected to — balancing is per new session, matching MCP's sessionful
+// wire protocol.
 func (u *upstream) connect(ctx context.Context, opts *mcp.ClientOptions) (*mcp.ClientSession, error) {
-	client := mcp.NewClient(&mcp.Implementation{Name: "fold-gateway", Version: version}, opts)
-	// Register the federated task methods so the client may forward them to
-	// this upstream as opaque custom methods.
-	for _, method := range taskMethods {
-		if err := mcp.AddSendingCustomMethod[*rawParams, *rawResult](client, method); err != nil {
-			return nil, fmt.Errorf("register task method %q: %w", method, err)
+	var lastErr error
+	for _, endpoint := range u.endpoints.candidates() {
+		client := mcp.NewClient(&mcp.Implementation{Name: "fold-gateway", Version: version}, opts)
+		// Register the federated task methods so the client may forward them
+		// to this upstream as opaque custom methods.
+		for _, method := range taskMethods {
+			if err := mcp.AddSendingCustomMethod[*rawParams, *rawResult](client, method); err != nil {
+				return nil, fmt.Errorf("register task method %q: %w", method, err)
+			}
 		}
+		cctx, cancel := context.WithTimeout(ctx, u.connectTimeout)
+		session, err := client.Connect(cctx, &mcp.StreamableClientTransport{
+			Endpoint:   endpoint,
+			HTTPClient: u.httpClient,
+		}, nil)
+		cancel()
+		if err != nil {
+			u.endpoints.markDown(endpoint)
+			u.log.Warn("upstream connect failed", "endpoint", endpoint, "err", err)
+			lastErr = err
+			continue
+		}
+		u.endpoints.markUp(endpoint)
+		u.log.Debug("upstream connected", "endpoint", endpoint)
+		return session, nil
 	}
-	cctx, cancel := context.WithTimeout(ctx, u.connectTimeout)
-	defer cancel()
-	session, err := client.Connect(cctx, &mcp.StreamableClientTransport{
-		Endpoint:   u.cfg.URL,
-		HTTPClient: u.httpClient,
-	}, nil)
-	if err != nil {
-		u.log.Warn("upstream connect failed", "err", err)
-		return nil, fmt.Errorf("connect upstream %q: %w", u.cfg.ID, err)
-	}
-	u.log.Debug("upstream connected")
-	return session, nil
+	return nil, fmt.Errorf("connect upstream %q: %w", u.cfg.ID, lastErr)
 }
 
 // rootSession connects (or reuses) the shared upstream session. List-changed
@@ -385,6 +407,18 @@ func (u *upstream) dropSession(s *mcp.ClientSession) {
 	if s != nil {
 		_ = s.Close()
 	}
+}
+
+// subscribedURIs returns the URIs subscribed on the root session (used to
+// carry subscriptions over to a replacement upstream on reload).
+func (u *upstream) subscribedURIs() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	uris := make([]string, 0, len(u.subscribed))
+	for uri := range u.subscribed {
+		uris = append(uris, uri)
+	}
+	return uris
 }
 
 // sweepBridged closes bridged sessions idle longer than bridgedIdleTimeout.
