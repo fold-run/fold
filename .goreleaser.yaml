@@ -1,0 +1,37 @@
+# Release pipeline: binaries, archives, checksums, SBOMs, GitHub release
+# notes. Run by .github/workflows/release.yml on tag push; the container
+# image is built separately in that workflow. Validate with `goreleaser check`.
+version: 2
+
+project_name: fold
+
+builds:
+  - main: ./cmd/fold
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/fold-run/fold/gateway.version={{ .Tag }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  # Keep the pre-goreleaser naming: fold_v1.2.3_linux_amd64.tar.gz
+  - name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - fold.config.example.json
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^build\\(deps\\)"

@@ -1,6 +1,6 @@
 # Single source of truth for dev/CI commands; CI calls these same targets.
 
-.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench conformance check fuzz
+.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench conformance check fuzz cover
 
 build:
 	go build ./...
@@ -10,6 +10,12 @@ test:
 
 race:
 	go test -race ./...
+
+# Race tests + coverage profile; CI uses this as its test step. Coverage is
+# informational, not a gate. Inspect with: go tool cover -html=coverage.out
+cover:
+	go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	@go tool cover -func=coverage.out | tail -1
 
 vet:
 	go vet ./...

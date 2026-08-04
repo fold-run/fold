@@ -11,34 +11,37 @@ permissions:
 jobs:
   binaries:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # provenance attestation (sigstore)
+      attestations: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # goreleaser derives the changelog from history
 
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
-      - name: build release binaries
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME}"
-          mkdir -p dist
-          for platform in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            goos="${platform%/*}" goarch="${platform#*/}"
-            out="dist/fold_${version}_${goos}_${goarch}"
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
-              -ldflags="-s -w -X github.com/fold-run/fold/gateway.version=${version}" \
-              -o "$out/fold" ./cmd/fold
-            cp README.md LICENSE fold.config.example.json "$out/"
-            tar -czf "$out.tar.gz" -C dist "$(basename "$out")"
-            rm -r "$out"
-          done
-          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+      - name: install syft (SBOM generation)
+        uses: anchore/sbom-action/download-syft@v0
 
-      - name: create GitHub release
+      - name: goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/checksums.txt
 
   image:
     runs-on: ubuntu-latest

@@ -262,6 +262,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 make build
 make test          # unit + integration (real SDK client/server fixtures)
 make race          # what CI runs
+make cover         # race tests + coverage summary (coverage.out)
 make lint          # golangci-lint (config in .golangci.yml)
 make check         # fmt-check + tidy-check + vet + build + race + lint
 make bench         # added-latency gate (p50 < 5 ms through the proxy path)
