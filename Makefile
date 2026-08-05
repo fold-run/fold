@@ -1,6 +1,6 @@
 # Single source of truth for dev/CI commands; CI calls these same targets.
 
-.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench conformance check fuzz cover helm-check
+.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance check fuzz cover helm-check
 
 build:
 	go build ./...
@@ -37,6 +37,11 @@ vuln:
 
 bench:
 	FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v
+
+# Throughput + tail latency sweep (docs/benchmarks.md). Not in CI: shared
+# runners make throughput numbers noise; bench is the merge-time guard.
+loadtest:
+	go run ./tools/perf
 
 # Seed corpora always run as part of `make test`; this explores further.
 fuzz:

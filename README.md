@@ -283,7 +283,8 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 
 - `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_upstream_endpoint_healthy{upstream,endpoint}` (multi-endpoint upstreams: 1 in rotation, 0 ejected), `fold_http_rejections_total{reason}`, `fold_discovery_syncs_total{outcome}`, `fold_build_info{version}`, plus standard Go process/runtime collectors.
 - **Distributed tracing** — W3C Trace Context (`traceparent`/`tracestate`) headers on incoming requests are always propagated to the upstream calls they cause, so the gateway hop joins the caller's trace. With the `tracing` section configured, fold also emits its own OpenTelemetry spans (server span per request, client span per upstream call, pipeline outcomes as attributes) over OTLP/HTTP — the gateway hop appears *in* the trace instead of being invisible, and upstream calls parent under fold's client span while keeping the caller's trace id.
-- **Latency, measurably** — the `bench` CI job gates every merge on added p50 latency < 5 ms through the proxy path (loose for shared runners). Typical local numbers (Apple Silicon, in-process upstream): **~0.20 ms added p50**, gateway p99 ≈ 0.57 ms. Reproduce: `FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v`.
+- **Latency, measurably** — the `bench` CI job gates every merge on added p50 latency < 5 ms through the proxy path (loose for shared runners). Typical local numbers (Apple Silicon, in-process upstream): **~0.20 ms added p50**, gateway p99 ≈ 0.57 ms. Reproduce: `make bench`.
+- **Throughput, measurably** — `make loadtest` sweeps one instance under 8/64/256 concurrent SDK client sessions, direct vs through-fold: **~9,300 req/s `tools/call` at 64 connections (p99 ≤ 19 ms), 13,400 req/s at 256 (p99 ≤ 61 ms), zero errors** (Apple M4 Pro, loopback). Methodology, full tables, and the honest caveats: [docs/benchmarks.md](docs/benchmarks.md).
 - **Structured logging** — operational events (startup, upstream connect/reconnect, session drops, circuit-breaker transitions, refused cross-host redirects, SSE-hang fallbacks, shutdown) log via `log/slog`. `--log-format text|json` and `--log-level debug|info|warn|error` on the CLI; embedders pass `gateway.WithLogger(*slog.Logger)`. Per-request accounting stays in metrics and the audit sink, not the log stream.
 
 ## Operational endpoints
@@ -299,6 +300,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/operations.md](docs/operations.md) — day-2 reference: every endpoint, metric, audit field, and error code, and how reloads, discovery, and probes surface in logs and metrics.
 - [docs/security-model.md](docs/security-model.md) — the architecture: trust anchors, the inbound chain, the enforcement pair, credential containment, tenant isolation.
 - [docs/discovery-controller.md](docs/discovery-controller.md) — `fold-discovery`, the Kubernetes producer: label a Service and it joins the federation.
+- [docs/benchmarks.md](docs/benchmarks.md) — the latency gate and the throughput sweep: methodology, numbers, how to reproduce.
 - [docs/embedding.md](docs/embedding.md) — the Go embedding surface, with CI-compiled examples.
 - [docs/defaults.md](docs/defaults.md) — the v1.0 defaults review, every default a decision on record.
 

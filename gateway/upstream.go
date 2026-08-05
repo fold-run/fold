@@ -200,15 +200,25 @@ type credentialTransport struct {
 }
 
 func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool, upstreamHosts map[string]bool) *credentialTransport {
-	sse := http.RoundTripper(http.DefaultTransport)
+	base := http.RoundTripper(http.DefaultTransport)
+	sse := base
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		clone := t.Clone()
-		clone.ResponseHeaderTimeout = sseHeaderTimeout
-		sse = clone
+		// A gateway talks to few upstream hosts with many requests in
+		// flight; Go's default pool keeps only 2 idle conns per host, which
+		// forces a fresh TCP(+TLS) handshake for most proxied requests once
+		// more than two are concurrent — measured by tools/perf as ~14k
+		// connections/s of churn at 8 client connections.
+		clone.MaxIdleConns = 1024
+		clone.MaxIdleConnsPerHost = 256
+		base = clone
+		sseClone := clone.Clone()
+		sseClone.ResponseHeaderTimeout = sseHeaderTimeout
+		sse = sseClone
 	}
 	return &credentialTransport{
 		creds:         creds,
-		base:          http.DefaultTransport,
+		base:          base,
 		sse:           sse,
 		sessionEra:    sessionEra,
 		upstreamHosts: upstreamHosts,
