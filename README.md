@@ -367,6 +367,14 @@ Known gaps, documented deliberately:
 
 ## Changelog
 
+### v1.1.0 — 2026-08-04
+
+Self-serve federation on Kubernetes. Includes the v1.0.1 security fix.
+
+- **`fold-discovery`** — the producer half of dynamic discovery: label a Service `fold.run/upstream: "true"` and its tools appear behind the gateway, no fold config change. It lists Services over the plain Kubernetes API with the pod's service account (no client-go dependency), maps them via `fold.run/*` annotations, and serves the document the gateway already polls. Ships as its own binary, image (`ghcr.io/fold-run/fold-discovery`), and manifest — see [docs/discovery-controller.md](docs/discovery-controller.md).
+- **Registration bounds** — labeling rights are registration rights, so both sides bound them: the producer is default-deny on credentialed strategies and secret references, identities are namespace-prefixed, and contested claims drop every claimant. The gateway independently enforces `discovery.allowedAuthStrategies`, `allowedSecretRefs`, and `allowedCredentialHosts`, rejecting a violating document whole.
+- **Security fix (also in v1.0.1)** — the token-endpoint client no longer follows redirects; see below.
+
 ### v1.0.1 — 2026-08-04
 
 **Security fix**, released from the `release-1.0` branch as a drop-in patch. The token-endpoint client followed HTTP redirects, and Go replays POST bodies on 307/308 — so a redirecting token endpoint handed the grant to the redirect target: the client secret under `client_secret_post`, and the caller's own bearer token as `subject_token` under `token-exchange`. Affects any upstream using `client-credentials` or `token-exchange` whose token endpoint can be made to redirect. The client now refuses every redirect and the grant fails closed.
