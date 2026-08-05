@@ -832,6 +832,20 @@ func (g *Gateway) buildHandler() http.Handler {
 	mux.Handle(g.cfg.MCPPath(), mcpChain)
 	mux.HandleFunc("/healthz", g.handleHealth)
 	mux.Handle("/metrics", g.metrics.handler())
+	if g.cfg.ConsoleEnabled() {
+		// The state API is data, so it authenticates like /mcp; the static
+		// assets are the same bytes for everyone and stay open. It also
+		// shares /mcp's rate budgets (global + per-principal): each state
+		// request pings every upstream, so an unbudgeted poll loop would be
+		// a load amplifier against all backends.
+		state := g.rateLimitMiddleware(http.HandlerFunc(g.handleConsoleState))
+		if g.verifier != nil {
+			state = g.authMiddleware(state)
+		}
+		mux.Handle("/console/api/state", state)
+		mux.Handle("/console/", consoleAssetHandler())
+		mux.Handle("/console", http.RedirectHandler("/console/", http.StatusMovedPermanently))
+	}
 	if g.cfg.AuthRequired() {
 		mux.Handle("/.well-known/oauth-protected-resource", g.protectedResourceHandler())
 		if g.ema != nil {
@@ -1085,11 +1099,14 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
-// upstreamHealth is one upstream's health snapshot. Sensitive fields (URL,
-// owner, labels, detailed error) are populated only for trusted deployments
-// (auth disabled); a public deployment's /healthz stays minimal so an
+// upstreamHealth is one upstream's health snapshot, shared by /healthz and
+// the console state API. Sensitive fields (URL, owner, labels, detailed
+// error) are populated only when the caller is trusted: for /healthz that
+// means auth disabled — a public deployment's /healthz stays minimal so an
 // unauthenticated caller cannot enumerate the federation or learn secret
-// env-var names from connect errors.
+// env-var names from connect errors; the console serves topology to any
+// authenticated principal but reduces raw connect errors to a category
+// (see handleConsoleState).
 type upstreamHealth struct {
 	ID        string            `json:"id"`
 	Namespace string            `json:"namespace,omitempty"`
@@ -1106,12 +1123,15 @@ type upstreamHealth struct {
 	Endpoints []endpointStatus `json:"endpoints,omitempty"`
 }
 
-func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	detailed := !g.cfg.AuthRequired()
-	upstreams := g.rt().upstreams
-	statuses := make([]upstreamHealth, len(upstreams))
+// collectUpstreamHealth pings every upstream in rt concurrently and reports
+// per-upstream status. Shared by /healthz and the console state API; the
+// caller passes the snapshot it is already answering from, so one request
+// never mixes two worlds across a reload. detailed controls the redaction
+// split (URLs, owners, labels, and raw connect errors are for trusted
+// callers only — raw errors can name secret env vars or internal hosts).
+func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes, detailed bool) (statuses []upstreamHealth, healthy int) {
+	upstreams := rt.upstreams
+	statuses = make([]upstreamHealth, len(upstreams))
 	var wg sync.WaitGroup
 	for i, u := range upstreams {
 		wg.Go(func() {
@@ -1130,9 +1150,6 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 			}
 			start := time.Now()
 			if err := u.ping(ctx); err != nil {
-				// Never echo the raw error to callers — it can name secret
-				// env vars or internal hosts. Detailed deployments get a
-				// short category; public ones get nothing.
 				if detailed {
 					h.Error = err.Error()
 				}
@@ -1144,12 +1161,18 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	wg.Wait()
-	healthy := 0
 	for _, s := range statuses {
 		if s.Connected {
 			healthy++
 		}
 	}
+	return statuses, healthy
+}
+
+func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	statuses, healthy := g.collectUpstreamHealth(ctx, g.rt(), !g.cfg.AuthRequired())
 	code := http.StatusOK
 	if healthy == 0 {
 		code = http.StatusServiceUnavailable

@@ -1,8 +1,9 @@
-# Design: the fold console (parked)
+# Design: the fold console
 
-Status: **parked — not scheduled**. This records the design so implementation
-can start from a decision, not a discussion. Nothing here is committed API;
-if the feature ships, it ships as an additive minor under the v1 contract.
+Status: **implemented** (shipping in the next minor). This doc recorded the
+design before implementation; it now serves as the decision record. The
+operational documentation lives in the README, [operations.md](operations.md),
+and [security-model.md](security-model.md).
 
 ## Motivation
 

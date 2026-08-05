@@ -239,7 +239,16 @@
         "allowedHosts": { "type": "array", "items": { "type": "string" } },
         "rateLimit": { "$ref": "#/definitions/rateLimit" },
         "maxBodyBytes": { "type": "integer", "minimum": 0 },
-        "redisUrl": { "type": "string", "format": "uri" }
+        "redisUrl": { "type": "string", "format": "uri" },
+        "console": { "$ref": "#/definitions/console" }
+      }
+    },
+    "console": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" }
       }
     },
     "tracing": {

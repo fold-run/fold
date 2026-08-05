@@ -228,6 +228,7 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `rateLimit` | none | Global `{ requestsPerMinute }` across all upstreams, plus optional `perPrincipalPerMinute` capping each authenticated principal on its own bucket (one tenant's flood cannot 429 the others). |
 | `maxBodyBytes` | 1 MiB | Request body cap; larger bodies are answered `413` (chunked bodies are cut off at the cap). |
 | `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
+| `console` | disabled | `{ "enabled": true }` serves the read-only fold console at `/console`: an observability dashboard (federation health, breaker and endpoint state, discovery status) plus an MCP test console that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. With auth enabled, the console's state API requires the same Bearer token as `/mcp`. |
 
 ### `routing`
 
@@ -290,6 +291,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - `GET /healthz` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, owner, and — for multi-endpoint upstreams — the balancer's per-endpoint rotation state. `503` when no upstream is reachable.
 - `GET /metrics` — Prometheus metrics (see Observability).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata (when auth is enabled).
+- `GET /console/` — the read-only fold console (when `server.console.enabled`): an observability dashboard plus an MCP test console. The test console is a plain MCP client against the gateway's own `/mcp`, so policy, rate limits, and audit apply to it like any other client — there is no privileged path.
 
 ## Guides
 
@@ -366,6 +368,12 @@ Known gaps, documented deliberately:
 - **Content inspection (DLP / PII filtering / prompt-injection detection)** — deliberately out of scope. Inspecting request and response bodies means buffering and rewriting traffic, which conflicts with fold's invisibility rule (behavior through the gateway matches hitting the upstream directly) and its latency gate — and inline detection is a product of its own, not a gateway feature. fold's security model is structural instead: deny-by-default tool allowlists, per-principal invisibility, claim-gated (ABAC) rules, credential brokering so agents never hold upstream keys, and a full audit trail to feed the SIEM that does the detecting. If inline inspection becomes table stakes, the fold-shaped answer is an opt-in content-inspection hook (an external policy endpoint on the ingress/egress path), not built-in scanning.
 
 ## Changelog
+
+### v1.2.0 — 2026-08-04
+
+The fold console.
+
+- **`server.console`** — an embedded, read-only console at `/console` (default off): an observability dashboard — federation health, breaker and per-endpoint rotation state, discovery sync status — plus an MCP test console. The test console is a plain MCP client against the gateway's own `/mcp`, so policy filters what it lists, denials answer `-32042`, rate limits apply, and every call is audited; there is no privileged path. Assets are hand-written and embedded in the binary (no build step, no external fetches — CSP-pinned). The state API authenticates like `/mcp` and shares its rate budgets; with auth on, any valid principal sees the federation topology while raw connect errors are reduced to a category (decision on record in [docs/security-model.md](docs/security-model.md)).
 
 ### v1.1.0 — 2026-08-04
 

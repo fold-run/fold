@@ -112,6 +112,37 @@ backends; with Redis, all of this state — plus EMA replay protection — is
 fleet-wide. Redis outages fail open (bounded 500 ms per operation): the
 gateway degrades to per-instance enforcement rather than going down.
 
+## The console has no privileged path
+
+The optional read-only console (`server.console.enabled`, default off) adds
+two kinds of surface, each with a deliberate trust story:
+
+- **Static assets** (`/console/`) are the same bytes for every caller and
+  carry no data, so they serve unauthenticated. A strict CSP
+  (`default-src 'self'`) pins every fetch the page makes to the gateway's
+  own origin.
+- **The state API** (`/console/api/state`) is data, so it authenticates
+  exactly like `/mcp` — with `auth.mode: "required"` it demands a valid
+  Bearer token through the same verifier — and it shares `/mcp`'s global
+  and per-principal rate budgets. It never carries secret material:
+  `secretRef` *names* are config, values never appear. Its disclosure rule
+  is broader than `/healthz`'s, and deliberately so: **any authenticated
+  principal, regardless of policy grants, sees the federation topology**
+  (upstream URLs, owners, labels, endpoint rotation) — the console exists
+  to show it. Raw connect errors are the exception: they can name secret
+  env vars or internal hosts, so when auth is on they are reduced to a
+  category and the full text stays in gateway logs. If "any valid
+  principal" is too wide for a multi-tenant deployment, leave the console
+  off (the default) — a viewer allowlist (`console.groups`) is the
+  documented follow-up.
+- **The test console** is a plain MCP client running in the browser,
+  pointed at `/mcp`. Its traffic is indistinguishable from any other
+  client's: policy filters what it lists, denials answer `-32042`, rate
+  limits apply, and every call lands in the audit trail. The console cannot
+  bypass governance because there is nothing to bypass with — it holds no
+  credential of its own (the user's pasted token lives in page memory only,
+  never storage) and reaches no endpoint a client couldn't.
+
 ## What fold deliberately does not do
 
 Content inspection (DLP, PII filtering, prompt-injection detection) is out

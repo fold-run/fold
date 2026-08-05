@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>fold console</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>fold console</h1>
+      <span id="version" class="muted"></span>
+    </div>
+    <div class="auth">
+      <input id="token" type="password" placeholder="Bearer token (if auth is required)" autocomplete="off" spellcheck="false">
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <p id="banner" class="banner" hidden></p>
+
+    <section>
+      <h2>Federation</h2>
+      <div id="summary" class="cards"></div>
+      <div class="tablewrap">
+        <table id="upstreams">
+          <thead>
+            <tr>
+              <th>Upstream</th><th>Namespace</th><th>Connected</th>
+              <th>Breaker</th><th>Latency</th><th>Endpoints</th><th>Owner</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="discovery" class="cards"></div>
+    </section>
+
+    <section>
+      <h2>Test console</h2>
+      <p class="muted">Calls go through the gateway's own MCP endpoint — policy,
+      rate limits, and audit apply exactly as they do for any other client.</p>
+      <div class="row">
+        <button id="connect" type="button">Connect &amp; list tools</button>
+        <span id="mcpstatus" class="muted"></span>
+      </div>
+      <div class="row">
+        <select id="tools" disabled></select>
+      </div>
+      <p id="tooldesc" class="muted"></p>
+      <textarea id="args" rows="6" placeholder='{"argument": "value"}' spellcheck="false" disabled></textarea>
+      <div class="row">
+        <button id="call" type="button" disabled>Call tool</button>
+      </div>
+      <h3>Result</h3>
+      <pre id="result" class="pane"></pre>
+      <h3>Wire log</h3>
+      <pre id="wire" class="pane tall"></pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,591 @@
+package gateway
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/fold-run/fold/config"
+)
+
+// consoleConfig is a minimal config with the console switched on.
+func consoleConfig(upstreams []config.Upstream) *config.Config {
+	return &config.Config{
+		Upstreams: upstreams,
+		Server:    &config.ServerSection{Console: &config.Console{Enabled: true}},
+	}
+}
+
+// The console is off by default: none of its routes may exist without
+// server.console.enabled — the mux must fall through to 404.
+func TestConsoleDisabledByDefault(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, &config.Config{Upstreams: []config.Upstream{
+		{ID: "u", URL: up.URL},
+	}})
+
+	for _, path := range []string{"/console/", "/console/api/state", "/console"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s with console disabled: want 404, got %d", path, resp.StatusCode)
+		}
+	}
+}
+
+// With the console enabled and auth off, the static page serves with its
+// CSP and the state API reports the federation.
+func TestConsoleEnabledStateAndAssets(t *testing.T) {
+	up1, _ := newUpstreamServer(t, "get_weather")
+	up2, _ := newUpstreamServer(t, "search")
+	cfg := consoleConfig([]config.Upstream{
+		{ID: "weather", URL: up1.URL, Namespace: "wx"},
+		{ID: "search", URL: up2.URL, Namespace: "search"},
+	})
+	cfg.Server.MCPPath = "/rpc"
+	ts, _ := startGateway(t, cfg)
+
+	// Static assets: 200, CSP pinned to this origin, and it is our page.
+	resp, err := http.Get(ts.URL + "/console/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /console/: want 200, got %d", resp.StatusCode)
+	}
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Errorf("CSP = %q, want default-src 'self'", csp)
+	}
+	if !strings.Contains(string(body), "fold console") {
+		t.Errorf("console page does not contain %q", "fold console")
+	}
+
+	// Bare /console redirects into the directory.
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err = noRedirect.Get(ts.URL + "/console")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("GET /console: want 301, got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/console/" {
+		t.Errorf("redirect Location = %q, want /console/", loc)
+	}
+
+	// State API: version, mcpPath, and the upstream roster.
+	resp, err = http.Get(ts.URL + "/console/api/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /console/api/state: want 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("state Content-Type = %q, want application/json", ct)
+	}
+	var st struct {
+		Version               string `json:"version"`
+		AuthRequired          bool   `json:"authRequired"`
+		MCPPath               string `json:"mcpPath"`
+		PolicyDefaultDecision string `json:"policyDefaultDecision"`
+		StaticUpstreams       int    `json:"staticUpstreams"`
+		Upstreams             []struct {
+			ID        string `json:"id"`
+			Namespace string `json:"namespace"`
+			Connected bool   `json:"connected"`
+		} `json:"upstreams"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if st.Version == "" {
+		t.Error("state.version is empty")
+	}
+	if st.AuthRequired {
+		t.Error("state.authRequired = true with auth disabled")
+	}
+	if st.MCPPath != "/rpc" {
+		t.Errorf("state.mcpPath = %q, want /rpc", st.MCPPath)
+	}
+	// No policy section means the engine is allow-all; the console must not
+	// mislabel that as deny-by-default.
+	if st.PolicyDefaultDecision != "allow (no policy configured)" {
+		t.Errorf("state.policyDefaultDecision = %q, want %q", st.PolicyDefaultDecision, "allow (no policy configured)")
+	}
+	if st.StaticUpstreams != 2 {
+		t.Errorf("state.staticUpstreams = %d, want 2", st.StaticUpstreams)
+	}
+	if len(st.Upstreams) != 2 {
+		t.Fatalf("state.upstreams has %d entries, want 2", len(st.Upstreams))
+	}
+	byID := map[string]string{}
+	for _, u := range st.Upstreams {
+		byID[u.ID] = u.Namespace
+		if !u.Connected {
+			t.Errorf("upstream %q not connected", u.ID)
+		}
+	}
+	if byID["weather"] != "wx" || byID["search"] != "search" {
+		t.Errorf("upstream id/namespace pairs = %v", byID)
+	}
+}
+
+// The state API is data and authenticates like /mcp; the static assets are
+// the same bytes for everyone and stay open.
+func TestConsoleStateRequiresAuth(t *testing.T) {
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "tool")
+	// A second, dead upstream: with auth required the console must reduce
+	// its raw connect error (which can name env vars / internal hosts) to a
+	// category, while topology (URLs) stays visible to a valid principal.
+	cfg := authedConfig(iss, []config.Upstream{
+		{ID: "u", URL: up.URL, Namespace: "u"},
+		{ID: "dead", URL: "http://127.0.0.1:1/mcp", Namespace: "dead"},
+	}, nil)
+	cfg.Server = &config.ServerSection{Console: &config.Console{Enabled: true}}
+	ts, _ := startGateway(t, cfg)
+
+	// No token → 401 on the data plane.
+	resp, err := http.Get(ts.URL + "/console/api/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("state without token: want 401, got %d", resp.StatusCode)
+	}
+
+	// Static assets stay open: identical bytes for every caller, no data.
+	resp, err = http.Get(ts.URL + "/console/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("assets without token: want 200, got %d", resp.StatusCode)
+	}
+
+	// Valid token → 200 with the detailed (URL-bearing) view.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/console/api/state", nil)
+	req.Header.Set("Authorization", "Bearer "+iss.mint(t, "alice", "https://gw.example.com", nil))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("state with token: want 200, got %d", resp.StatusCode)
+	}
+	var st struct {
+		AuthRequired bool `json:"authRequired"`
+		Upstreams    []struct {
+			ID        string `json:"id"`
+			URL       string `json:"url"`
+			Connected bool   `json:"connected"`
+			Error     string `json:"error"`
+		} `json:"upstreams"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if !st.AuthRequired {
+		t.Error("state.authRequired = false with auth required")
+	}
+	if len(st.Upstreams) != 2 {
+		t.Fatalf("state.upstreams has %d entries, want 2", len(st.Upstreams))
+	}
+	for _, u := range st.Upstreams {
+		switch u.ID {
+		case "u":
+			if u.URL != up.URL {
+				t.Errorf("authenticated state is not detailed: url = %q, want %q", u.URL, up.URL)
+			}
+		case "dead":
+			if u.Connected {
+				t.Error("dead upstream reports connected")
+			}
+			// Raw dial errors would leak "connection refused" + target
+			// details; with auth on, the console serves only the category.
+			if u.Error != "unreachable — details in gateway logs" {
+				t.Errorf("dead upstream error not redacted to category: %q", u.Error)
+			}
+		default:
+			t.Errorf("unexpected upstream %q in state", u.ID)
+		}
+	}
+}
+
+// consoleWire mirrors the console's JS client (gateway/console/app.js): a
+// plain HTTP JSON-RPC exchange against /mcp — Accept json+SSE, session id
+// and protocol version echoed as headers, responses parsed from either a
+// JSON body or an SSE stream. No SDK client: the point is the browser path.
+type consoleWire struct {
+	t         *testing.T
+	endpoint  string
+	token     string
+	sessionID string
+	protocol  string
+	nextID    int
+}
+
+type consoleRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (c *consoleWire) rpc(method string, params any, notification bool) (json.RawMessage, *consoleRPCError) {
+	c.t.Helper()
+	msg := map[string]any{"jsonrpc": "2.0", "method": method}
+	if params != nil {
+		msg["params"] = params
+	}
+	var id int
+	if !notification {
+		c.nextID++
+		id = c.nextID
+		msg["id"] = id
+	}
+	body, err := json.Marshal(msg)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", c.sessionID)
+	}
+	if c.protocol != "" {
+		req.Header.Set("MCP-Protocol-Version", c.protocol)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.t.Fatalf("%s: %v", method, err)
+	}
+	defer resp.Body.Close()
+	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		c.sessionID = sid
+	}
+	if notification {
+		if resp.StatusCode != http.StatusAccepted {
+			c.t.Fatalf("%s: want 202, got %d", method, resp.StatusCode)
+		}
+		return nil, nil
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.t.Fatalf("%s: read body: %v", method, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		c.t.Fatalf("%s: HTTP %d: %s", method, resp.StatusCode, truncate(string(raw), 300))
+	}
+
+	var payloads [][]byte
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		// Events are blank-line separated; a payload is its data: lines.
+		for _, chunk := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n\n") {
+			var data []string
+			for _, line := range strings.Split(chunk, "\n") {
+				if rest, ok := strings.CutPrefix(line, "data:"); ok {
+					data = append(data, strings.TrimPrefix(rest, " "))
+				}
+			}
+			if len(data) > 0 {
+				payloads = append(payloads, []byte(strings.Join(data, "\n")))
+			}
+		}
+	} else {
+		payloads = [][]byte{raw}
+	}
+	for _, p := range payloads {
+		var reply struct {
+			ID     int              `json:"id"`
+			Result json.RawMessage  `json:"result"`
+			Error  *consoleRPCError `json:"error"`
+		}
+		if err := json.Unmarshal(p, &reply); err != nil || reply.ID != id {
+			continue
+		}
+		return reply.Result, reply.Error
+	}
+	c.t.Fatalf("%s: no response for id %d on the stream", method, id)
+	return nil, nil
+}
+
+// Console traffic is governed like any other client's: the browser-shaped
+// HTTP sequence (initialize → notifications/initialized → tools/list →
+// tools/call) sees policy-filtered lists, gets -32042 for a disallowed
+// call, and the denial lands in the audit sink under the right principal.
+func TestConsoleClientGovernance(t *testing.T) {
+	events := make(chan []byte, 64)
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		select {
+		case events <- b:
+		default:
+		}
+	}))
+	t.Cleanup(sink.Close)
+
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "get_thing", "delete_thing")
+	cfg := authedConfig(iss,
+		[]config.Upstream{{ID: "things", URL: up.URL, Namespace: "things"}},
+		&config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID:       "alice-read",
+				Subjects: &config.PolicySubjects{Subs: []string{"alice"}},
+				Allow:    []config.PolicyAllow{{Server: "things", Names: []string{"get_*"}}},
+			}},
+		})
+	cfg.Server = &config.ServerSection{Console: &config.Console{Enabled: true}}
+	cfg.Audit = &config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: sink.URL}}}
+	ts, _ := startGateway(t, cfg)
+
+	c := &consoleWire{
+		t:        t,
+		endpoint: ts.URL + "/mcp",
+		token:    iss.mint(t, "alice", "https://gw.example.com", nil),
+	}
+
+	// initialize → notifications/initialized, exactly as app.js does.
+	initRaw, rpcErr := c.rpc("initialize", map[string]any{
+		"protocolVersion": "2025-06-18",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "fold-console", "version": "1"},
+	}, false)
+	if rpcErr != nil {
+		t.Fatalf("initialize: JSON-RPC %d: %s", rpcErr.Code, rpcErr.Message)
+	}
+	var initRes struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(initRaw, &initRes); err != nil {
+		t.Fatalf("initialize result: %v", err)
+	}
+	if c.sessionID == "" {
+		t.Fatal("initialize did not assign a session id")
+	}
+	c.protocol = initRes.ProtocolVersion
+	c.rpc("notifications/initialized", nil, true)
+
+	// tools/list: only the allowed tool is visible.
+	listRaw, rpcErr := c.rpc("tools/list", map[string]any{}, false)
+	if rpcErr != nil {
+		t.Fatalf("tools/list: JSON-RPC %d: %s", rpcErr.Code, rpcErr.Message)
+	}
+	var listRes struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(listRaw, &listRes); err != nil {
+		t.Fatalf("tools/list result: %v", err)
+	}
+	var names []string
+	for _, tool := range listRes.Tools {
+		names = append(names, tool.Name)
+	}
+	if got := strings.Join(names, ","); got != "things__get_thing" {
+		t.Errorf("filtered list = %q, want only things__get_thing", got)
+	}
+
+	// tools/call of the invisible tool: the gateway's policy error code.
+	_, rpcErr = c.rpc("tools/call", map[string]any{
+		"name":      "things__delete_thing",
+		"arguments": map[string]any{},
+	}, false)
+	if rpcErr == nil {
+		t.Fatal("expected policy denial for things__delete_thing")
+	}
+	if rpcErr.Code != -32042 {
+		t.Errorf("denial code = %d, want -32042", rpcErr.Code)
+	}
+
+	// The allowed call still works over the same wire.
+	if _, rpcErr := c.rpc("tools/call", map[string]any{
+		"name":      "things__get_thing",
+		"arguments": map[string]any{},
+	}, false); rpcErr != nil {
+		t.Errorf("allowed call failed: JSON-RPC %d: %s", rpcErr.Code, rpcErr.Message)
+	}
+
+	// With a policy section present, the state API reports the deny default.
+	stateReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/console/api/state", nil)
+	stateReq.Header.Set("Authorization", "Bearer "+c.token)
+	stateResp, err := http.DefaultClient.Do(stateReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st struct {
+		PolicyDefaultDecision string `json:"policyDefaultDecision"`
+		PolicyRules           int    `json:"policyRules"`
+	}
+	if err := json.NewDecoder(stateResp.Body).Decode(&st); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	stateResp.Body.Close()
+	if st.PolicyDefaultDecision != "deny" {
+		t.Errorf("state.policyDefaultDecision = %q, want deny", st.PolicyDefaultDecision)
+	}
+	if st.PolicyRules != 1 {
+		t.Errorf("state.policyRules = %d, want 1", st.PolicyRules)
+	}
+
+	// The denial exits through audit, attributed to the caller.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case b := <-events:
+			var batch []struct {
+				Principal string `json:"principal"`
+				Method    string `json:"method"`
+				Name      string `json:"name"`
+				Outcome   string `json:"outcome"`
+			}
+			if err := json.Unmarshal(b, &batch); err != nil {
+				t.Fatalf("audit batch: %v: %s", err, b)
+			}
+			for _, ev := range batch {
+				if ev.Method == "tools/call" && ev.Outcome == "denied" {
+					if ev.Principal != "alice" {
+						t.Errorf("denied call audited under %q, want alice", ev.Principal)
+					}
+					if ev.Name != "things__delete_thing" {
+						t.Errorf("denied call audited for %q, want things__delete_thing", ev.Name)
+					}
+					return
+				}
+			}
+		case <-deadline:
+			t.Fatal("denied tools/call was not audited")
+		}
+	}
+}
+
+// The state API reports the discovery poller: once a valid document
+// applies, discovery.lastOutcome/lastSyncAt and discoveredUpstreams follow.
+func TestConsoleDiscoveryStatus(t *testing.T) {
+	up, _ := newUpstreamServer(t, "alpha_tool")
+	upB, _ := newUpstreamServer(t, "beta_tool")
+	registry, doc := discoveryRegistry(t, "")
+
+	cfg := consoleConfig([]config.Upstream{{ID: "a", URL: up.URL, Namespace: "a"}})
+	cfg.Discovery = &config.Discovery{URL: registry.URL, IntervalMs: 50}
+	ts, _ := startGateway(t, cfg)
+
+	doc.Store(fmt.Sprintf(`{"upstreams":[{"id":"b","url":%q,"namespace":"b"}]}`, upB.URL))
+
+	type stateDoc struct {
+		StaticUpstreams     int `json:"staticUpstreams"`
+		DiscoveredUpstreams int `json:"discoveredUpstreams"`
+		Discovery           *struct {
+			URL         string `json:"url"`
+			IntervalMs  int    `json:"intervalMs"`
+			LastOutcome string `json:"lastOutcome"`
+			LastSyncAt  string `json:"lastSyncAt"`
+		} `json:"discovery"`
+	}
+	fetchState := func() stateDoc {
+		t.Helper()
+		resp, err := http.Get(ts.URL + "/console/api/state")
+		if err != nil {
+			t.Fatalf("GET state: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET state: want 200, got %d", resp.StatusCode)
+		}
+		var st stateDoc
+		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+			t.Fatalf("decode state: %v", err)
+		}
+		return st
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		st := fetchState()
+		return st.Discovery != nil && st.Discovery.LastOutcome == "applied" && st.DiscoveredUpstreams == 1
+	}, "console state never reported the applied discovery sync")
+
+	st := fetchState()
+	if st.Discovery.URL != registry.URL {
+		t.Errorf("discovery.url = %q, want %q", st.Discovery.URL, registry.URL)
+	}
+	if st.Discovery.IntervalMs != 50 {
+		t.Errorf("discovery.intervalMs = %d, want 50", st.Discovery.IntervalMs)
+	}
+	if st.Discovery.LastSyncAt == "" {
+		t.Error("discovery.lastSyncAt is empty after an applied sync")
+	} else if _, err := time.Parse(time.RFC3339, st.Discovery.LastSyncAt); err != nil {
+		t.Errorf("discovery.lastSyncAt = %q is not RFC 3339: %v", st.Discovery.LastSyncAt, err)
+	}
+	if st.StaticUpstreams != 1 {
+		t.Errorf("staticUpstreams = %d, want 1", st.StaticUpstreams)
+	}
+	if st.DiscoveredUpstreams != 1 {
+		t.Errorf("discoveredUpstreams = %d, want 1 (the document lists one)", st.DiscoveredUpstreams)
+	}
+}
+
+// Console routes accept only the read verbs they document.
+func TestConsoleMethodDiscipline(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, consoleConfig([]config.Upstream{{ID: "u", URL: up.URL}}))
+
+	resp, err := http.Post(ts.URL+"/console/api/state", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST /console/api/state: want 405, got %d", resp.StatusCode)
+	}
+	if allow := resp.Header.Get("Allow"); allow != http.MethodGet {
+		t.Errorf("state Allow = %q, want GET", allow)
+	}
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/console/", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("DELETE /console/: want 405, got %d", resp.StatusCode)
+	}
+	if allow := resp.Header.Get("Allow"); allow != "GET, HEAD" {
+		t.Errorf("assets Allow = %q, want GET, HEAD", allow)
+	}
+
+	// HEAD is a read verb the assets advertise — it must answer 200.
+	resp, err = http.Head(ts.URL + "/console/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("HEAD /console/: want 200, got %d", resp.StatusCode)
+	}
+}

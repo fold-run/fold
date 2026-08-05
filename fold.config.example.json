@@ -43,7 +43,8 @@
   },
   "server": {
     "allowedHosts": ["gw.example.com"],
-    "rateLimit": { "requestsPerMinute": 6000 }
+    "rateLimit": { "requestsPerMinute": 6000 },
+    "console": { "enabled": true }
   },
   "tracing": {
     "otlpEndpoint": "http://otel-collector:4318"

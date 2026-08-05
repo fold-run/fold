@@ -15,6 +15,7 @@ implementation order. Verdict for all: **keep**.
 | `server.maxBodyBytes` | 1 MiB | Bounds memory per request. Deliberately conservative; workloads shipping large base64 content raise it knowingly. |
 | `auth.ema.tokenTtlSec` | 600 | Short-lived minted tokens; refresh is cheap (the ID-JAG is re-presented). |
 | `auth.ema.tokenRateLimitPerMinute` | 600 | Anti-amplification on the unauthenticated token endpoint. |
+| `server.console.enabled` | `false` (added in v1.2) | No new surface unless asked for: the console's static assets serve unauthenticated by design, so exposing them is an operator's deliberate choice, not a default. |
 | `issuer.jwksUri` | `{issuer}/.well-known/jwks.json` | Common convention; IdPs that differ (e.g. Okta org servers) set it explicitly. A guess, but a configurable one. |
 | `issuer.groupsClaim` | `groups` | Okta's name; Entra/Auth0 set their own. |
 

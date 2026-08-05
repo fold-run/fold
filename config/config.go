@@ -366,6 +366,20 @@ type ServerSection struct {
 	// gateway instances (redis:// URL). Defaults to the REDIS_URL
 	// environment variable; absent → in-process state.
 	RedisURL string `json:"redisUrl,omitempty"`
+
+	// Console enables the read-only fold console at /console: an embedded
+	// observability dashboard plus an MCP test console that talks to the
+	// gateway's own /mcp endpoint (fully governed — policy, rate limits,
+	// and audit apply to console traffic like any other client's). Off by
+	// default. See docs/design-console.md.
+	Console *Console `json:"console,omitempty"`
+}
+
+// Console configures the read-only console. Like the rest of the server
+// section it is construction-wired: changing it requires a restart, not a
+// hot reload.
+type Console struct {
+	Enabled bool `json:"enabled"`
 }
 
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -740,6 +754,11 @@ func (u *Upstream) Endpoints() []string {
 // AuthRequired reports whether gateway authentication is enabled.
 func (c *Config) AuthRequired() bool {
 	return c.Auth != nil && c.Auth.Mode == "required"
+}
+
+// ConsoleEnabled reports whether the read-only console is served.
+func (c *Config) ConsoleEnabled() bool {
+	return c.Server != nil && c.Server.Console != nil && c.Server.Console.Enabled
 }
 
 // Passthrough reports whether the gateway runs in zero-copy passthrough mode

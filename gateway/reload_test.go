@@ -181,6 +181,14 @@ func TestReloadRejectsNonReloadableSections(t *testing.T) {
 		}
 	}
 
+	// Toggling the console is a server-section change like any other:
+	// construction-wired, so Reload rejects it (the console cannot be
+	// switched on by a hot reload or a poisoned discovery document).
+	consoleCfg := &config.Config{Upstreams: base, Server: &config.ServerSection{Console: &config.Console{Enabled: true}}}
+	if err := gw.Reload(consoleCfg); err == nil || !strings.Contains(err.Error(), "server section") {
+		t.Errorf("console toggle: Reload should fail naming the server section, got %v", err)
+	}
+
 	// An invalid document is rejected by validation before any diffing.
 	if err := gw.Reload(&config.Config{}); err == nil {
 		t.Error("invalid config: Reload should fail")

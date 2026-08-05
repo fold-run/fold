@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/fold-run/fold/config"
@@ -33,6 +34,29 @@ type discoverer struct {
 	lastHash [sha256.Size]byte // last document seen (applied or rejected)
 	seen     bool
 	failing  bool // dampens repeated fetch-failure logging to transitions
+
+	// statusMu guards the last-sync record surfaced by the console state
+	// API; the metric remains the fleet-wide view.
+	statusMu    sync.Mutex
+	lastOutcome string // "applied" | "unchanged" | "rejected" | "error"
+	lastSyncAt  time.Time
+}
+
+// recordSync counts a sync outcome in metrics and remembers it for the
+// console state API.
+func (d *discoverer) recordSync(outcome string) {
+	d.g.metrics.discoverySync(outcome)
+	d.statusMu.Lock()
+	d.lastOutcome, d.lastSyncAt = outcome, time.Now()
+	d.statusMu.Unlock()
+}
+
+// status returns the last sync outcome and time (zero values before the
+// first sync completes).
+func (d *discoverer) status() (outcome string, at time.Time) {
+	d.statusMu.Lock()
+	defer d.statusMu.Unlock()
+	return d.lastOutcome, d.lastSyncAt
 }
 
 func newDiscoverer(g *Gateway, cfg *config.Discovery) *discoverer {
@@ -69,7 +93,7 @@ func (d *discoverer) loop() {
 func (d *discoverer) sync() {
 	doc, err := d.fetch()
 	if err != nil {
-		d.g.metrics.discoverySync("error")
+		d.recordSync("error")
 		if !d.failing {
 			d.g.log.Warn("discovery fetch failed; keeping current upstream set", "url", d.cfg.URL, "err", err)
 			d.failing = true
@@ -83,7 +107,7 @@ func (d *discoverer) sync() {
 
 	hash := sha256.Sum256(doc)
 	if d.seen && hash == d.lastHash {
-		d.g.metrics.discoverySync("unchanged")
+		d.recordSync("unchanged")
 		return
 	}
 	// Remember the document — applied or rejected — so a bad document is
@@ -92,16 +116,16 @@ func (d *discoverer) sync() {
 
 	ups, err := parseDiscoveryDoc(doc)
 	if err != nil {
-		d.g.metrics.discoverySync("rejected")
+		d.recordSync("rejected")
 		d.g.log.Warn("discovery document malformed; keeping current upstream set", "url", d.cfg.URL, "err", err)
 		return
 	}
 	if err := d.g.setDiscovered(ups); err != nil {
-		d.g.metrics.discoverySync("rejected")
+		d.recordSync("rejected")
 		d.g.log.Warn("discovery document rejected; keeping current upstream set", "url", d.cfg.URL, "err", err)
 		return
 	}
-	d.g.metrics.discoverySync("applied")
+	d.recordSync("applied")
 	d.g.log.Info("discovery applied", "upstreams", len(ups))
 }
 

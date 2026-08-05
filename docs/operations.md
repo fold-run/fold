@@ -15,6 +15,7 @@ TLS, Redis) are in [deploy.md](deploy.md); configuration reference is in the
 | `GET /metrics` | always | Prometheus exposition (below). |
 | `GET /.well-known/oauth-protected-resource` | `auth.mode: required` | RFC 9728 resource metadata; announces the EMA extension when configured. |
 | `GET /.well-known/jwks.json` | EMA configured | fold's minting key. |
+| `GET /console/`, `GET /console/api/state` | `server.console.enabled` | The read-only fold console: embedded dashboard + MCP test console. Static assets are open (they carry no data). The state API requires the same Bearer token as `/mcp` when auth is on and shares `/mcp`'s rate budgets; any valid principal sees the federation topology (URLs, owners, labels), with raw connect errors reduced to a category — see [security-model.md](security-model.md#the-console-has-no-privileged-path). Test-console calls go through `/mcp` itself — governed and audited like any client. |
 | `POST /oauth/token` | EMA configured | The ID-JAG exchange endpoint — unauthenticated by design (the assertion is the credential) and rate limited (`auth.ema.tokenRateLimitPerMinute`). |
 
 Every endpoint sits behind the `allowedHosts` check — health checkers and
