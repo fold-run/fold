@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -133,5 +134,50 @@ func TestRequireHTTPSForSecurityEndpoints(t *testing.T) {
 	// Loopback token endpoints are exempt for local development.
 	if _, err := Parse([]byte(`{"upstreams":[{"id":"a","url":"https://x.test/mcp","auth":{"strategy":"client-credentials","tokenEndpoint":"http://localhost:9000/token","clientId":"c","clientAuth":{"type":"client_secret_post","secretRef":"S"}}}]}`)); err != nil {
 		t.Errorf("loopback token endpoint should be allowed: %v", err)
+	}
+}
+
+// TestDiscoveryCredentialPairing: permitting credentials without bounding
+// their destination is the exfiltration path the allowlists exist to close,
+// so validation refuses the half-configured combination.
+func TestDiscoveryCredentialPairing(t *testing.T) {
+	base := `{"upstreams":[{"id":"a","url":"http://x.test"}],"discovery":{"url":"https://r.test/doc"%s}}`
+	if _, err := Parse([]byte(fmt.Sprintf(base, `,"allowedAuthStrategies":["static"]`))); err == nil {
+		t.Error("strategies without credential hosts should be rejected")
+	}
+	if _, err := Parse([]byte(fmt.Sprintf(base, `,"allowedSecretRefs":["K"]`))); err == nil {
+		t.Error("secret refs without credential hosts should be rejected")
+	}
+	// Paired is fine; so is neither.
+	if _, err := Parse([]byte(fmt.Sprintf(base, `,"allowedAuthStrategies":["static"],"allowedSecretRefs":["K"],"allowedCredentialHosts":["*.svc.cluster.local"]`))); err != nil {
+		t.Errorf("paired config rejected: %v", err)
+	}
+	if _, err := Parse([]byte(fmt.Sprintf(base, ``))); err != nil {
+		t.Errorf("bare discovery rejected: %v", err)
+	}
+	// Only "none" does not count as permitting credentials.
+	if _, err := Parse([]byte(fmt.Sprintf(base, `,"allowedAuthStrategies":["none"]`))); err != nil {
+		t.Errorf("none-only strategies rejected: %v", err)
+	}
+}
+
+func TestHostAllowed(t *testing.T) {
+	pats := []string{"exact.internal", "*.svc.cluster.local"}
+	for _, c := range []struct {
+		host string
+		want bool
+	}{
+		{"exact.internal", true},
+		{"exact.internal:8080", true},
+		{"mcp.svc.cluster.local", true},
+		{"svc.cluster.local", false}, // apex is not granted by "*."
+		{"evil.example", false},
+		{"exact.internal.evil.example", false},
+		{"Kxact.internal", false}, // Kelvin sign folds to "k" in Unicode
+		{"", false},
+	} {
+		if got := HostAllowed(pats, c.host); got != c.want {
+			t.Errorf("HostAllowed(%q) = %v, want %v", c.host, got, c.want)
+		}
 	}
 }

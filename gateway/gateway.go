@@ -349,7 +349,10 @@ func checkDiscoveredCredentials(d *config.Discovery, ups []config.Upstream) erro
 		// other half. A credentialed upstream sends the gateway's secret
 		// (or, under passthrough/token-exchange, the caller's token) to its
 		// endpoints and its token endpoint — bound both.
-		if d.AllowedCredentialHosts != nil && strategy != "none" {
+		// An entry naming a secret is credentialed whatever its declared
+		// strategy — otherwise a blank strategy would skip the gate.
+		carriesSecret := u.Auth.SecretRef != "" || (u.Auth.ClientAuth != nil && u.Auth.ClientAuth.SecretRef != "")
+		if d.AllowedCredentialHosts != nil && (strategy != "none" || carriesSecret) {
 			targets := u.Endpoints()
 			if u.Auth.TokenEndpoint != "" {
 				targets = append(targets, u.Auth.TokenEndpoint)

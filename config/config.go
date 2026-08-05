@@ -89,11 +89,20 @@ func HostAllowed(patterns []string, host string) bool {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
+	// ASCII-only folding: Unicode case folding maps characters like the
+	// Kelvin sign to ASCII letters, which would let a non-ASCII host match
+	// an ASCII pattern while resolvers dial the raw bytes.
+	for i := range len(host) {
+		if host[i] > 0x7F {
+			return false
+		}
+	}
 	host = strings.ToLower(strings.Trim(host, "[]"))
 	for _, p := range patterns {
 		p = strings.ToLower(p)
 		if suffix, ok := strings.CutPrefix(p, "*."); ok {
-			if strings.HasSuffix(host, "."+suffix) || host == suffix {
+			// Subdomains only — the apex is a separate grant.
+			if strings.HasSuffix(host, "."+suffix) {
 				return true
 			}
 			continue
@@ -592,6 +601,23 @@ func (c *Config) Validate() error {
 			if ref == "" {
 				return fmt.Errorf("discovery: allowedSecretRefs entries must not be empty")
 			}
+		}
+		for _, pat := range c.Discovery.AllowedCredentialHosts {
+			if pat == "" || pat == "*" || (strings.HasPrefix(pat, "*") && !strings.HasPrefix(pat, "*.")) {
+				return fmt.Errorf("discovery: allowedCredentialHosts: %q is not a hostname or \"*.suffix\" pattern", pat)
+			}
+		}
+		// Granting a credential without bounding its destination is the
+		// exfiltration path the allowlists exist to close: the two halves
+		// are only meaningful together.
+		credentialed := len(c.Discovery.AllowedSecretRefs) > 0
+		for _, s := range c.Discovery.AllowedAuthStrategies {
+			if s != "none" {
+				credentialed = true
+			}
+		}
+		if credentialed && c.Discovery.AllowedCredentialHosts == nil {
+			return fmt.Errorf("discovery: allowedCredentialHosts is required when allowedAuthStrategies or allowedSecretRefs permits credentials — otherwise the discovery source chooses where those credentials are sent")
 		}
 	}
 	if c.Tracing != nil {

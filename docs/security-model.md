@@ -92,10 +92,12 @@ consequences, each with a control:
   but a freeze an attacker can cause — alert on
   `fold_discovery_syncs_total{outcome="rejected"}`); producer-side
   `--reserved-ids` prevents publishing the collision at all. Among
-  discovered entries, `--namespace-prefixed-ids` requires both the upstream
-  id **and** the MCP namespace — the identity clients actually route on —
-  to carry the registering Kubernetes namespace's prefix, so no team can
-  squat another's routing identity, whatever the API's list order.
+  discovered entries, namespace prefixing (on by default, `--allow-unprefixed-ids`
+  to disable) requires both the upstream id **and** the MCP namespace — the
+  identity clients actually route on — to carry the registering Kubernetes
+  namespace's prefix, with hyphens escaped so the prefix is unambiguous.
+  Contested claims drop every claimant, so list order cannot hand an
+  identity to whoever sorts earlier.
 - **Policy is the exposure gate, and wildcards defeat it.** A discovered
   upstream is plumbing until a policy rule grants its tools — unless rules
   use `"server": "*"`, which makes every future registration instantly

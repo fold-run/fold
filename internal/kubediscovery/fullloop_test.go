@@ -92,9 +92,9 @@ func TestFullLoopWithGateway(t *testing.T) {
 	}
 
 	// Labeled Service → federated tool, no operator involvement.
-	waitList(func(names string) bool { return strings.Contains(names, "prod-team-svc__team_tool") },
+	waitList(func(names string) bool { return strings.Contains(names, "prod-team--svc__team_tool") },
 		"discovered service never became routable through the gateway")
-	out, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "prod-team-svc__team_tool"})
+	out, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "prod-team--svc__team_tool"})
 	if err != nil {
 		t.Fatalf("CallTool through the full loop: %v", err)
 	}
@@ -105,6 +105,6 @@ func TestFullLoopWithGateway(t *testing.T) {
 	// Delisted Service → tool disappears; the static upstream is untouched.
 	services.Store([]Service{})
 	waitList(func(names string) bool {
-		return !strings.Contains(names, "prod-team-svc__") && strings.Contains(names, "static__team_tool")
+		return !strings.Contains(names, "prod-team--svc__") && strings.Contains(names, "static__team_tool")
 	}, "delisted service never left the federation")
 }

@@ -137,10 +137,11 @@ func TestDiscoveryCredentialAllowlists(t *testing.T) {
 	_, gw := startGateway(t, &config.Config{
 		Upstreams: []config.Upstream{{ID: "a", URL: upA.URL, Namespace: "a"}},
 		Discovery: &config.Discovery{
-			URL:                   registry.URL,
-			IntervalMs:            50,
-			AllowedAuthStrategies: []string{"static"},
-			AllowedSecretRefs:     []string{"ML_KEY"},
+			URL:                    registry.URL,
+			IntervalMs:             50,
+			AllowedAuthStrategies:  []string{"static"},
+			AllowedSecretRefs:      []string{"ML_KEY"},
+			AllowedCredentialHosts: []string{"127.0.0.1"},
 		},
 	})
 

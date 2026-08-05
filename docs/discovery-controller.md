@@ -54,13 +54,14 @@ The gateway enforces the same bounds independently via
 `discovery.allowedAuthStrategies` / `allowedSecretRefs` (see the README and
 [security-model.md](security-model.md)) — set both when registrants and
 gateway operators are different people. Use `--reserved-ids` for the
-gateway's static upstream ids and `--namespace-prefixed-ids` in multi-team
-clusters.
+gateway's static upstream ids; namespace prefixing is already on by default.
 
 Fail-safe mapping: a Service that produces an invalid entry (bad id,
 malformed `fold.run/config`, no usable port), carries disallowed
-credentials, claims a reserved id, or collides with an earlier Service's id
-or namespace is skipped with a log line — one bad Service never takes the
+credentials, sends them to a host outside `--allow-credential-hosts`, or
+claims a reserved id is skipped. A contested id or namespace drops **every**
+claimant rather than first-wins, so API list order cannot hand an identity to
+whoever sorts earlier; the affected Services are skipped with a log line — one bad Service never takes the
 rest of the document down. The document is sorted by id so
 the gateway's change detection only fires on real changes, and the producer
 serves `503` until its first successful list so a restart can never feed
@@ -112,7 +113,9 @@ authenticate the poll.
 | `--allow-auth-strategies` | none | Credential strategies Services may carry in `fold.run/config`. **Default-deny**: without this flag, a Service naming any credentialed strategy is skipped. |
 | `--allow-secret-refs` | none | Env var names Services may reference in `secretRef` fields. Default-deny. |
 | `--reserved-ids` | — | Ids/namespaces Services may not claim — list the gateway's static upstream ids so a registration cannot publish a document-freezing collision. |
-| `--namespace-prefixed-ids` | off | Derive and require **both** the id and the MCP namespace to carry the `<k8s-namespace>-` prefix, eliminating cross-namespace squatting of either identity. |
+| `--allow-unprefixed-ids` | off (prefixing **on**) | Namespace prefixing is the default: both the id and the MCP namespace must carry the registering namespace's prefix (hyphens are escaped so the prefix is unambiguous). Disable only in single-tenant clusters. |
+| `--allow-credential-hosts` | none | Hosts (`*.suffix` wildcards, subdomains only) a credentialed Service may send secrets to — its endpoints **and** its `tokenEndpoint`. Required in practice whenever credentials are allowed. |
+| `--min-health-interval-ms` | `1000` | Floor for a Service's `healthCheck.intervalMs`, so a registration cannot turn the gateway into a probe flood. |
 | `--log-format`, `--log-level`, `--version` | `text`, `info` | As in `fold`. |
 
 `GET /healthz` reports sync status (`503` before the first successful

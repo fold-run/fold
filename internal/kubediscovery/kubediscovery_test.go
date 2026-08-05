@@ -368,3 +368,35 @@ func TestClientSendsSelectorAndToken(t *testing.T) {
 		t.Errorf("selector = %v", gotSelector.Load())
 	}
 }
+
+// TestNamespacePrefixIsUnambiguous: a plain "<ns>-" prefix is not injective
+// because hyphens are legal in namespace names — namespace "team" with
+// Service "a-billing" and namespace "team-a" with Service "billing" would
+// both derive "team-a-billing", letting either forge the other's identity
+// or (under fail-closed collision handling) evict it. Escaping hyphens makes
+// the mapping one-to-one, so both coexist.
+func TestNamespacePrefixIsUnambiguous(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	ups := MapServices([]Service{
+		service("team-a", "billing", nil, 80),
+		service("team", "a-billing", nil, 80),
+	}, MapOptions{}, log)
+	var ids []string
+	for _, u := range ups {
+		ids = append(ids, u.ID)
+	}
+	if len(ups) != 2 {
+		t.Fatalf("distinct namespaces collided: %v", ids)
+	}
+	if ids[0] == ids[1] {
+		t.Errorf("identities are not injective: %v", ids)
+	}
+
+	// And a Service still cannot forge another namespace's prefix.
+	forged := MapServices([]Service{
+		service("team", "x", map[string]string{AnnID: "team-a-billing"}, 80),
+	}, MapOptions{}, log)
+	if len(forged) != 0 {
+		t.Errorf("forged cross-namespace id accepted: %+v", forged)
+	}
+}

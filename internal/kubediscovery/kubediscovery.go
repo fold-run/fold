@@ -287,7 +287,7 @@ func mapService(svc Service, opts MapOptions) (config.Upstream, error) {
 		if u.ID = ann[AnnID]; u.ID == "" {
 			u.ID = svc.Metadata.Name
 			if !opts.UnprefixedIDs {
-				u.ID = svc.Metadata.Namespace + "-" + svc.Metadata.Name
+				u.ID = namespacePrefix(svc.Metadata.Namespace) + escapeHyphens(svc.Metadata.Name)
 			}
 		}
 	}
@@ -301,10 +301,12 @@ func mapService(svc Service, opts MapOptions) (config.Upstream, error) {
 		// one clients actually route on ({namespace}__{tool}), so
 		// constraining the id alone would still let a team claim another's
 		// tool namespace — with the winner decided by API list order.
-		prefix := svc.Metadata.Namespace + "-"
+		prefix := namespacePrefix(svc.Metadata.Namespace)
 		for _, claim := range []struct{ what, value string }{{"id", u.ID}, {"namespace", u.Namespace}} {
-			if !strings.HasPrefix(claim.value, prefix) {
-				return u, fmt.Errorf("%s %q must carry the %q prefix (namespace prefixing; --allow-unprefixed-ids to disable)", claim.what, claim.value, prefix)
+			rest, ok := strings.CutPrefix(claim.value, prefix)
+			if !ok || !isEscaped(rest) {
+				return u, fmt.Errorf("%s %q must be %q followed by a hyphen-escaped name (namespace prefixing; --allow-unprefixed-ids to disable)",
+					claim.what, claim.value, prefix)
 			}
 		}
 	}
@@ -345,6 +347,42 @@ func mapService(svc Service, opts MapOptions) (config.Upstream, error) {
 	return u, nil
 }
 
+// escapeHyphens doubles hyphens so a namespace prefix cannot be forged by
+// splitting a name differently.
+func escapeHyphens(s string) string { return strings.ReplaceAll(s, "-", "--") }
+
+// isEscaped reports whether s is a valid escapeHyphens output: every run of
+// hyphens has even length. Requiring this of the part after the prefix stops
+// a Service from crafting an identity that reads as another namespace's —
+// "team-a-billing" from namespace "team" leaves "a-billing", whose lone
+// hyphen is unescaped, so it is refused.
+func isEscaped(s string) bool {
+	for i := 0; i < len(s); {
+		if s[i] != '-' {
+			i++
+			continue
+		}
+		run := 0
+		for i < len(s) && s[i] == '-' {
+			run++
+			i++
+		}
+		if run%2 != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// namespacePrefix returns the unambiguous identity prefix for a Kubernetes
+// namespace. A plain "<ns>-" is not injective — hyphens are legal inside
+// namespace names, so namespace "team" with Service "a-billing" and
+// namespace "team-a" with Service "billing" would both produce
+// "team-a-billing", letting either forge or (via fail-closed collision
+// handling) evict the other. Doubling hyphens on both sides makes the
+// mapping one-to-one.
+func namespacePrefix(ns string) string { return escapeHyphens(ns) + "-" }
+
 // checkAuthAllowed applies the credential allowlists: a Service may only
 // carry auth strategies and secretRef names the operator granted. The
 // destination URL is the Service author's to choose, so an ungated
@@ -382,7 +420,13 @@ func checkAuthAllowed(a *config.UpstreamAuth, opts MapOptions) error {
 // secrets: naming an allowed secret is half the exposure, the destination
 // is the other half, and a Service author chooses both.
 func checkCredentialDestinations(u *config.Upstream, opts MapOptions) error {
-	if u.Auth == nil || u.Auth.Strategy == "" || u.Auth.Strategy == "none" || opts.AllowedCredentialHosts == nil {
+	if u.Auth == nil || opts.AllowedCredentialHosts == nil {
+		return nil
+	}
+	// A secretRef makes an entry credentialed regardless of the declared
+	// strategy, so a blank strategy cannot skip the destination gate.
+	carriesSecret := u.Auth.SecretRef != "" || (u.Auth.ClientAuth != nil && u.Auth.ClientAuth.SecretRef != "")
+	if (u.Auth.Strategy == "" || u.Auth.Strategy == "none") && !carriesSecret {
 		return nil
 	}
 	for _, raw := range u.Endpoints() {
