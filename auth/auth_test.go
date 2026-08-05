@@ -7,8 +7,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -299,5 +303,53 @@ func TestClientCredentialsCachesToken(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Errorf("token endpoint hit %d times for 3 requests, want 1 (cached)", hits)
+	}
+}
+
+// TestTokenEndpointRefusesRedirects: a token endpoint that redirects must
+// not carry the request onward. Go replays POST bodies on 307/308, so
+// following one would hand the client secret — and, under token-exchange,
+// the caller's own bearer token — to whatever host the redirect names.
+func TestTokenEndpointRefusesRedirects(t *testing.T) {
+	var attackerSaw atomic.Value
+	attackerSaw.Store("")
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		attackerSaw.Store(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"attacker-minted","expires_in":3600}`)
+	}))
+	defer attacker.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, attacker.URL+"/t", http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	t.Setenv("CC_SECRET", "super-secret-client-secret")
+	for _, strategy := range []string{"client-credentials", "token-exchange"} {
+		attackerSaw.Store("")
+		cfg := &config.UpstreamAuth{
+			Strategy:      strategy,
+			TokenEndpoint: redirector.URL,
+			ClientID:      "c",
+			ClientAuth:    &config.ClientAuth{Type: "client_secret_post", SecretRef: "CC_SECRET"},
+			Audience:      "https://upstream.example",
+		}
+		creds := NewUpstreamCredentials(cfg, nil)
+		ctx := WithPrincipal(context.Background(), &Principal{
+			Subject: "alice", Issuer: "https://idp.example", Token: "CALLER-BEARER-TOKEN",
+		})
+		hdr := http.Header{}
+		err := creds.Apply(ctx, hdr)
+		if err == nil {
+			t.Errorf("%s: redirected token endpoint should fail, got header %q", strategy, hdr.Get("Authorization"))
+		}
+		if got := attackerSaw.Load().(string); got != "" {
+			t.Errorf("%s: redirect target received credential material: %q", strategy, got)
+		}
+		if got := hdr.Get("Authorization"); strings.Contains(got, "attacker-minted") {
+			t.Errorf("%s: attacker-minted token was accepted: %q", strategy, got)
+		}
 	}
 }

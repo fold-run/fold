@@ -55,7 +55,11 @@ attach per outgoing request and only to requests bound for a configured
 endpoint host of that upstream. Two layers enforce it: the HTTP client
 refuses cross-host redirects outright, and the transport re-checks the
 destination host before attaching anything — a hostile upstream answering
-3xx cannot capture a credential. Exchanged tokens cache per
+3xx cannot capture a credential. The token-endpoint client refuses
+redirects entirely (not just cross-host): Go replays POST bodies on
+307/308, and those requests carry the client secret and — under
+token-exchange — the caller's own bearer token as `subject_token`, so a
+redirecting token endpoint would otherwise hand both to the host it names. Exchanged tokens cache per
 `(upstream, issuer, subject)`; per-caller strategies (passthrough,
 token-exchange) require `auth.mode: "required"` and disable list caching so
 one caller's per-user list can never serve another.
