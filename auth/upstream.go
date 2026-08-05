@@ -39,11 +39,25 @@ type cachedToken struct {
 
 // NewUpstreamCredentials builds the credential injector for one upstream.
 // A nil cfg (or strategy "none") attaches nothing.
+//
+// The caller's client is wrapped so token-endpoint requests never follow a
+// redirect. Those requests carry the most sensitive material fold handles —
+// the client secret under client-credentials, and the caller's own bearer
+// token as subject_token under token-exchange — and Go replays a POST body
+// verbatim on 307/308, so a token endpoint that redirects (compromised,
+// misconfigured, or hosting an open redirect) would otherwise hand both to
+// whatever host it names. Refusing every redirect is safe here: token
+// endpoints answer 200 with the token, and a redirect is never a legitimate
+// step in the grant.
 func NewUpstreamCredentials(cfg *config.UpstreamAuth, client *http.Client) *UpstreamCredentials {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &UpstreamCredentials{cfg: cfg, client: client, tokens: map[string]*cachedToken{}}
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &UpstreamCredentials{cfg: cfg, client: &noRedirect, tokens: map[string]*cachedToken{}}
 }
 
 // Apply sets credential headers on hdr for a request running under ctx.
