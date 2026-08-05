@@ -159,6 +159,6 @@ Position unchanged from the TS plan, and the reasoning got stronger: **do not la
 - **No press-release/PR-agency motion** — journalists don't move dev-infra adoption; the channels above reach the ICP directly.
 - **No multi-community carpet-bombing** — one venue per day, written natively for each. Simultaneous cross-posting is the fastest way to convert goodwill into spam-flags in small communities.
 - **No new feature work during launch week** — the repo ships responsiveness (issue triage, doc fixes, fast first-PR merges), not features. The conformance story is about reliability; a launch-week regression would be the worst possible irony.
-- **No throughput claims** — there is no load-test harness in the repo; per messaging.md §6, no requests-per-second figure appears anywhere, including comment replies under pressure.
+- **No numbers without instruments** — per messaging.md §6, every figure in any thread must trace to `make bench` or `make loadtest`; under pressure, link docs/benchmarks.md rather than improvising a comparison.
 - **No Product Hunt** — per §5.
 - **No roadmap promises in any thread** — messaging.md's rule stands under pressure: if it isn't in the repo, it isn't in the copy, including HN comments at 9pm on launch day.

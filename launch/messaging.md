@@ -73,6 +73,7 @@ fold is the layer where MCP sprawl becomes infrastructure: clients connect once,
 - Built on the official MCP Go SDK on both sides of the proxy: fold never hand-rolls protocol framing, so wire behavior tracks the SDK's.
 - Gaps are documented, not hidden: the README's "Not implemented" section names them (with a drift-canary test that fails the moment the SDK unblocks the biggest one).
 - **~0.2 ms added p50 overhead**, with a CI gate at < 5 ms on every merge. Governance that costs less than a DNS lookup.
+- **~9,300 req/s sustained** `tools/call` per instance at 64 concurrent client sessions (p99 ≤ 19 ms; 13,400 req/s at 256, zero errors) — methodology and the reproduce-it-yourself harness in docs/benchmarks.md.
 - A frozen v1 compatibility contract: config document, CLI, wire surface, and embedder API — with every default a recorded decision (docs/defaults.md).
 
 ---
@@ -152,7 +153,7 @@ Because alignment is machinery, not a sprint: the official conformance suite gat
 - **AI-washing:** "AI-powered gateway," "intelligent routing" — fold is deterministic infrastructure for AI systems, not an AI system.
 - **Category mush:** "platform," "ecosystem," "solution," "AI middleware" — we are a gateway.
 - **Unverifiable comparatives:** "the fastest MCP gateway," "the most secure" — we publish our numbers and let readers compare.
-- **Throughput claims:** no requests-per-second figure exists for the Go implementation; none appears in copy until a load-test harness ships in the repo.
+- **Numbers without instruments:** every figure in copy must trace to a runnable instrument in the repo (`make bench`, `make loadtest`) — the current defensible set: ~0.2 ms added p50, ~9,300 req/s at 64 connections (p99 ≤ 19 ms), 40/40 conformance. Quote `tools/call` throughput, never `tools/list` (it rides the list cache).
 - **Retired TS-era claims:** protocol-era translation, SEP-2549 caching, Cloudflare Workers as a runtime, `subscriptions/listen` fan-in. Gone from the product, gone from the copy. (demo.fold.run is back — Go-backed — but carries none of these claims: it demonstrates federation and governance, not translation.)
 - **False modesty and filler:** "we think," "arguably," "simply," "just." State it or cut it.
 - **Roadmap-as-fact:** never present unshipped work in present tense. If it isn't in the repo, it isn't in the copy.
