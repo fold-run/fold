@@ -71,8 +71,9 @@ row there. Schema and lockstep test update with the field.
 
 The state API reuses the existing gateway verifier. With
 `auth.mode: "required"`, `/console/api/state` demands the same Bearer token
-as `/mcp`; any valid principal may view. (An optional viewer allowlist —
-`console.groups` — is a documented follow-up, not v1.) With auth disabled,
+as `/mcp`; any valid principal may view. (The viewer allowlist —
+`server.console.groups` — shipped as the follow-up: an audited 403 for
+principals outside the listed groups.) With auth disabled,
 the endpoint follows `/healthz`'s existing trusted-deployment logic and its
 redaction discipline: raw connect errors and URLs are never echoed to
 untrusted callers, and `secretRef` *names* only — never values — appear

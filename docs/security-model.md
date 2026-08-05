@@ -128,13 +128,23 @@ two kinds of surface, each with a deliberate trust story:
   `secretRef` *names* are config, values never appear. Its disclosure rule
   is broader than `/healthz`'s, and deliberately so: **any authenticated
   principal, regardless of policy grants, sees the federation topology**
-  (upstream URLs, owners, labels, endpoint rotation) — the console exists
-  to show it. Raw connect errors are the exception: they can name secret
+  (upstream URLs, owners, labels, endpoint rotation, each upstream's
+  source — static vs discovered — and its credential-strategy *name*, plus
+  deployment facts: shared-state backend on/off, audit sink types, tracing
+  and EMA enablement) — the console exists to show it. Strategy names and
+  sink types are configuration shape, not credential material; the Redis
+  URL is never included, since it can embed credentials. Raw connect
+  errors are the exception: they can name secret
   env vars or internal hosts, so when auth is on they are reduced to a
   category and the full text stays in gateway logs. If "any valid
-  principal" is too wide for a multi-tenant deployment, leave the console
-  off (the default) — a viewer allowlist (`console.groups`) is the
-  documented follow-up.
+  principal" is too wide for a multi-tenant deployment, set
+  `server.console.groups`: the state API then answers 403 to any
+  principal not carrying an allowlisted group, and every such denial
+  exits through the audit sink like any other authorization decision.
+  The allowlist requires `auth.mode: "required"` (validation enforces
+  it), and the usual multi-issuer caveat applies: group names are only
+  unique within an issuer, so keep the list meaningful across every
+  issuer you trust.
 - **The test console** is a plain MCP client running in the browser,
   pointed at `/mcp`. Its traffic is indistinguishable from any other
   client's: policy filters what it lists, denials answer `-32042`, rate

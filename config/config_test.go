@@ -77,6 +77,8 @@ func TestValidationErrors(t *testing.T) {
 		{"passthrough without auth", `{"upstreams":[{"id":"a","url":"http://x.test","auth":{"strategy":"passthrough"}}]}`, `auth.mode "required"`},
 		{"exchange without auth", `{"upstreams":[{"id":"a","url":"http://x.test","auth":{"strategy":"token-exchange","tokenEndpoint":"https://t.test","clientId":"c","clientAuth":{"type":"client_secret_post","secretRef":"S"},"audience":"aud"}}]}`, `auth.mode "required"`},
 		{"negative body cap", `{"upstreams":[{"id":"a","url":"http://x.test"}],"server":{"maxBodyBytes":-1}}`, "maxBodyBytes"},
+		{"console groups without auth", `{"upstreams":[{"id":"a","url":"http://x.test"}],"server":{"console":{"enabled":true,"groups":["ops"]}}}`, `auth.mode "required"`},
+		{"console empty group", `{"upstreams":[{"id":"a","url":"http://x.test"}],"server":{"console":{"enabled":true,"groups":[""]}},"auth":{"mode":"required","resource":"https://gw.test","issuers":[{"issuer":"https://idp.test"}]}}`, "must not be empty"},
 		{"bad issuer mode", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","resource":"https://gw.test","issuers":[{"issuer":"https://idp.test","mode":"nope"}]}}`, "direct"},
 		{"ema without required auth", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"disabled","ema":{"idpIssuer":"https://idp.test","signingKeyRef":"K"}}}`, `mode "required"`},
 		{"ema without signing key", `{"upstreams":[{"id":"a","url":"http://x.test"}],"auth":{"mode":"required","resource":"https://gw.test","issuers":[{"issuer":"https://idp.test"}],"ema":{"idpIssuer":"https://idp.test"}}}`, "signingKeyRef"},

@@ -29,8 +29,8 @@
         <table id="upstreams">
           <thead>
             <tr>
-              <th>Upstream</th><th>Namespace</th><th>Connected</th>
-              <th>Breaker</th><th>Latency</th><th>Endpoints</th><th>Owner</th>
+              <th>Upstream</th><th>Namespace</th><th>Source</th><th>Auth</th><th>Connected</th>
+              <th>Breaker</th><th>Latency</th><th>Endpoints</th><th>Owner</th><th>Labels</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -44,13 +44,18 @@
       <p class="muted">Calls go through the gateway's own MCP endpoint — policy,
       rate limits, and audit apply exactly as they do for any other client.</p>
       <div class="row">
-        <button id="connect" type="button">Connect &amp; list tools</button>
+        <button id="connect" type="button">Connect &amp; list</button>
         <span id="mcpstatus" class="muted"></span>
       </div>
-      <div class="row">
-        <select id="tools" disabled></select>
+      <div class="row seg" role="group" aria-label="What to invoke">
+        <button id="mode-tools" type="button" class="active" disabled>Tools</button>
+        <button id="mode-prompts" type="button" disabled>Prompts</button>
+        <button id="mode-resources" type="button" disabled>Resources</button>
       </div>
-      <p id="tooldesc" class="muted"></p>
+      <div class="row">
+        <select id="picker" disabled aria-label="Item to invoke"></select>
+      </div>
+      <p id="itemdesc" class="muted"></p>
       <textarea id="args" rows="6" placeholder='{"argument": "value"}' spellcheck="false" disabled></textarea>
       <div class="row">
         <button id="call" type="button" disabled>Call tool</button>

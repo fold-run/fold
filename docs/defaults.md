@@ -16,6 +16,7 @@ implementation order. Verdict for all: **keep**.
 | `auth.ema.tokenTtlSec` | 600 | Short-lived minted tokens; refresh is cheap (the ID-JAG is re-presented). |
 | `auth.ema.tokenRateLimitPerMinute` | 600 | Anti-amplification on the unauthenticated token endpoint. |
 | `server.console.enabled` | `false` (added in v1.2) | No new surface unless asked for: the console's static assets serve unauthenticated by design, so exposing them is an operator's deliberate choice, not a default. |
+| `server.console.groups` | unset (added in v1.3) | Unset means any valid principal may view the state API — the console's documented baseline. The allowlist is opt-in because it only means something once an operator decides which IdP groups map to "platform team". |
 | `issuer.jwksUri` | `{issuer}/.well-known/jwks.json` | Common convention; IdPs that differ (e.g. Okta org servers) set it explicitly. A guess, but a configurable one. |
 | `issuer.groupsClaim` | `groups` | Okta's name; Entra/Auth0 set their own. |
 

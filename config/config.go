@@ -380,6 +380,15 @@ type ServerSection struct {
 // hot reload.
 type Console struct {
 	Enabled bool `json:"enabled"`
+
+	// Groups restricts who may read the console state API: when set, an
+	// authenticated principal must carry at least one of these groups
+	// (per its issuer's groupsClaim) or the state API answers 403.
+	// Requires auth.mode "required". Absent → any valid principal may
+	// view. Static assets are never gated — they carry no data. Group
+	// names are only unique within an issuer (the same caveat as policy
+	// rules), so keep the list meaningful across every trusted issuer.
+	Groups []string `json:"groups,omitempty"`
 }
 
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -507,6 +516,19 @@ func (c *Config) Validate() error {
 	}
 	if c.Server != nil && c.Server.MaxBodyBytes < 0 {
 		return fmt.Errorf("server: maxBodyBytes must be positive")
+	}
+	if c.Server != nil && c.Server.Console != nil && len(c.Server.Console.Groups) > 0 {
+		for _, gr := range c.Server.Console.Groups {
+			if gr == "" {
+				return fmt.Errorf("server: console.groups entries must not be empty")
+			}
+		}
+		// A viewer allowlist matches against verified group claims; without
+		// mandatory auth there is no principal to match, and the state API
+		// would be reachable by anyone anyway.
+		if !c.AuthRequired() {
+			return fmt.Errorf(`server: console.groups requires auth.mode %q`, "required")
+		}
 	}
 	if c.Auth != nil {
 		switch c.Auth.Mode {

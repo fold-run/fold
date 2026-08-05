@@ -228,7 +228,7 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `rateLimit` | none | Global `{ requestsPerMinute }` across all upstreams, plus optional `perPrincipalPerMinute` capping each authenticated principal on its own bucket (one tenant's flood cannot 429 the others). |
 | `maxBodyBytes` | 1 MiB | Request body cap; larger bodies are answered `413` (chunked bodies are cut off at the cap). |
 | `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
-| `console` | disabled | `{ "enabled": true }` serves the read-only fold console at `/console`: an observability dashboard (federation health, breaker and endpoint state, discovery status) plus an MCP test console that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. With auth enabled, the console's state API requires the same Bearer token as `/mcp`. |
+| `console` | disabled | `{ "enabled": true }` serves the read-only fold console at `/console`: an observability dashboard (federation health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts) plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. With auth enabled, the console's state API requires the same Bearer token as `/mcp`; add `"groups": ["platform-ops"]` to further restrict viewing to principals carrying one of those groups (403 otherwise, audited) — the fix for multi-tenant deployments where any valid token holder is too wide an audience. |
 
 ### `routing`
 
@@ -368,6 +368,15 @@ Known gaps, documented deliberately:
 - **Content inspection (DLP / PII filtering / prompt-injection detection)** — deliberately out of scope. Inspecting request and response bodies means buffering and rewriting traffic, which conflicts with fold's invisibility rule (behavior through the gateway matches hitting the upstream directly) and its latency gate — and inline detection is a product of its own, not a gateway feature. fold's security model is structural instead: deny-by-default tool allowlists, per-principal invisibility, claim-gated (ABAC) rules, credential brokering so agents never hold upstream keys, and a full audit trail to feed the SIEM that does the detecting. If inline inspection becomes table stakes, the fold-shaped answer is an opt-in content-inspection hook (an external policy endpoint on the ingress/egress path), not built-in scanning.
 
 ## Changelog
+
+### v1.3.0 — 2026-08-04
+
+Console refinements and the viewer allowlist.
+
+- **`server.console.groups`** — the console's viewer allowlist: when set, the state API answers an audited 403 to any authenticated principal not carrying an allowlisted group, closing the "any valid token holder sees the topology" caveat for multi-tenant deployments. Requires `auth.mode: "required"`; static assets stay open (they carry no data).
+- **Test console covers the full invocable surface** — tools, prompts, *and* resources, with cursor-paginated lists; `resources/read` shows URIs passing through un-rewritten.
+- **Deeper dashboard** — each upstream's source (static vs discovered) and credential-strategy name, plus deployment facts: shared-state backend, audit sink types, tracing and EMA enablement, rate budgets, routing settings. Secret values and the Redis URL never appear.
+- **UI polish** — breaker-state color coding, contrast and focus-state fixes, empty states, label chips, and the token field hides itself when auth is off.
 
 ### v1.2.0 — 2026-08-04
 

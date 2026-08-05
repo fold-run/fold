@@ -19,7 +19,14 @@ const S = {
   sessionId: null,
   protocolVersion: null,
   nextId: 0,
-  tools: [],
+  mode: "tools", // "tools" | "prompts" | "resources"
+  lists: { tools: [], prompts: [], resources: [] },
+};
+
+const MODES = {
+  tools: { list: "tools/list", listKey: "tools", call: "tools/call", verb: "Call tool", args: true },
+  prompts: { list: "prompts/list", listKey: "prompts", call: "prompts/get", verb: "Get prompt", args: true },
+  resources: { list: "resources/list", listKey: "resources", call: "resources/read", verb: "Read resource", args: false },
 };
 
 // ---------- dashboard ----------
@@ -64,6 +71,11 @@ async function refreshState() {
     stopPolling();
     return;
   }
+  if (res.status === 403) {
+    banner("This principal is not in the console viewer allowlist (server.console.groups). The denial was audited.");
+    stopPolling();
+    return;
+  }
   if (!res.ok) {
     banner("state fetch failed: HTTP " + res.status);
     return;
@@ -72,41 +84,78 @@ async function refreshState() {
   S.mcpPath = st.mcpPath || "/mcp";
   $("version").textContent = /^\d/.test(st.version) ? "v" + st.version : st.version;
 
+  // Auth off means no token will ever be needed; hide the input instead of
+  // leaving a field that does nothing.
+  $("token").hidden = !st.authRequired;
+
   const summary = $("summary");
   summary.replaceChildren(
-    card("auth", st.authRequired ? "required" : "disabled"),
-    card("policy", st.policyDefaultDecision + " by default, " + st.policyRules + " rule(s)"),
+    card("endpoint", S.mcpPath),
+    card("auth", (st.authRequired ? "required" : "disabled") + (st.emaEnabled ? " + EMA" : "")),
+    card("policy", st.policyDefaultDecision + ", " + st.policyRules + " rule(s)"),
     card("upstreams", String(st.staticUpstreams) + " static + " + String(st.discoveredUpstreams) + " discovered"),
+    card("state", st.sharedState ? "shared (Redis)" : "in-process"),
+    card("audit", (st.auditSinks || []).join(" + ") || "none"),
+    card("routing", "sep " + st.namespaceSeparator + " · " + (st.pageSize ? "page size " + st.pageSize : "no pagination")),
   );
+  if (st.tracingEnabled) summary.append(card("tracing", "OTLP"));
+  if (st.viewerGroups && st.viewerGroups.length) summary.append(card("viewers", st.viewerGroups.join(", ")));
   if (st.passthrough) summary.append(card("mode", "passthrough"));
-  if (st.globalRequestsPerMinute) summary.append(card("global limit", st.globalRequestsPerMinute + "/min"));
+  if (st.globalRequestsPerMinute) {
+    const per = st.perPrincipalRequestsPerMinute ? " · " + st.perPrincipalRequestsPerMinute + "/min per principal" : "";
+    summary.append(card("rate limit", st.globalRequestsPerMinute + "/min global" + per));
+  }
 
   const tbody = $("upstreams").querySelector("tbody");
   tbody.replaceChildren();
   for (const u of st.upstreams || []) {
     const tr = document.createElement("tr");
+
+    const breakerCls = { closed: "ok", open: "bad" }[u.breaker] || "warn";
     const cells = [
-      u.id,
-      u.namespace || "—",
-      u.connected ? "yes" : "no",
-      u.breaker || "",
-      u.connected ? u.latencyMs + " ms" : (u.error || "—"),
-      (u.endpoints || []).map((e) => (e.url || "endpoint") + (e.healthy ? " ✓" : " ✗")).join(", ") || (u.url || "—"),
-      u.owner ? [u.owner.org, u.owner.team].filter(Boolean).join(" / ") : "—",
+      { v: u.id },
+      { v: u.namespace || "—" },
+      { v: u.source || "—" },
+      { v: u.authStrategy || "—" },
+      { v: u.connected ? "yes" : "no", cls: u.connected ? "ok" : "bad" },
+      { v: u.breaker || "—", cls: u.breaker === "closed" ? "" : breakerCls },
+      { v: u.connected ? u.latencyMs + " ms" : (u.error || "—"), cls: u.connected ? "" : "err" },
+      { v: (u.endpoints || []).map((e) => (e.url || "endpoint") + (e.healthy ? " ✓" : " ✗")).join(", ") || (u.url || "—") },
+      { v: u.owner ? [u.owner.org, u.owner.team].filter(Boolean).join(" / ") : "—" },
     ];
-    cells.forEach((v, i) => {
+    for (const c of cells) {
       const td = document.createElement("td");
-      td.textContent = String(v);
-      if (i === 2) td.className = u.connected ? "ok" : "bad";
+      td.textContent = String(c.v);
+      if (c.cls) td.className = c.cls;
       tr.append(td);
-    });
+    }
+    const labelTd = document.createElement("td");
+    const labels = Object.entries(u.labels || {});
+    if (labels.length === 0) labelTd.textContent = "—";
+    for (const [k, v] of labels) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = k + "=" + v;
+      labelTd.append(chip);
+    }
+    tr.append(labelTd);
+    tbody.append(tr);
+  }
+  if (!(st.upstreams || []).length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 10;
+    td.textContent = "No upstreams in the federation.";
+    td.className = "err";
+    tr.append(td);
     tbody.append(tr);
   }
 
   const disc = $("discovery");
   disc.replaceChildren();
   if (st.discovery) {
-    disc.append(card("discovery", st.discovery.url));
+    const interval = st.discovery.intervalMs ? (st.discovery.intervalMs / 1000) + " s" : "30 s (default)";
+    disc.append(card("discovery", st.discovery.url + " · every " + interval));
     if (st.discovery.lastOutcome) {
       disc.append(card(
         "last sync",
@@ -182,10 +231,33 @@ async function rpc(method, params, { notification = false } = {}) {
   return reply.result;
 }
 
+// fetchList pages through a list method until the cursor runs dry (bounded,
+// so a misbehaving server cannot loop the page forever). A server without
+// the capability answers method-not-found; treat that as an empty list.
+async function fetchList(mode) {
+  const m = MODES[mode];
+  const items = [];
+  let cursor;
+  for (let page = 0; page < 25; page++) {
+    let res;
+    try {
+      res = await rpc(m.list, cursor ? { cursor } : {});
+    } catch (err) {
+      if (/-32601/.test(err.message)) return [];
+      throw err;
+    }
+    items.push(...(res[m.listKey] || []));
+    cursor = res.nextCursor;
+    if (!cursor) break;
+  }
+  return items;
+}
+
 async function connect() {
   S.sessionId = null;
   S.protocolVersion = null;
   S.nextId = 0;
+  $("connect").disabled = true;
   $("mcpstatus").textContent = "connecting…";
   try {
     const init = await rpc("initialize", {
@@ -195,46 +267,81 @@ async function connect() {
     });
     S.protocolVersion = init.protocolVersion;
     await rpc("notifications/initialized", undefined, { notification: true });
-    const listed = await rpc("tools/list", {});
-    S.tools = listed.tools || [];
-    const sel = $("tools");
-    sel.replaceChildren();
-    for (const t of S.tools) {
-      const opt = document.createElement("option");
-      opt.value = t.name;
-      opt.textContent = t.name;
-      sel.append(opt);
-    }
-    sel.disabled = S.tools.length === 0;
-    $("args").disabled = S.tools.length === 0;
-    $("call").disabled = S.tools.length === 0;
-    $("mcpstatus").textContent = S.tools.length + " tool(s) visible to this principal";
-    showToolDesc();
+    for (const mode of Object.keys(MODES)) S.lists[mode] = await fetchList(mode);
+    $("mcpstatus").textContent =
+      S.lists.tools.length + " tools · " +
+      S.lists.prompts.length + " prompts · " +
+      S.lists.resources.length + " resources visible to this principal";
+    for (const mode of Object.keys(MODES)) $("mode-" + mode).disabled = false;
+    renderPicker();
   } catch (err) {
     $("mcpstatus").textContent = "";
     banner("MCP connect failed: " + err.message);
+  } finally {
+    $("connect").disabled = false;
   }
 }
 
-function showToolDesc() {
-  const t = S.tools.find((x) => x.name === $("tools").value);
-  $("tooldesc").textContent = t && t.description ? t.description : "";
+// itemKey returns the invocable identity: name for tools/prompts, uri for
+// resources (URIs are opaque and never rewritten by the gateway).
+function itemKey(mode, item) {
+  return mode === "resources" ? item.uri : item.name;
 }
 
-async function callTool() {
+function renderPicker() {
+  const m = MODES[S.mode];
+  const items = S.lists[S.mode];
+  const sel = $("picker");
+  sel.replaceChildren();
+  for (const it of items) {
+    const opt = document.createElement("option");
+    opt.value = itemKey(S.mode, it);
+    opt.textContent = itemKey(S.mode, it) + (S.mode === "resources" && it.name ? " (" + it.name + ")" : "");
+    sel.append(opt);
+  }
+  const empty = items.length === 0;
+  sel.disabled = empty;
+  $("args").disabled = empty || !m.args;
+  $("args").placeholder = m.args ? '{"argument": "value"}' : "resources/read takes no arguments — the URI is the identity";
+  if (!m.args) $("args").value = "";
+  $("call").disabled = empty;
+  $("call").textContent = m.verb;
+  showItemDesc();
+}
+
+function setMode(mode) {
+  S.mode = mode;
+  for (const m of Object.keys(MODES)) $("mode-" + m).classList.toggle("active", m === mode);
+  renderPicker();
+}
+
+function showItemDesc() {
+  const it = S.lists[S.mode].find((x) => itemKey(S.mode, x) === $("picker").value);
+  $("itemdesc").textContent = it && it.description ? it.description : "";
+}
+
+async function invoke() {
   banner("");
   $("result").textContent = "";
-  let args = {};
-  const raw = $("args").value.trim();
-  if (raw) {
-    try { args = JSON.parse(raw); } catch (err) {
-      banner("arguments are not valid JSON: " + err.message);
-      return;
+  const m = MODES[S.mode];
+  const key = $("picker").value;
+  let params;
+  if (S.mode === "resources") {
+    params = { uri: key };
+  } else {
+    let args = {};
+    const raw = $("args").value.trim();
+    if (raw) {
+      try { args = JSON.parse(raw); } catch (err) {
+        banner("arguments are not valid JSON: " + err.message);
+        return;
+      }
     }
+    params = { name: key, arguments: args };
   }
   $("call").disabled = true;
   try {
-    const result = await rpc("tools/call", { name: $("tools").value, arguments: args });
+    const result = await rpc(m.call, params);
     $("result").textContent = JSON.stringify(result, null, 2);
   } catch (err) {
     $("result").textContent = err.message;
@@ -262,8 +369,11 @@ $("token").addEventListener("change", () => {
 });
 $("refresh").addEventListener("click", () => { startPolling(); refreshState(); });
 $("connect").addEventListener("click", connect);
-$("tools").addEventListener("change", showToolDesc);
-$("call").addEventListener("click", callTool);
+$("picker").addEventListener("change", showItemDesc);
+$("call").addEventListener("click", invoke);
+for (const mode of ["tools", "prompts", "resources"]) {
+  $("mode-" + mode).addEventListener("click", () => setMode(mode));
+}
 
 refreshState();
 startPolling();

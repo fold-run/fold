@@ -100,15 +100,21 @@ func TestConsoleEnabledStateAndAssets(t *testing.T) {
 		t.Errorf("state Content-Type = %q, want application/json", ct)
 	}
 	var st struct {
-		Version               string `json:"version"`
-		AuthRequired          bool   `json:"authRequired"`
-		MCPPath               string `json:"mcpPath"`
-		PolicyDefaultDecision string `json:"policyDefaultDecision"`
-		StaticUpstreams       int    `json:"staticUpstreams"`
+		Version               string   `json:"version"`
+		AuthRequired          bool     `json:"authRequired"`
+		MCPPath               string   `json:"mcpPath"`
+		PolicyDefaultDecision string   `json:"policyDefaultDecision"`
+		StaticUpstreams       int      `json:"staticUpstreams"`
+		SharedState           bool     `json:"sharedState"`
+		NamespaceSeparator    string   `json:"namespaceSeparator"`
+		PageSize              int      `json:"pageSize"`
+		AuditSinks            []string `json:"auditSinks"`
 		Upstreams             []struct {
-			ID        string `json:"id"`
-			Namespace string `json:"namespace"`
-			Connected bool   `json:"connected"`
+			ID           string `json:"id"`
+			Namespace    string `json:"namespace"`
+			Connected    bool   `json:"connected"`
+			Source       string `json:"source"`
+			AuthStrategy string `json:"authStrategy"`
 		} `json:"upstreams"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
@@ -134,9 +140,27 @@ func TestConsoleEnabledStateAndAssets(t *testing.T) {
 	if len(st.Upstreams) != 2 {
 		t.Fatalf("state.upstreams has %d entries, want 2", len(st.Upstreams))
 	}
+	if st.SharedState {
+		t.Error("state.sharedState = true without Redis")
+	}
+	if st.NamespaceSeparator != "__" {
+		t.Errorf("state.namespaceSeparator = %q, want __", st.NamespaceSeparator)
+	}
+	if st.PageSize != 200 {
+		t.Errorf("state.pageSize = %d, want 200", st.PageSize)
+	}
+	if st.AuditSinks == nil {
+		t.Error("state.auditSinks should be [] (never null) with no audit config")
+	}
 	byID := map[string]string{}
 	for _, u := range st.Upstreams {
 		byID[u.ID] = u.Namespace
+		if u.Source != "static" {
+			t.Errorf("upstream %s source = %q, want static", u.ID, u.Source)
+		}
+		if u.AuthStrategy != "none" {
+			t.Errorf("upstream %s authStrategy = %q, want none", u.ID, u.AuthStrategy)
+		}
 		if !u.Connected {
 			t.Errorf("upstream %q not connected", u.ID)
 		}
@@ -500,7 +524,11 @@ func TestConsoleDiscoveryStatus(t *testing.T) {
 	type stateDoc struct {
 		StaticUpstreams     int `json:"staticUpstreams"`
 		DiscoveredUpstreams int `json:"discoveredUpstreams"`
-		Discovery           *struct {
+		Upstreams           []struct {
+			ID     string `json:"id"`
+			Source string `json:"source"`
+		} `json:"upstreams"`
+		Discovery *struct {
 			URL         string `json:"url"`
 			IntervalMs  int    `json:"intervalMs"`
 			LastOutcome string `json:"lastOutcome"`
@@ -543,6 +571,19 @@ func TestConsoleDiscoveryStatus(t *testing.T) {
 	}
 	if st.StaticUpstreams != 1 {
 		t.Errorf("staticUpstreams = %d, want 1", st.StaticUpstreams)
+	}
+	// Source annotation distinguishes how each upstream joined the
+	// federation: the registry-sourced one is "discovered", the config
+	// one "static".
+	sources := map[string]string{}
+	for _, u := range st.Upstreams {
+		sources[u.ID] = u.Source
+	}
+	if sources["b"] != "discovered" {
+		t.Errorf(`upstream b source = %q, want "discovered"`, sources["b"])
+	}
+	if sources["a"] != "static" {
+		t.Errorf(`upstream a source = %q, want "static"`, sources["a"])
 	}
 	if st.DiscoveredUpstreams != 1 {
 		t.Errorf("discoveredUpstreams = %d, want 1 (the document lists one)", st.DiscoveredUpstreams)
@@ -587,5 +628,105 @@ func TestConsoleMethodDiscipline(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("HEAD /console/: want 200, got %d", resp.StatusCode)
+	}
+}
+
+// TestConsoleViewerAllowlist: server.console.groups narrows who may read
+// the state API. A principal carrying an allowlisted group gets the state;
+// one without gets 403 and the denial exits through the audit sink. Static
+// assets stay open either way — they carry no data.
+func TestConsoleViewerAllowlist(t *testing.T) {
+	events := make(chan []byte, 64)
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		select {
+		case events <- b:
+		default:
+		}
+	}))
+	t.Cleanup(sink.Close)
+
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "tool")
+	cfg := authedConfig(iss, []config.Upstream{{ID: "u", URL: up.URL}}, nil)
+	cfg.Server = &config.ServerSection{Console: &config.Console{Enabled: true, Groups: []string{"ops"}}}
+	cfg.Audit = &config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: sink.URL}}}
+	ts, _ := startGateway(t, cfg)
+
+	get := func(token string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/console/api/state", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// Allowlisted group → 200, and the state reports its own allowlist.
+	resp := get(iss.mint(t, "alice", "https://gw.example.com", []string{"ops", "eng"}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("allowlisted viewer: want 200, got %d", resp.StatusCode)
+	}
+	var st struct {
+		ViewerGroups []string `json:"viewerGroups"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	resp.Body.Close()
+	if len(st.ViewerGroups) != 1 || st.ViewerGroups[0] != "ops" {
+		t.Errorf("state.viewerGroups = %v, want [ops]", st.ViewerGroups)
+	}
+
+	// Valid token, no allowlisted group → 403.
+	resp = get(iss.mint(t, "bob", "https://gw.example.com", []string{"eng"}))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-allowlisted viewer: want 403, got %d", resp.StatusCode)
+	}
+
+	// The 403 exits through audit, attributed to bob.
+	deadline := time.After(5 * time.Second)
+	for {
+		var batch []struct {
+			Principal string `json:"principal"`
+			Outcome   string `json:"outcome"`
+			Decision  string `json:"decision"`
+			Error     string `json:"error"`
+		}
+		select {
+		case b := <-events:
+			if err := json.Unmarshal(b, &batch); err != nil {
+				t.Fatalf("audit batch: %v: %s", err, b)
+			}
+			for _, ev := range batch {
+				if ev.Outcome == "denied" && strings.Contains(ev.Error, "viewer allowlist") {
+					if ev.Principal != "bob" {
+						t.Errorf("console denial audited under %q, want bob", ev.Principal)
+					}
+					if ev.Decision != "deny" {
+						t.Errorf("console denial decision = %q, want deny", ev.Decision)
+					}
+					goto done
+				}
+			}
+		case <-deadline:
+			t.Fatal("console viewer denial was not audited")
+		}
+	}
+done:
+
+	// Static assets are ungated regardless of the allowlist.
+	resp, err := http.Get(ts.URL + "/console/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("assets with allowlist configured: want 200, got %d", resp.StatusCode)
 	}
 }

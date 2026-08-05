@@ -839,6 +839,9 @@ func (g *Gateway) buildHandler() http.Handler {
 		// request pings every upstream, so an unbudgeted poll loop would be
 		// a load amplifier against all backends.
 		state := g.rateLimitMiddleware(http.HandlerFunc(g.handleConsoleState))
+		if g.cfg.Server != nil && g.cfg.Server.Console != nil && len(g.cfg.Server.Console.Groups) > 0 {
+			state = g.consoleViewerGate(state)
+		}
 		if g.verifier != nil {
 			state = g.authMiddleware(state)
 		}
@@ -1121,6 +1124,13 @@ type upstreamHealth struct {
 	// Endpoints reports the balancer's per-replica view for multi-endpoint
 	// upstreams (URLs only on trusted deployments, like URL above).
 	Endpoints []endpointStatus `json:"endpoints,omitempty"`
+
+	// Source ("static" | "discovered") and AuthStrategy (the strategy
+	// *name*, never its material) are console-only annotations, set by
+	// handleConsoleState after collection; /healthz leaves them empty so
+	// its response shape is unchanged.
+	Source       string `json:"source,omitempty"`
+	AuthStrategy string `json:"authStrategy,omitempty"`
 }
 
 // collectUpstreamHealth pings every upstream in rt concurrently and reports

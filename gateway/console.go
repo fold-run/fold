@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/fold-run/fold/audit"
 	"github.com/fold-run/fold/config"
 )
 
@@ -30,13 +32,31 @@ var consoleFS embed.FS
 type consoleState struct {
 	Version      string `json:"version"`
 	AuthRequired bool   `json:"authRequired"`
+	EMAEnabled   bool   `json:"emaEnabled"`
 	Passthrough  bool   `json:"passthrough"`
 	MCPPath      string `json:"mcpPath"`
 
 	PolicyDefaultDecision string `json:"policyDefaultDecision"`
 	PolicyRules           int    `json:"policyRules"`
 
-	GlobalRequestsPerMinute int `json:"globalRequestsPerMinute,omitempty"`
+	GlobalRequestsPerMinute       int `json:"globalRequestsPerMinute,omitempty"`
+	PerPrincipalRequestsPerMinute int `json:"perPrincipalRequestsPerMinute,omitempty"`
+
+	// SharedState reports whether cross-instance state (cache, rate
+	// limits, breakers) is Redis-backed; the URL itself is never exposed
+	// (it can embed credentials).
+	SharedState bool `json:"sharedState"`
+
+	AuditSinks     []string `json:"auditSinks"` // sink types only
+	TracingEnabled bool     `json:"tracingEnabled"`
+
+	// ViewerGroups is the console's own allowlist (server.console.groups);
+	// empty means any valid principal may view. Group names are config
+	// shape — a caller reading this has already passed the gate.
+	ViewerGroups []string `json:"viewerGroups,omitempty"`
+
+	NamespaceSeparator string `json:"namespaceSeparator"`
+	PageSize           int    `json:"pageSize"` // 0 = pagination disabled
 
 	StaticUpstreams     int `json:"staticUpstreams"`
 	DiscoveredUpstreams int `json:"discoveredUpstreams"`
@@ -86,9 +106,15 @@ func (g *Gateway) handleConsoleState(w http.ResponseWriter, r *http.Request) {
 	st := consoleState{
 		Version:               version,
 		AuthRequired:          g.cfg.AuthRequired(),
+		EMAEnabled:            g.ema != nil,
 		Passthrough:           rt.passthrough,
 		MCPPath:               g.cfg.MCPPath(),
 		PolicyDefaultDecision: policyDefaultDecision(rt.cfg),
+		SharedState:           g.cfg.Server != nil && g.cfg.Server.RedisURL != "" || os.Getenv("REDIS_URL") != "",
+		AuditSinks:            []string{},
+		TracingEnabled:        g.tracer != nil,
+		NamespaceSeparator:    g.sep,
+		PageSize:              g.pageSize,
 		Upstreams:             statuses,
 	}
 	if rt.cfg.Policy != nil {
@@ -96,12 +122,35 @@ func (g *Gateway) handleConsoleState(w http.ResponseWriter, r *http.Request) {
 	}
 	if g.cfg.Server != nil && g.cfg.Server.RateLimit != nil {
 		st.GlobalRequestsPerMinute = g.cfg.Server.RateLimit.RequestsPerMinute
+		st.PerPrincipalRequestsPerMinute = g.cfg.Server.RateLimit.PerPrincipalPerMinute
+	}
+	if g.cfg.Audit != nil {
+		for _, s := range g.cfg.Audit.Sinks {
+			st.AuditSinks = append(st.AuditSinks, s.Type)
+		}
+	}
+	if g.cfg.Server != nil && g.cfg.Server.Console != nil {
+		st.ViewerGroups = g.cfg.Server.Console.Groups
 	}
 
+	// Annotate source and credential-strategy name per upstream. statuses
+	// is index-aligned with rt.upstreams (collectUpstreamHealth preserves
+	// order); discovered membership comes from the reload-guarded set.
+	discovered := map[string]bool{}
 	g.reloadMu.Lock()
 	st.StaticUpstreams = len(g.baseCfg.Upstreams)
 	st.DiscoveredUpstreams = len(g.discovered)
+	for _, u := range g.discovered {
+		discovered[u.ID] = true
+	}
 	g.reloadMu.Unlock()
+	for i, u := range rt.upstreams {
+		st.Upstreams[i].Source = map[bool]string{true: "discovered", false: "static"}[discovered[u.cfg.ID]]
+		st.Upstreams[i].AuthStrategy = "none"
+		if u.cfg.Auth != nil && u.cfg.Auth.Strategy != "" {
+			st.Upstreams[i].AuthStrategy = u.cfg.Auth.Strategy
+		}
+	}
 
 	if g.discovery != nil {
 		ds := &consoleDiscoveryStatus{
@@ -133,6 +182,48 @@ func policyDefaultDecision(cfg *config.Config) string {
 		return "allow"
 	}
 	return "deny"
+}
+
+// consoleViewerGate enforces server.console.groups: the authenticated
+// principal must carry at least one allowlisted group or the state API
+// answers 403. Runs inside authMiddleware (config validation guarantees
+// auth is required whenever groups are set), so a nil principal here is a
+// wiring bug, not an anonymous caller — it fails closed regardless. The
+// denial is audited: the console is an authorization surface, and audit is
+// the single exit door for authz decisions.
+func (g *Gateway) consoleViewerGate(next http.Handler) http.Handler {
+	allowed := map[string]bool{}
+	for _, gr := range g.cfg.Server.Console.Groups {
+		allowed[gr] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := principalFromRequest(r)
+		ok := false
+		if p != nil {
+			for _, gr := range p.Groups {
+				if allowed[gr] {
+					ok = true
+					break
+				}
+			}
+		}
+		if !ok {
+			g.metrics.reject("console_viewer")
+			ev := audit.Event{
+				Method:   "http",
+				Decision: "deny",
+				Outcome:  audit.OutcomeDenied,
+				Error:    "principal not in console viewer allowlist",
+			}
+			if p != nil {
+				ev.Principal, ev.Issuer = p.Subject, p.Issuer
+			}
+			g.audit.Emit(ev)
+			http.Error(w, "not in the console viewer allowlist", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // consoleAssetHandler serves the embedded console page under /console/.
