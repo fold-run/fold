@@ -367,6 +367,10 @@ Known gaps, documented deliberately:
 
 ## Changelog
 
+### v1.0.1 — 2026-08-04
+
+**Security fix**, released from the `release-1.0` branch as a drop-in patch. The token-endpoint client followed HTTP redirects, and Go replays POST bodies on 307/308 — so a redirecting token endpoint handed the grant to the redirect target: the client secret under `client_secret_post`, and the caller's own bearer token as `subject_token` under `token-exchange`. Affects any upstream using `client-credentials` or `token-exchange` whose token endpoint can be made to redirect. The client now refuses every redirect and the grant fails closed.
+
 ### v1.0.0 — 2026-08-04
 
 The compatibility contract is in force. No behavior changes from v0.8.0 — this release is the promise: the config document (schema-verified), CLI, wire surface (error codes, endpoints, metric names, audit shape), and embedder Go API are frozen; breaking changes now require a new major version. See [API stability](#api-stability) for the contract and [SECURITY.md](SECURITY.md) for the support policy.
