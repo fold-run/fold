@@ -81,7 +81,7 @@ func upstreamMain() {
 	server.AddTool(&mcp.Tool{
 		Name:        "echo",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	}, func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
 	})
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
@@ -94,7 +94,8 @@ func upstreamMain() {
 	fmt.Printf("UPSTREAM_URL=http://%s/mcp\n", ln.Addr())
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
-	if err := http.Serve(ln, mux); err != nil {
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	if err := srv.Serve(ln); err != nil {
 		fmt.Fprintln(os.Stderr, "upstream serve:", err)
 		os.Exit(1)
 	}
@@ -188,11 +189,11 @@ func runnerMain() error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	// The real production entry: build ./cmd/fold and run the binary.
 	foldBin := filepath.Join(tmp, "fold")
-	build := exec.Command("go", "build", "-o", foldBin, "./cmd/fold")
+	build := exec.Command("go", "build", "-o", foldBin, "./cmd/fold") //nolint:gosec // harness builds its own topology
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		return fmt.Errorf("build ./cmd/fold (run from the repo root): %w", err)
@@ -228,7 +229,7 @@ func runnerMain() error {
 	if err != nil {
 		return err
 	}
-	upstream := exec.Command(exe, "-upstream")
+	upstream := exec.Command(exe, "-upstream") //nolint:gosec // re-exec self as the fixture upstream
 	upstreamOut, err := upstream.StdoutPipe()
 	if err != nil {
 		return err
@@ -265,7 +266,7 @@ func runnerMain() error {
 		shutdown(upstream)
 		return err
 	}
-	gateway := exec.Command(foldBin, "--config", cfgPath, "--port", strconv.Itoa(port))
+	gateway := exec.Command(foldBin, "--config", cfgPath, "--port", strconv.Itoa(port)) //nolint:gosec // the binary we just built
 	gateway.Stderr = os.Stderr
 	if err := gateway.Start(); err != nil {
 		shutdown(upstream)
@@ -353,7 +354,7 @@ func sweep(cfg config, targets [][2]string) error {
 			"durationSec": cfg.duration.Seconds(),
 			"results":     results,
 		}, "", "  ")
-		if err := os.WriteFile(cfg.jsonOut, out, 0o644); err != nil {
+		if err := os.WriteFile(cfg.jsonOut, out, 0o600); err != nil {
 			return err
 		}
 		fmt.Println("wrote", cfg.jsonOut)
@@ -412,7 +413,7 @@ func probe(url, scenario, tool string) error {
 	if err != nil {
 		return err
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	return call(session, scenario, tool)
 }
 
@@ -434,7 +435,7 @@ func runStage(url, scenario, tool string, conns int, warmup, duration time.Durat
 			return stageResult{}, fmt.Errorf("connect session %d: %w", i, err)
 		}
 		sessions[i] = s
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 	}
 
 	start := time.Now()
@@ -528,16 +529,16 @@ func freePort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port, nil
+	port := ln.Addr().(*net.TCPAddr).Port
+	return port, ln.Close()
 }
 
 func waitHealthy(url string) error {
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		res, err := http.Get(url)
+		res, err := http.Get(url) //nolint:gosec // loopback URL built by this harness
 		if err == nil {
-			res.Body.Close()
+			_ = res.Body.Close()
 			if res.StatusCode == http.StatusOK {
 				return nil
 			}
