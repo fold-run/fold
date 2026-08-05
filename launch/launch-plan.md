@@ -1,17 +1,17 @@
 # fold — public launch plan (relative-day template)
 
 Launch type: public launch of an open-source project, anchored on Hacker News.
-Primary CTA everywhere: **`go run github.com/fold-run/fold/cmd/fold@latest`** (secondary: star github.com/fold-run/fold, read docs.fold.run).
+Primary CTA everywhere: **hit demo.fold.run/mcp** (secondary: `go run github.com/fold-run/fold/cmd/fold@latest`, star github.com/fold-run/fold).
 Message: one line, from messaging.md — *fold is the open-source enterprise MCP gateway: every MCP client, every MCP server, one governed endpoint — 40/40 official conformance, gated in CI on every merge.*
 Owner of everything: Blake. Assets marked **[done]** are already live and need no work beyond a final check.
 
-Ported from the archived TypeScript repo's Aug 3–14 plan and rewritten against the Go implementation. Two structural changes: the demo gateway no longer exists, so the one-command local run is the first-touch everywhere the demo used to be; and the Cloudflare DevRel channel is gone with the Workers runtime, replaced by Go-ecosystem channels. Dates are relative (L = launch day) — pin L to a Tue/Wed/Thu morning and the rest follows.
+Ported from the archived TypeScript repo's Aug 3–14 plan and rewritten against the Go implementation. Structural changes from the TS plan: the demo is back (Go-backed as of 2026-08-05 — the unmodified v1.3.0 binary in a container at demo.fold.run) but demonstrates federation/governance, not era translation; and the Cloudflare DevRel channel is gone with the Workers runtime, replaced by Go-ecosystem channels. Dates are relative (L = launch day) — pin L to a Tue/Wed/Thu morning and the rest follows.
 
 ---
 
 ## 1. Launch thesis
 
-The 2026-07-28 spec release rewrote MCP days ago, and fold can prove alignment rather than claim it: a published 40/40 run of the official conformance suite, gated in CI on every merge and re-verified weekly against the latest SDK. That proof gap decays the moment any competitor ships their own conformance run, so we anchor on Hacker News promptly rather than polishing for another cycle. The supporting hook is the deployment story the TS version never had: a single static Go binary — no runtime, no sidecar stack — that a skeptical engineer can have running in under a minute. Everything else — community, syndication, newsletters — is sequenced to convert the HN moment into durable adoption rather than to create separate moments we don't have the hands to run.
+The 2026-07-28 spec release rewrote MCP days ago, and fold can prove alignment rather than claim it: a published 40/40 run of the official conformance suite, gated in CI on every merge and re-verified weekly against the latest SDK — plus a live gateway anyone can point a client at, no signup. That proof gap decays the moment any competitor ships their own conformance run, so we anchor on Hacker News promptly rather than polishing for another cycle. The supporting hook is the deployment story the TS version never had: a single static Go binary — no runtime, no sidecar stack — that a skeptical engineer can have running in under a minute after trying the demo. Everything else — community, syndication, newsletters — is sequenced to convert the HN moment into durable adoption rather than to create separate moments we don't have the hands to run.
 
 ## 2. Goals & metrics (by end of L+9)
 
@@ -21,8 +21,9 @@ Realistic for a solo OSS launch with zero paid budget. The leading indicator is 
 |---|--------|--------|-----------------|
 | 1 | HN Show HN result | Front page (top 30) for 2+ hours; 100+ points | The single lever that drives every other metric; achievable for a spec-timely infra post with a one-command quickstart |
 | 2 | GitHub stars | +400 (stretch +800 if HN top 10) | Typical range for a front-page Show HN on dev infra |
-| 3 | Installs | 500+ combined GitHub release downloads + ghcr.io pulls in the window | The "people actually ran it" proxy now that there's no demo endpoint to count connections on |
-| 4 | Quality inbound | 5+ substantive conversations with platform/AI-infra engineers (GitHub issues/discussions, email, DMs) | The strategic audience; 5 real threads beats 50 drive-by stars |
+| 3 | Demo traffic | 1,000+ MCP requests through demo.fold.run in the window (Workers analytics on `fold-demo`) | The differentiating metric — proves people *tried it*, not just read about it |
+| 4 | Installs | 500+ combined GitHub release downloads + ghcr.io pulls in the window | The "people ran it themselves" proxy, one step deeper than the demo |
+| 5 | Quality inbound | 5+ substantive conversations with platform/AI-infra engineers (GitHub issues/discussions, email, DMs) | The strategic audience; 5 real threads beats 50 drive-by stars |
 
 Track daily in a plain text log: stars, release-asset download counts, ghcr pull count, GitHub traffic/referrer graphs. 15 min/evening. (The fold.run properties run no analytics — GitHub's numbers are the instrument.)
 
@@ -36,10 +37,11 @@ Total effort budgeted at 4–8 hrs/day; launch day is a full day. Times are US P
 - Confirm the anchor post. **[done]** — *"Federating MCP tasks: affinity routing over opaque ids"* is live at fold.run/blog/federating-mcp-tasks/ with permalinks pinned to the repo. Fresh-eyes pass for anything stale; it is the link target for everything below.
 
 **L−2 (~6 hrs)**
-- **Quickstart hardening** (2 hrs). The one-liner is the demo now, so it must survive first contact: run `go run github.com/fold-run/fold/cmd/fold@latest --config fold.config.json` cold on a clean machine (no Go module cache), and `docker run ghcr.io/fold-run/fold` on amd64 and arm64. Time both; the README's "60 seconds" claim must be true on a cold cache or it changes. Verify the error a user sees with a bad config is the validation message, not a stack trace.
+- **Demo hardening** (1.5 hrs). demo.fold.run must survive an HN spike: confirm the 300 req/min rate limit answers cleanly, trip each upstream mentally — what does a visitor see when cf-docs or gitmcp is down? (`_meta["run.fold/partialFailure"]` plus the remaining namespaces still serving — that's the product working; know the story before Wednesday.) Confirm fold.run/status is green and the console loads. Decide now what "demo degraded" looks like so launch morning isn't the first time you find out.
+- **Quickstart hardening** (1.5 hrs). The second touch after the demo: run `go run github.com/fold-run/fold/cmd/fold@latest --config fold.config.json` cold on a clean machine (no Go module cache), and `docker run ghcr.io/fold-run/fold` on amd64 and arm64. Time both; the README's "60 seconds" claim must be true on a cold cache or it changes. Verify the error a user sees with a bad config is the validation message, not a stack trace.
 - **Repo hygiene final pass** (2 hrs). Verify: README answers "what/why/try it in 60 seconds" above the fold; repo description matches the messaging.md one-liner; CONTRIBUTING + issue templates exist; the conformance receipt (CI run link) is prominent. **Two hard gates from the channel copy:** the bench methodology must be public (**[done]** — `bench/latency_test.go` + docs.fold.run/benchmarks) and the community CTA targets GitHub Discussions (link a Discord only if a live server exists by launch day).
 - **Awesome-list PRs** (1 hr). Open PRs to awesome-mcp-servers / awesome-mcp adding fold with the one-line description. PRs take days to merge — opening now means they land during launch week. Follow each list's contribution format exactly; one-line entry, no sales copy.
-- **Uptime check** (15 min). fold.run/status is public — confirm all targets green before pointing an HN thread at the properties.
+- **Uptime check** (15 min). fold.run/status is public and MCP-pings the demo every 5 minutes — confirm all targets green before pointing an HN thread at the properties.
 
 **L−1 (~5 hrs)**
 - **MCP community presence, quiet mode** (1.5 hrs). Join/re-engage official MCP Discord and MCP GitHub Discussions *as a contributor*: answer two or three open questions about 2026-07-28 or the Go SDK where you genuinely know the answer. No links to fold unless directly relevant. Credibility pre-seeding — the announcement post should come from a name people saw yesterday, not a stranger.
@@ -48,10 +50,11 @@ Total effort budgeted at 4–8 hrs/day; launch day is a full day. Times are US P
 
 ### Launch day: L (Tue/Wed/Thu only)
 
-**6:00am** — Final smoke test: blog post, docs, status page, `go run` quickstart, all links in the post.
-**7:00am** — **Submit Show HN.** Title (final, per channel-copy.md): `Show HN: fold – open-source MCP gateway in Go (40/40 conformance)`. URL: the blog post (not the bare repo — the post carries the argument; the repo is one click in). Immediately add the first comment: 3 short paragraphs — why you built it, what's technically interesting (federated task ownership, server-initiated bridging, credential brokering), and the explicit one-command invitation. 7:00–8:00am PT midweek is the highest-odds window: enough early US-East traffic to build velocity before the front page turns over.
+**6:00am** — Final smoke test: blog post, docs, status page, demo handshake from two different MCP clients, console, `go run` quickstart, all links in the post.
+**7:00am** — **Submit Show HN.** Title (final, per channel-copy.md): `Show HN: fold – open-source MCP gateway in Go (40/40 conformance)`. URL: the blog post (not the bare repo — the post carries the argument; repo and demo are one click in). Immediately add the first comment: 3 short paragraphs — why you built it, what's technically interesting (federated task ownership, server-initiated bridging, credential brokering), and an explicit invitation to connect any MCP client to demo.fold.run/mcp right now. 7:00–8:00am PT midweek is the highest-odds window: enough early US-East traffic to build velocity before the front page turns over.
 **7:15am** — Post the X thread and LinkedIn post. Do **not** link the HN thread from either, and never ask for votes anywhere — HN's voting-ring detection penalizes it and the community torches it.
-**7:30am–7:00pm** — **Live in the HN thread all day.** This is the day's only real job. Answer every substantive comment within minutes; lead with agreement per messaging.md §5 tone rule; link receipts, not adjectives. If someone reports the quickstart failing on their platform, treat it as the day's top-priority bug: reproduce, acknowledge in-thread, fix or scope it honestly before evening.
+**7:30am–7:00pm** — **Live in the HN thread all day.** This is the day's only real job. Answer every substantive comment within minutes; lead with agreement per messaging.md §5 tone rule; link receipts, not adjectives. Watch fold.run/status and the fold-demo Workers analytics; if an upstream degrades, say so in-thread before someone else does. If someone reports the quickstart failing on their platform, treat it as the day's top-priority bug: reproduce, acknowledge in-thread, fix or scope it honestly before evening.
+**Midday** — If the post is on the front page, add a short comment when something notable happens in the demo traffic ("~N MCP requests through the demo since this morning" from Workers analytics) — concrete, verifiable, not a victory lap.
 **Evening** — Log metrics. Reply to every GitHub issue/discussion opened today, even briefly. Queue tomorrow's community posts.
 
 Effort: full day, ~10 hrs. Nothing else is scheduled.
@@ -134,7 +137,12 @@ Position unchanged from the TS plan, and the reasoning got stronger: **do not la
 - Relaunch rules: HN tolerates one re-submission of a post that got no traction. Wait ~1 week, revise the angle (lead with the quickstart: "Show HN: a single-binary MCP gateway — federate your servers in one command", or lead with the governance story), and resubmit **Tue/Wed, 7:00am PT**. Also email hn@ycombinator.com asking for second-chance pool consideration — moderators do this routinely for substantive posts that missed their window.
 - If the resubmission also stalls: the content still works; shift weight to the Go-ecosystem channel and newsletters, which don't care about HN score.
 
-**Quickstart breaks in public (the launch-day equivalent of the old plan's "demo goes down").**
+**Demo degrades or goes down under load.**
+- Prevention is L−2's hardening pass: fold's own 300 req/min rate limit, per-upstream circuit breakers, and the uptime monitor's 5-minute MCP ping (which doubles as the container keep-warm).
+- If an upstream trips during launch: the gateway degrades visibly and gracefully — that's the product working. Say so in the HN thread immediately and turn it into a demonstration: "gitmcp is timing out right now; note `_meta[\"run.fold/partialFailure\"]` in tools/list and the other two namespaces still serving — that's the breaker."
+- If the demo is fully down (container or Cloudflare incident): post the status in-thread within minutes, point to the `go run` quickstart as the alternative first-touch, fix, then post the resolution. A founder narrating an incident honestly on HN gains credibility; silence loses it. fold.run/status is the public receipt either way.
+
+**Quickstart breaks in public.**
 - Prevention is L−2's cold-cache runs on both architectures. The remaining risk surface is platform-specific: an OS/arch combination that wasn't tested, a Go toolchain version mismatch, a proxy-hostile corporate network.
 - If a thread reports it: acknowledge in-thread within minutes, reproduce immediately, and either fix (a doc note, a release patch) or scope it honestly ("broken on X, tracked in #NN, the container path works there"). A founder narrating a fix honestly on HN gains credibility; silence loses it.
 - The container is the fallback first-touch: `docker run ghcr.io/fold-run/fold` has no toolchain dependency — keep it in the crib sheet as the answer to "go run failed."

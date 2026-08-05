@@ -1,8 +1,8 @@
 # channel copy — ready-to-post drafts
 
-Ladders to `messaging.md`. All numbers verifiable: 40/40 conformance (gated per merge), ~0.2 ms added p50 (CI gate < 5 ms), v1.3.0, Apache-2.0, `go run github.com/fold-run/fold/cmd/fold@latest`. "fold" lowercase everywhere, including sentence-initial. No hype adjectives anywhere in this file — receipts only.
+Ladders to `messaging.md`. All numbers verifiable: 40/40 conformance (gated per merge), ~0.2 ms added p50 (CI gate < 5 ms), v1.3.0, Apache-2.0, demo.fold.run/mcp, `go run github.com/fold-run/fold/cmd/fold@latest`. "fold" lowercase everywhere, including sentence-initial. No hype adjectives anywhere in this file — receipts only.
 
-Ported from the archived TypeScript repo and rewritten against the Go implementation. The TS drafts leaned on two hooks that no longer exist — the live demo gateway and protocol-era translation — so every draft below leads with the hooks Go has: the one-command local run, the conformance receipt, and the protocol depth of federated tasks.
+Ported from the archived TypeScript repo and rewritten against the Go implementation. The demo is back (Go-backed, 2026-08-05) but era translation is not — the demo demonstrates federation, governed tasks, and the console, never translation. The drafts lead with the demo, the one-command local run, the conformance receipt, and the protocol depth of federated tasks.
 
 ---
 
@@ -34,7 +34,7 @@ Etiquette notes: no exclamation points, no adjectives, product name lowercase as
 >
 > Current state, honestly: v1.3.0, solo maintainer. It passes all 40 checks of the official conformance suite (gated in CI on every merge, re-run weekly against the latest SDK release), and adds ~0.2 ms p50 on the proxy path — the CI gate is < 5 ms and the instrument is `make bench` in the repo, so measure it yourself rather than taking my number. The gaps are documented too: `subscriptions/listen` fan-in is blocked on the Go SDK's stateless-only 2026 support, and the README says so.
 >
-> Try it locally in one command, no signup: `go run github.com/fold-run/fold/cmd/fold@latest --config fold.config.json` (or `docker run ghcr.io/fold-run/fold`).
+> You can try it without signing up for anything: point any MCP client at https://demo.fold.run/mcp — three public MCP servers (Cloudflare's docs server, GitMCP, and a task-minting demo server) federated behind one endpoint. Call `jobs__start_job`, then poll it with `tasks/get` carrying nothing but the task id — that's the routing problem from the post, live. The read-only console at https://demo.fold.run/console shows the federation as you use it. Rate-limited, unauthenticated, no warranty. Or run your own in one command: `go run github.com/fold-run/fold/cmd/fold@latest --config fold.config.json` (or `docker run ghcr.io/fold-run/fold`).
 >
 > Repo: https://github.com/fold-run/fold · Docs: https://docs.fold.run
 >
@@ -61,7 +61,7 @@ Post these as replies when the question appears — not pre-emptively as top-lev
 >
 > Sharing here because two pieces are directly useful to people in this community even if you never run a gateway:
 >
-> **If you're implementing the tasks extension:** fold federates tasks across N upstreams, and the design notes are all in the open — ownership remembered at mint instead of encoded in the id, a read-only probe for tasks the gateway never saw, mutations never fanned out, and ownership bound to the minting principal so a denial is indistinguishable from a miss. If you're building anything that sits between a task-minting server and its clients, the write-up and the code may save you a design cycle: https://fold.run/blog/federating-mcp-tasks/
+> **If you're implementing the tasks extension:** fold federates tasks across N upstreams, and the design notes are all in the open — ownership remembered at mint instead of encoded in the id, a read-only probe for tasks the gateway never saw, mutations never fanned out, and ownership bound to the minting principal so a denial is indistinguishable from a miss. You can poke at it live: mint a job on https://demo.fold.run/mcp and poll it from a fresh session. If you're building anything that sits between a task-minting server and its clients, the write-up and the code may save you a design cycle: https://fold.run/blog/federating-mcp-tasks/
 >
 > **If you care about spec correctness:** fold passes 40/40 checks of the official conformance suite, fronting the reference server, gated in CI on every merge and re-run weekly against the latest SDK release. It's built on the official Go SDK on both sides of the proxy, and the gaps are documented in the README's "Not implemented" section (with a canary test that fails when the SDK unblocks them) — I would genuinely rather you find more gaps than tell me it looks good. An issue with a transcript is the most useful thing you could send me: https://github.com/fold-run/fold
 >
@@ -87,9 +87,9 @@ Alternates:
 
 ### Description (~250 chars)
 
-> fold federates your MCP servers into one governed endpoint: OAuth with per-upstream token exchange, deny-by-default policy, audit on every request, rate limits, circuit breakers. One static Go binary. Apache-2.0, 40/40 MCP conformance.
+> fold federates your MCP servers into one governed endpoint: OAuth with per-upstream token exchange, deny-by-default policy, audit on every request, rate limits. One static Go binary. Apache-2.0, 40/40 conformance. Try it: demo.fold.run/mcp
 
-(236 chars)
+(240 chars)
 
 ### First-comment maker's note (~150 words)
 
@@ -99,7 +99,7 @@ Alternates:
 >
 > It deploys like infrastructure you already run: a single static Go binary or a ~22 MB distroless container, a Helm chart, hot config reload, Prometheus metrics. It passes all 40 checks of the official MCP conformance suite, gated in CI on every merge.
 >
-> No signup needed to evaluate: `go run github.com/fold-run/fold/cmd/fold@latest` puts it in front of your first server in a minute. Everything is Apache-2.0 at github.com/fold-run/fold. I'll be here all day for questions.
+> No signup needed to evaluate: point any MCP client at demo.fold.run/mcp — three public servers, one endpoint, and the console at demo.fold.run/console shows the federation live. Or `go run github.com/fold-run/fold/cmd/fold@latest` puts it in front of your own first server in a minute. Everything is Apache-2.0 at github.com/fold-run/fold. I'll be here all day for questions.
 
 ---
 
@@ -108,4 +108,4 @@ Alternates:
 1. Anchor blog post live first (it's the link target for everything): https://fold.run/blog/federating-mcp-tasks/ — already published.
 2. Show HN the same morning (post before 9am ET, weekday; body links the post and the repo).
 3. MCP Discord #showcase + GitHub Discussions the **day after** HN: one community venue per day; the Discord post should come from a name people saw contributing the day before, and by then early HN feedback has confirmed the quick-start holds up on machines that aren't mine.
-4. Product Hunt held back 1–2 weeks — a second wave, not a splitter of the first. Never solicit upvotes anywhere; ask people to run the one-liner instead.
+4. Product Hunt held back 1–2 weeks — a second wave, not a splitter of the first. Never solicit upvotes anywhere; ask people to try the demo or run the one-liner instead.

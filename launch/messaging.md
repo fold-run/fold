@@ -2,7 +2,9 @@
 
 Source of truth for all marketing copy. Every downstream asset (site, docs framing, channel copy, PR) ladders up to this file. "fold" is always lowercase, including at the start of a sentence.
 
-Ported from the archived TypeScript repo's launch messaging and rewritten against the Go implementation; every claim below is verified against v1.3.0. Dead TS-era claims (Cloudflare Workers runtime, protocol-era translation, SEP-2549 caching, `subscriptions/listen` fan-in, demo.fold.run, throughput figures) do not appear here and must not be reintroduced without shipped code behind them.
+Ported from the archived TypeScript repo's launch messaging and rewritten against the Go implementation; every claim below is verified against v1.3.0. Dead TS-era claims (Cloudflare Workers runtime, protocol-era translation, SEP-2549 caching, `subscriptions/listen` fan-in, throughput figures) do not appear here and must not be reintroduced without shipped code behind them.
+
+The live demo is back as of 2026-08-05 — **demo.fold.run/mcp** runs the unmodified v1.3.0 binary federating three public MCP servers, with the console at demo.fold.run/console. It is a *federation and governance* demo: never attach the old era-translation story to it, and never present it as a benchmark target (it's rate-limited and containerized — `make bench` is the measurement answer).
 
 ---
 
@@ -23,10 +25,10 @@ Category we claim: **the enterprise MCP gateway**. Not "an AI gateway," not "an 
 | **GitHub repo description** | The enterprise MCP gateway. One governed endpoint that federates every MCP server — auth, policy, audit, rate limiting. A single static Go binary. Apache-2.0. |
 | **Hacker News (Show HN title)** | Show HN: fold – open-source MCP gateway in Go (40/40 conformance) |
 | **Go module / release page** | MCP gateway: federate any number of MCP servers into one governed endpoint. OAuth resource server, EMA/ID-JAG, RFC 8693 token exchange, deny-by-default policy, audit on every request. `go install github.com/fold-run/fold/cmd/fold@latest`. |
-| **Twitter/X bio** | the enterprise MCP gateway. one governed endpoint for every MCP server. open source, Apache-2.0. github.com/fold-run/fold |
-| **Conference-hallway verbal** | "You know how every MCP client ends up wired to a dozen servers, each with its own auth and its own credentials? fold sits in the middle — clients see one governed server, and federation, auth, policy, and audit happen behind it. One static binary in your VPC." |
+| **Twitter/X bio** | the enterprise MCP gateway. one governed endpoint for every MCP server. open source, Apache-2.0. try it: demo.fold.run/mcp |
+| **Conference-hallway verbal** | "You know how every MCP client ends up wired to a dozen servers, each with its own auth and its own credentials? fold sits in the middle — clients see one governed server, and federation, auth, policy, and audit happen behind it. Point your client at demo.fold.run/mcp and you're looking at it." |
 
-Rule: every written one-liner must carry at least one verifiable hook (license, conformance number, install command, or deployment shape). No adjectives without receipts.
+Rule: every written one-liner must carry at least one verifiable hook (license, conformance number, demo URL, install command, or deployment shape). No adjectives without receipts.
 
 ---
 
@@ -43,6 +45,7 @@ fold is the layer where MCP sprawl becomes infrastructure: clients connect once,
 *The claim:* fold federates any number of upstream MCP servers into a single virtual server with namespaced tools. Clients configure one URL; platform teams control what's behind it.
 
 *Proof:*
+- Live, no-signup demo: **demo.fold.run/mcp** — three public MCP servers federated behind one endpoint, inspectable from any MCP client, with the federation visible live at demo.fold.run/console.
 - Namespaced tool federation with deny-by-default, per-principal visibility: two principals hitting the same endpoint see different tool sets, and what a principal can't call it can't see.
 - Federated tasks with affinity routing: ownership is remembered at mint (never encoded in the id), located by probe when the record is missing, and bound to the minting principal — another caller's poll answers exactly like an unknown id.
 - Server-initiated traffic bridges both ways: sampling, elicitation, progress, and log messages route back over the originating call's own stream.
@@ -90,7 +93,7 @@ fold is the layer where MCP sprawl becomes infrastructure: clients connect once,
 
 *Message:* fold is a from-the-spec implementation of the hard parts of running MCP behind one endpoint — federated tasks with affinity routing and principal-bound ownership, server-initiated bridging over the originating stream, an embedded EMA authorization server — built on the official Go SDK, Apache-2.0, all in the open. Where the SDK blocks a feature, the README says so and a drift canary watches for the unblock.
 
-*Proof to lead with:* 40/40 conformance gated per merge and re-verified weekly against the latest SDK, docs.fold.run with /llms.txt, `go run github.com/fold-run/fold/cmd/fold@latest` to a running gateway in one command, release artifacts with SBOMs and sigstore build provenance, the documented "Not implemented" section as evidence the claims are real.
+*Proof to lead with:* 40/40 conformance gated per merge and re-verified weekly against the latest SDK, the live demo (demo.fold.run/mcp — federated tasks are pollable there right now), docs.fold.run with /llms.txt, `go run github.com/fold-run/fold/cmd/fold@latest` to a running gateway in one command, release artifacts with SBOMs and sigstore build provenance, the documented "Not implemented" section as evidence the claims are real.
 
 ### (c) Engineering leaders (VP / staff+ who approve adoption)
 
@@ -139,7 +142,7 @@ Because alignment is machinery, not a sprint: the official conformance suite gat
 - **list caching** — never "response caching"; fold's cache is a TTL over list results.
 - **a single static binary** — the deployment story in five words; pair it with the container and Helm variants when the audience is Kubernetes-shaped.
 - Specific numbers with units and percentile: "~0.2 ms added p50," "40/40 conformance checks," "CI-gated at < 5 ms."
-- Imperatives with a command: "run `go run github.com/fold-run/fold/cmd/fold@latest`," "pull `ghcr.io/fold-run/fold`."
+- Imperatives with a URL or command: "point your MCP client at demo.fold.run/mcp," "run `go run github.com/fold-run/fold/cmd/fold@latest`," "pull `ghcr.io/fold-run/fold`."
 - **fold** — lowercase, always, everywhere, including sentence-initial.
 
 ### We avoid
@@ -150,7 +153,7 @@ Because alignment is machinery, not a sprint: the official conformance suite gat
 - **Category mush:** "platform," "ecosystem," "solution," "AI middleware" — we are a gateway.
 - **Unverifiable comparatives:** "the fastest MCP gateway," "the most secure" — we publish our numbers and let readers compare.
 - **Throughput claims:** no requests-per-second figure exists for the Go implementation; none appears in copy until a load-test harness ships in the repo.
-- **Retired TS-era claims:** protocol-era translation, SEP-2549 caching, Cloudflare Workers, `subscriptions/listen` fan-in, demo.fold.run. Gone from the product, gone from the copy.
+- **Retired TS-era claims:** protocol-era translation, SEP-2549 caching, Cloudflare Workers as a runtime, `subscriptions/listen` fan-in. Gone from the product, gone from the copy. (demo.fold.run is back — Go-backed — but carries none of these claims: it demonstrates federation and governance, not translation.)
 - **False modesty and filler:** "we think," "arguably," "simply," "just." State it or cut it.
 - **Roadmap-as-fact:** never present unshipped work in present tense. If it isn't in the repo, it isn't in the copy.
 
