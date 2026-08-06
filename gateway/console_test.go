@@ -730,3 +730,108 @@ done:
 		t.Errorf("assets with allowlist configured: want 200, got %d", resp.StatusCode)
 	}
 }
+
+// TestConsoleAuthHint: /console/api/auth is the deliberately
+// unauthenticated login hint — everything in it is public SPA config.
+func TestConsoleAuthHint(t *testing.T) {
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "tool")
+	cfg := authedConfig(iss, []config.Upstream{{ID: "u", URL: up.URL}}, nil)
+	cfg.Server = &config.ServerSection{Console: &config.Console{
+		Enabled: true,
+		OAuth:   &config.ConsoleOAuth{ClientID: "fold-console", Scopes: []string{"openid"}},
+	}}
+	ts, _ := startGateway(t, cfg)
+
+	// No token needed: the page reads this before it can possibly have one.
+	resp, err := http.Get(ts.URL + "/console/api/auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("auth hint without token: want 200, got %d", resp.StatusCode)
+	}
+	var hint struct {
+		AuthRequired bool   `json:"authRequired"`
+		Resource     string `json:"resource"`
+		OAuth        *struct {
+			Issuer   string   `json:"issuer"`
+			ClientID string   `json:"clientId"`
+			Scopes   []string `json:"scopes"`
+		} `json:"oauth"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&hint); err != nil {
+		t.Fatalf("decode hint: %v", err)
+	}
+	if !hint.AuthRequired {
+		t.Error("hint.authRequired = false with auth required")
+	}
+	if hint.Resource != "https://gw.example.com" {
+		t.Errorf("hint.resource = %q", hint.Resource)
+	}
+	if hint.OAuth == nil {
+		t.Fatal("hint.oauth missing with console.oauth configured")
+	}
+	if hint.OAuth.Issuer != iss.server.URL {
+		t.Errorf("hint.oauth.issuer = %q, want the fixture issuer %q", hint.OAuth.Issuer, iss.server.URL)
+	}
+	if hint.OAuth.ClientID != "fold-console" || len(hint.OAuth.Scopes) != 1 {
+		t.Errorf("hint.oauth = %+v", hint.OAuth)
+	}
+
+	// The asset CSP admits the issuer origin in connect-src (metadata
+	// fetch + code exchange), and nothing else beyond 'self'.
+	resp, err = http.Get(ts.URL + "/console/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "connect-src 'self' "+iss.server.URL) {
+		t.Errorf("CSP %q does not admit the issuer origin in connect-src", csp)
+	}
+
+	// Method discipline holds on the hint too.
+	postResp, err := http.Post(ts.URL+"/console/api/auth", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postResp.Body.Close()
+	if postResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST auth hint: want 405, got %d", postResp.StatusCode)
+	}
+}
+
+// Without console.oauth the hint still serves (authRequired + resource are
+// what the page needs to fall back to paste-token UX) and the CSP stays
+// pinned to 'self' alone.
+func TestConsoleAuthHintWithoutOAuth(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, consoleConfig([]config.Upstream{{ID: "u", URL: up.URL}}))
+
+	resp, err := http.Get(ts.URL + "/console/api/auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var hint struct {
+		AuthRequired bool            `json:"authRequired"`
+		OAuth        json.RawMessage `json:"oauth"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&hint); err != nil {
+		t.Fatalf("decode hint: %v", err)
+	}
+	if hint.AuthRequired || hint.OAuth != nil {
+		t.Errorf("hint = %+v, want authRequired=false and no oauth", hint)
+	}
+
+	assets, err := http.Get(ts.URL + "/console/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets.Body.Close()
+	if csp := assets.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "connect-src 'self';") {
+		t.Errorf("CSP %q should pin connect-src to 'self' alone without oauth", csp)
+	}
+}

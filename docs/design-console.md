@@ -80,9 +80,13 @@ untrusted callers, and `secretRef` *names* only — never values — appear
 anywhere.
 
 The page takes a pasted token and holds it in memory only (no storage).
-Clunky but honest for v1; an OAuth PKCE flow in the console is a natural
-follow-up needing no server changes beyond what RFC 9728 already
-advertises.
+That was v1's whole story; the PKCE flow shipped as the follow-up
+(`server.console.oauth`): Authorization Code + PKCE against a trusted
+direct-mode issuer, an unauthenticated `/console/api/auth` hint carrying
+the public client configuration, and the asset CSP extended with exactly
+the issuer's origin in `connect-src`. The paste-token path remains as the
+fallback (and the only path for EMA deployments, whose ID-JAGs are not
+browser-presentable).
 
 ### The test console is an MCP client, full stop
 

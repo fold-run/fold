@@ -846,7 +846,8 @@ func (g *Gateway) buildHandler() http.Handler {
 			state = g.authMiddleware(state)
 		}
 		mux.Handle("/console/api/state", state)
-		mux.Handle("/console/", consoleAssetHandler())
+		mux.HandleFunc("/console/api/auth", g.handleConsoleAuthHint)
+		mux.Handle("/console/", consoleAssetHandler(consoleCSP(g.cfg)))
 		mux.Handle("/console", http.RedirectHandler("/console/", http.StatusMovedPermanently))
 	}
 	if g.cfg.AuthRequired() {

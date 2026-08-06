@@ -17,6 +17,7 @@ implementation order. Verdict for all: **keep**.
 | `auth.ema.tokenRateLimitPerMinute` | 600 | Anti-amplification on the unauthenticated token endpoint. |
 | `server.console.enabled` | `false` (added in v1.2) | No new surface unless asked for: the console's static assets serve unauthenticated by design, so exposing them is an operator's deliberate choice, not a default. |
 | `server.console.groups` | unset (added in v1.3) | Unset means any valid principal may view the state API — the console's documented baseline. The allowlist is opt-in because it only means something once an operator decides which IdP groups map to "platform team". |
+| `server.console.oauth` | unset (added in v1.4) | Sign-in is opt-in because it requires an IdP-side client registration (client id + redirect URI) that fold cannot conjure. Unset, the console falls back to paste-token. `oauth.issuer` defaults to the first direct-mode issuer — the common single-IdP case needs no choice. |
 | `issuer.jwksUri` | `{issuer}/.well-known/jwks.json` | Common convention; IdPs that differ (e.g. Okta org servers) set it explicitly. A guess, but a configurable one. |
 | `issuer.groupsClaim` | `groups` | Okta's name; Entra/Auth0 set their own. |
 

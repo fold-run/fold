@@ -150,8 +150,22 @@ two kinds of surface, each with a deliberate trust story:
   client's: policy filters what it lists, denials answer `-32042`, rate
   limits apply, and every call lands in the audit trail. The console cannot
   bypass governance because there is nothing to bypass with — it holds no
-  credential of its own (the user's pasted token lives in page memory only,
+  credential of its own (the user's token lives in page memory only,
   never storage) and reaches no endpoint a client couldn't.
+- **Sign-in** (`server.console.oauth`) uses Authorization Code + PKCE: the
+  console is a public client, so no secret exists to protect — the PKCE
+  verifier is the proof, held in `sessionStorage` only for the redirect
+  round-trip and removed on return (it is not a credential by itself; the
+  access token never touches storage). The unauthenticated
+  `/console/api/auth` hint carries only public SPA configuration — a
+  client id ships in every browser app, the issuer is already advertised
+  in the RFC 9728 metadata. The asset CSP admits exactly the configured
+  issuer's origin in `connect-src` for the metadata fetch and code
+  exchange — config-derived, never a wildcard. Tokens are requested with
+  the gateway as RFC 8707 resource, so what the flow mints is precisely
+  what `/mcp` audits and verifies. The issuer must be a trusted
+  direct-mode issuer (validation enforces it); EMA deployments keep the
+  paste-token path, since ID-JAGs are not browser-presentable.
 
 ## What fold deliberately does not do
 

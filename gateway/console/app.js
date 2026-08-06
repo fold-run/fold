@@ -29,6 +29,121 @@ const MODES = {
   resources: { list: "resources/list", listKey: "resources", call: "resources/read", verb: "Read resource", args: false },
 };
 
+// ---------- OAuth (Authorization Code + PKCE) ----------
+//
+// The console is a public client: no secret exists, the PKCE verifier is
+// the proof of possession. The access token lives in page memory only; the
+// verifier (not a credential by itself) sits in sessionStorage exactly for
+// the duration of the redirect round-trip and is removed on return.
+
+const PKCE_KEY = "fold-console-pkce";
+
+function b64url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function loadAuthHint() {
+  try {
+    const res = await fetch("api/auth");
+    if (res.ok) S.authHint = await res.json();
+  } catch { /* hint is optional; paste-token still works */ }
+  const oauth = S.authHint && S.authHint.oauth;
+  $("signin").hidden = !oauth || !!S.token;
+  if (oauth) $("token").placeholder = "…or paste a Bearer token";
+}
+
+// discoverAS resolves the authorization server metadata: OIDC discovery
+// first, then RFC 8414's inserted-path form for plain OAuth ASes.
+async function discoverAS(issuer) {
+  const iss = issuer.replace(/\/$/, "");
+  const u = new URL(iss);
+  const candidates = [
+    iss + "/.well-known/openid-configuration",
+    u.origin + "/.well-known/oauth-authorization-server" + u.pathname.replace(/\/$/, ""),
+  ];
+  for (const c of candidates) {
+    try {
+      const res = await fetch(c);
+      if (!res.ok) continue;
+      const meta = await res.json();
+      if (meta.authorization_endpoint && meta.token_endpoint) return meta;
+    } catch { /* try the next form */ }
+  }
+  throw new Error("could not discover authorization server metadata for " + issuer);
+}
+
+async function signIn() {
+  banner("");
+  try {
+    const oauth = S.authHint.oauth;
+    const meta = await discoverAS(oauth.issuer);
+    const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    sessionStorage.setItem(PKCE_KEY, JSON.stringify({ verifier, state, tokenEndpoint: meta.token_endpoint }));
+    const authz = new URL(meta.authorization_endpoint);
+    authz.searchParams.set("response_type", "code");
+    authz.searchParams.set("client_id", oauth.clientId);
+    authz.searchParams.set("redirect_uri", location.origin + location.pathname);
+    authz.searchParams.set("code_challenge", b64url(new Uint8Array(digest)));
+    authz.searchParams.set("code_challenge_method", "S256");
+    authz.searchParams.set("state", state);
+    if (oauth.scopes && oauth.scopes.length) authz.searchParams.set("scope", oauth.scopes.join(" "));
+    if (S.authHint.resource) authz.searchParams.set("resource", S.authHint.resource); // RFC 8707
+    location.assign(authz);
+  } catch (err) {
+    banner("sign-in failed: " + err.message);
+  }
+}
+
+// handleCallback finishes the flow when the page loads with ?code=…: the
+// code and state are stripped from the URL and history before anything
+// else, the saved verifier is single-use, and the token never leaves memory.
+async function handleCallback() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has("code") && !q.has("error")) return;
+  const savedRaw = sessionStorage.getItem(PKCE_KEY);
+  sessionStorage.removeItem(PKCE_KEY);
+  history.replaceState(null, "", location.pathname);
+  if (q.has("error")) {
+    banner("sign-in failed: " + q.get("error") + (q.get("error_description") ? ": " + q.get("error_description") : ""));
+    return;
+  }
+  let saved = null;
+  try { saved = JSON.parse(savedRaw); } catch { /* treated as missing */ }
+  if (!saved || !saved.state || saved.state !== q.get("state")) {
+    banner("sign-in failed: state mismatch — start again from this page.");
+    return;
+  }
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: q.get("code"),
+    redirect_uri: location.origin + location.pathname,
+    client_id: S.authHint.oauth.clientId,
+    code_verifier: saved.verifier,
+  });
+  if (S.authHint.resource) body.set("resource", S.authHint.resource);
+  try {
+    const res = await fetch(saved.tokenEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const tok = await res.json();
+    if (!res.ok || !tok.access_token) {
+      banner("token exchange failed: " + (tok.error || "HTTP " + res.status) + (tok.error_description ? ": " + tok.error_description : ""));
+      return;
+    }
+    S.token = tok.access_token;
+    $("signin").hidden = false;
+    $("signin").textContent = "Signed in ✓";
+    $("signin").disabled = true;
+    $("token").hidden = true;
+  } catch (err) {
+    banner("token exchange failed: " + err.message);
+  }
+}
+
 // ---------- dashboard ----------
 
 function authHeaders() {
@@ -85,8 +200,9 @@ async function refreshState() {
   $("version").textContent = /^\d/.test(st.version) ? "v" + st.version : st.version;
 
   // Auth off means no token will ever be needed; hide the input instead of
-  // leaving a field that does nothing.
-  $("token").hidden = !st.authRequired;
+  // leaving a field that does nothing. Signed-in sessions don't need it
+  // either.
+  $("token").hidden = !st.authRequired || $("signin").disabled;
 
   const summary = $("summary");
   summary.replaceChildren(
@@ -371,9 +487,14 @@ $("refresh").addEventListener("click", () => { startPolling(); refreshState(); }
 $("connect").addEventListener("click", connect);
 $("picker").addEventListener("change", showItemDesc);
 $("call").addEventListener("click", invoke);
+$("signin").addEventListener("click", signIn);
 for (const mode of ["tools", "prompts", "resources"]) {
   $("mode-" + mode).addEventListener("click", () => setMode(mode));
 }
 
-refreshState();
-startPolling();
+(async () => {
+  await loadAuthHint();
+  await handleCallback();
+  refreshState();
+  startPolling();
+})();

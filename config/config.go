@@ -389,6 +389,30 @@ type Console struct {
 	// names are only unique within an issuer (the same caveat as policy
 	// rules), so keep the list meaningful across every trusted issuer.
 	Groups []string `json:"groups,omitempty"`
+
+	// OAuth lets the console sign users in with Authorization Code +
+	// PKCE instead of a pasted token. Requires auth.mode "required".
+	OAuth *ConsoleOAuth `json:"oauth,omitempty"`
+}
+
+// ConsoleOAuth configures the console's browser sign-in. The console is a
+// public OAuth client: no secret exists, PKCE is the proof. Register the
+// gateway's console URL ({origin}/console/) as the redirect URI at the IdP.
+type ConsoleOAuth struct {
+	// ClientID is the public client id registered at the IdP for the
+	// console. Client ids are not secrets — every SPA ships one.
+	ClientID string `json:"clientId"`
+
+	// Issuer selects which trusted issuer the console signs in against.
+	// Must match a configured auth issuer with mode "direct" (an
+	// "exchange" issuer's tokens are ID-JAGs, not presentable access
+	// tokens). Default: the first direct issuer.
+	Issuer string `json:"issuer,omitempty"`
+
+	// Scopes requested at authorization (default none beyond what the
+	// IdP grants implicitly; the resource/audience comes from
+	// auth.resource via RFC 8707).
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -528,6 +552,22 @@ func (c *Config) Validate() error {
 		// would be reachable by anyone anyway.
 		if !c.AuthRequired() {
 			return fmt.Errorf(`server: console.groups requires auth.mode %q`, "required")
+		}
+	}
+	if c.Server != nil && c.Server.Console != nil && c.Server.Console.OAuth != nil {
+		oa := c.Server.Console.OAuth
+		if oa.ClientID == "" {
+			return fmt.Errorf("server: console.oauth requires clientId")
+		}
+		// Sign-in mints tokens the gateway must then accept, so the flow
+		// only means something with mandatory auth and a trusted direct
+		// issuer — an "exchange" issuer's tokens are ID-JAGs, which cannot
+		// be presented to /mcp or the console directly.
+		if !c.AuthRequired() {
+			return fmt.Errorf(`server: console.oauth requires auth.mode %q`, "required")
+		}
+		if _, err := c.ConsoleOAuthIssuer(); err != nil {
+			return err
 		}
 	}
 	if c.Auth != nil {
@@ -781,6 +821,31 @@ func (c *Config) AuthRequired() bool {
 // ConsoleEnabled reports whether the read-only console is served.
 func (c *Config) ConsoleEnabled() bool {
 	return c.Server != nil && c.Server.Console != nil && c.Server.Console.Enabled
+}
+
+// ConsoleOAuthIssuer resolves the trusted issuer the console's PKCE
+// sign-in uses: console.oauth.issuer when set (which must name a
+// configured direct-mode issuer), else the first direct-mode issuer.
+// Errors when console.oauth is absent or no direct issuer qualifies.
+func (c *Config) ConsoleOAuthIssuer() (*Issuer, error) {
+	if c.Server == nil || c.Server.Console == nil || c.Server.Console.OAuth == nil || c.Auth == nil {
+		return nil, fmt.Errorf("server: console.oauth is not configured")
+	}
+	want := c.Server.Console.OAuth.Issuer
+	for i := range c.Auth.Issuers {
+		iss := &c.Auth.Issuers[i]
+		direct := iss.Mode == "" || iss.Mode == "direct"
+		if !direct {
+			continue
+		}
+		if want == "" || iss.Issuer == want {
+			return iss, nil
+		}
+	}
+	if want != "" {
+		return nil, fmt.Errorf("server: console.oauth.issuer %q does not match a trusted direct-mode auth issuer", want)
+	}
+	return nil, fmt.Errorf(`server: console.oauth requires at least one direct-mode issuer (every configured issuer is mode "exchange")`)
 }
 
 // Passthrough reports whether the gateway runs in zero-copy passthrough mode

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -184,6 +185,63 @@ func policyDefaultDecision(cfg *config.Config) string {
 	return "deny"
 }
 
+// consoleAuthHint is the /console/api/auth response: how to sign in. It is
+// deliberately unauthenticated — the page needs it *before* it has a token
+// (the chicken-and-egg the pasted-token flow never had). Everything in it
+// is public SPA configuration: a client id ships in every browser app, the
+// issuer is advertised in the RFC 9728 metadata, and the resource IS that
+// metadata's subject.
+type consoleAuthHint struct {
+	AuthRequired bool              `json:"authRequired"`
+	Resource     string            `json:"resource,omitempty"`
+	OAuth        *consoleOAuthHint `json:"oauth,omitempty"`
+}
+
+type consoleOAuthHint struct {
+	Issuer   string   `json:"issuer"`
+	ClientID string   `json:"clientId"`
+	Scopes   []string `json:"scopes,omitempty"`
+}
+
+func (g *Gateway) handleConsoleAuthHint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	hint := consoleAuthHint{AuthRequired: g.cfg.AuthRequired()}
+	if g.cfg.Auth != nil {
+		hint.Resource = g.cfg.Auth.Resource
+	}
+	if iss, err := g.cfg.ConsoleOAuthIssuer(); err == nil {
+		hint.OAuth = &consoleOAuthHint{
+			Issuer:   iss.Issuer,
+			ClientID: g.cfg.Server.Console.OAuth.ClientID,
+			Scopes:   g.cfg.Server.Console.OAuth.Scopes,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_ = json.NewEncoder(w).Encode(hint)
+}
+
+// consoleCSP builds the console's Content-Security-Policy. Base policy pins
+// everything to this origin; a configured OAuth issuer's origin is added to
+// connect-src so the page can fetch the AS metadata and exchange the code
+// (top-level navigation to the authorize endpoint is not CSP-gated). The
+// allowance is config-derived — never a wildcard.
+func consoleCSP(cfg *config.Config) string {
+	connect := "'self'"
+	if iss, err := cfg.ConsoleOAuthIssuer(); err == nil {
+		if u, err := url.Parse(iss.Issuer); err == nil && u.Scheme != "" && u.Host != "" {
+			connect += " " + u.Scheme + "://" + u.Host
+		}
+	}
+	return "default-src 'self'; connect-src " + connect +
+		"; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+}
+
 // consoleViewerGate enforces server.console.groups: the authenticated
 // principal must carry at least one allowlisted group or the state API
 // answers 403. Runs inside authMiddleware (config validation guarantees
@@ -228,8 +286,9 @@ func (g *Gateway) consoleViewerGate(next http.Handler) http.Handler {
 
 // consoleAssetHandler serves the embedded console page under /console/.
 // Assets are static and identical for every caller — no data, so no auth —
-// and the CSP pins every fetch the page makes to this origin.
-func consoleAssetHandler() http.Handler {
+// and csp pins every fetch the page makes to this origin (plus the OAuth
+// issuer's origin when sign-in is configured; see consoleCSP).
+func consoleAssetHandler(csp string) http.Handler {
 	sub, err := fs.Sub(consoleFS, "console")
 	if err != nil {
 		// The embed is part of the binary; a missing subdirectory is a
@@ -243,8 +302,7 @@ func consoleAssetHandler() http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", csp)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		files.ServeHTTP(w, r)

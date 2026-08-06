@@ -35,6 +35,7 @@ var schemaDefs = map[string]reflect.Type{
 	"routing":        reflect.TypeOf(Routing{}),
 	"server":         reflect.TypeOf(ServerSection{}),
 	"console":        reflect.TypeOf(Console{}),
+	"consoleOAuth":   reflect.TypeOf(ConsoleOAuth{}),
 	"tracing":        reflect.TypeOf(Tracing{}),
 	"discovery":      reflect.TypeOf(Discovery{}),
 }
