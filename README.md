@@ -371,6 +371,13 @@ Known gaps, documented deliberately:
 
 ## Changelog
 
+### v1.4.1 — 2026-08-06
+
+The console wears the brand.
+
+- **fold.run design system** — the console adopts the site's stardust tokens (dark-only, IBM Plex Sans + Geist Mono) with the fonts embedded in the binary as self-hosted OFL latin subsets (~127 KB), so the CSP's no-external-fetches rule holds for typography too. Status facts render as a uniform four-across card grid, the header carries the brandmark, and a footer links to fold.run, docs, GitHub, and status. No wire, config, or API change.
+- **Honest client version** — the test console's `initialize` now reports the gateway's stamped version in `clientInfo` instead of a hardcoded `"1"`, so upstream and audit trails see which console called.
+
 ### v1.4.0 — 2026-08-06
 
 Console sign-in.
