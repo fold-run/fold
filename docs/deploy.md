@@ -43,13 +43,13 @@ release (`v0.7.0`).
 ```bash
 cp fold.config.example.json fold.config.json   # then edit
 docker compose up -d
-curl -fsS http://localhost:8080/healthz
+curl -fsS http://localhost:8080/health
 
 docker compose --profile redis up -d           # with shared-state Redis
 ```
 
 The fold service has no compose healthcheck — distroless images carry no
-shell or curl to run one with. Probe `/healthz` from the host or your
+shell or curl to run one with. Probe `/health` from the host or your
 monitoring instead.
 
 ## Kubernetes (Helm)
@@ -100,7 +100,7 @@ How the pieces map:
 
 `server.allowedHosts` is the gateway's DNS-rebinding protection: any request
 whose `Host` (or `Origin`) hostname is not on the allowlist is answered
-`403` — and that includes `/healthz` and `/metrics`, not just `/mcp`. When
+`403` — and that includes `/health` and `/metrics`, not just `/mcp`. When
 unset, the allowlist is the localhost set; when set, it **replaces** the
 default rather than extending it. The port is stripped before matching, and
 `["*"]` disables the check (only acceptable behind a trusted proxy that
@@ -120,17 +120,17 @@ allowlist.
 
 ### Probes
 
-`/healthz` is not a trivial endpoint: every call pings all upstreams
+`/health` is not a trivial endpoint: every call pings all upstreams
 concurrently with a 5-second internal budget and returns `503` when none are
 reachable. The chart's probe defaults follow from that:
 
-- **Readiness**: `httpGet /healthz`, period 15 s, timeout 8 s (above the 5 s
+- **Readiness**: `httpGet /health`, period 15 s, timeout 8 s (above the 5 s
   internal budget) — pods only receive traffic while at least one upstream
   is reachable.
-- **Liveness**: plain TCP connect, deliberately *not* `/healthz` — liveness
+- **Liveness**: plain TCP connect, deliberately *not* `/health` — liveness
   should detect a wedged process, not restart pods because upstreams are
   down, and shouldn't generate upstream traffic every few seconds.
-- **Startup**: `httpGet /healthz` with a ~2-minute budget for first upstream
+- **Startup**: `httpGet /health` with a ~2-minute budget for first upstream
   connects and JWKS fetches.
 
 Shutdown: on SIGTERM the gateway drains for up to 10 s, then exits;
@@ -177,14 +177,19 @@ reverse proxy in front of it. Two things matter at that layer:
 ## Redis for fleets
 
 A single replica needs no Redis: rate limits, circuit breakers, list caches,
-and EMA replay protection live in memory. With multiple replicas, set
-`REDIS_URL` (or `server.redisUrl`) so those behave fleet-wide — otherwise
-each replica enforces its own rate-limit window, trips its own breaker, and
-an EMA ID-JAG could be redeemed once per replica.
+EMA replay protection, and task ownership live in memory. With multiple
+replicas, set `REDIS_URL` (or `server.redisUrl`) so those behave fleet-wide
+— otherwise each replica enforces its own rate-limit window, trips its own
+breaker, an EMA ID-JAG could be redeemed once per replica, and **a task's
+binding to the principal who minted it holds only on the replica that
+served the mint**: elsewhere it falls through to the probe path and is
+reachable by any caller. If you run more than one replica with task-using
+upstreams, Redis is the difference between a guarantee and a coincidence.
 
 Operationally forgiving by design: every Redis operation is bounded at
 500 ms and fails open, so a Redis outage degrades to per-instance state
-instead of taking the gateway down. A bad URL is a boot failure (validated
+instead of taking the gateway down (replay protection and task ownership
+fall back to each instance's local mirror rather than to nothing). A bad URL is a boot failure (validated
 with a PING at startup). Any managed Redis- or Valkey-compatible service
 works; the chart deliberately ships no Redis subchart — bring your own or a
 managed offering.
@@ -256,5 +261,5 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 - [ ] Kubernetes: PodDisruptionBudget on, resource limits sized, probe Host
       header matches the allowlist
 - [ ] Alerts on `fold_upstream_breaker_state`, `fold_http_rejections_total`,
-      and `/healthz` degradation (plus `fold_discovery_syncs_total`
+      and `/health` degradation (plus `fold_discovery_syncs_total`
       `rejected`/`error` outcomes when discovery is enabled)

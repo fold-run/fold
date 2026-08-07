@@ -30,6 +30,7 @@ import (
 	"github.com/fold-run/fold/audit"
 	"github.com/fold-run/fold/auth"
 	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/bounded"
 	"github.com/fold-run/fold/internal/breaker"
 	"github.com/fold-run/fold/internal/state"
 	"github.com/fold-run/fold/policy"
@@ -84,16 +85,23 @@ type Gateway struct {
 	// perPrincipalRPM caps each authenticated principal on its own bucket;
 	// principalLimits memoizes those limiters per hashed identity.
 	perPrincipalRPM int
-	principalLimits sync.Map
+	principalLimits *bounded.Map[state.Limiter]
 
 	// resourceOwner remembers which upstream listed each resource URI
 	// (URIs are opaque and never rewritten; ownership is remembered).
-	resourceOwner sync.Map
+	// Per-instance: it is a routing hint, and a miss re-probes.
+	resourceOwner *bounded.Map[string]
 
 	// taskOwner remembers which upstream owns each task id (opaque, never
 	// rewritten) and which principal it was minted for. Pinned at mint or on
-	// first probe; refreshed on use. Values are taskRecord.
-	taskOwner sync.Map
+	// first probe; refreshed on use. Unlike resourceOwner it is an
+	// authorization record, so it lives in state.Provider — shared across a
+	// fleet when Redis is configured.
+	taskOwner *taskOwners
+
+	// health caches and single-flights the upstream health fan-out shared by
+	// /health and the console state API.
+	health healthCache
 
 	// callCtx tracks the context of each in-flight named invocation per
 	// downstream session. Server-initiated traffic from an upstream
@@ -129,6 +137,15 @@ type routes struct {
 // rt returns the current routing snapshot.
 func (g *Gateway) rt() *routes { return g.routes.Load() }
 
+// Bounds on the per-instance affinity stores. Each is keyed by identifiers
+// the gateway does not choose and cannot bound (upstream resource URIs,
+// verified principal identities), so each needs a ceiling; see
+// internal/bounded for why eviction is safe on both.
+const (
+	maxResourceOwners  = 50_000
+	maxPrincipalLimits = 10_000
+)
+
 // Option configures a Gateway at construction.
 type Option func(*Gateway)
 
@@ -152,13 +169,16 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		return nil, err
 	}
 	g := &Gateway{
-		cfg:         cfg,
-		sep:         cfg.NamespaceSeparator(),
-		pageSize:    cfg.PageSize(),
-		audit:       audit.New(cfg.Audit),
-		state:       provider,
-		subscribers: map[string]map[string]bool{},
-		log:         slog.New(slog.DiscardHandler),
+		cfg:             cfg,
+		sep:             cfg.NamespaceSeparator(),
+		pageSize:        cfg.PageSize(),
+		audit:           audit.New(cfg.Audit),
+		state:           provider,
+		subscribers:     map[string]map[string]bool{},
+		resourceOwner:   bounded.New[string](maxResourceOwners),
+		taskOwner:       &taskOwners{store: provider.Store("task")},
+		principalLimits: bounded.New[state.Limiter](maxPrincipalLimits),
+		log:             slog.New(slog.DiscardHandler),
 	}
 	for _, opt := range opts {
 		opt(g)
@@ -505,7 +525,8 @@ func (g *Gateway) notifyListChanged(kind string) {
 	}
 }
 
-// sweepLoop periodically closes idle per-client upstream sessions.
+// sweepLoop periodically closes idle per-client upstream sessions and
+// releases subscriptions whose downstream client is gone.
 func (g *Gateway) sweepLoop() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -515,8 +536,64 @@ func (g *Gateway) sweepLoop() {
 			for _, u := range g.rt().upstreams {
 				u.sweepBridged()
 			}
+			g.reapSubscribers()
 		case <-g.stopSweeper:
 			return
+		}
+	}
+}
+
+// reapSubscribers drops subscription ref-counts held by downstream sessions
+// that are no longer connected, and releases the shared upstream
+// subscription once a URI has no subscriber left.
+//
+// resources/unsubscribe is the only path that decrements the ref-count, and
+// a client is under no obligation to send one before disconnecting: without
+// this, every client that subscribed and went away left the gateway holding
+// an upstream subscription forever, and a client that reconnects and repeats
+// the pattern grows the ref-count table without bound.
+func (g *Gateway) reapSubscribers() {
+	live := map[string]bool{}
+	for ss := range g.server.Sessions() {
+		live[ss.ID()] = true
+	}
+
+	var orphaned []string
+	g.subMu.Lock()
+	for uri, subs := range g.subscribers {
+		for id := range subs {
+			// An empty id belongs to a session the transport does not
+			// identify (in-process, stdio); it cannot be matched against the
+			// live set, so it is left alone rather than reaped wrongly.
+			if id != "" && !live[id] {
+				delete(subs, id)
+			}
+		}
+		if len(subs) == 0 {
+			delete(g.subscribers, uri)
+			orphaned = append(orphaned, uri)
+		}
+	}
+	g.subMu.Unlock()
+	if len(orphaned) == 0 {
+		return
+	}
+
+	rt := g.rt()
+	for _, uri := range orphaned {
+		// Ask the upstreams that actually hold the subscription — a list
+		// fan-out to re-resolve ownership would be a heavy price for a
+		// background sweep.
+		for _, u := range rt.upstreams {
+			if !u.isSubscribed(uri) {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), u.requestTimeout)
+			if err := u.unsubscribe(ctx, uri); err != nil {
+				g.log.Debug("sweep: releasing orphaned subscription failed",
+					"upstream", u.cfg.ID, "uri", uri, "err", err)
+			}
+			cancel()
 		}
 	}
 }
@@ -602,7 +679,7 @@ func (g *Gateway) ownerForURI(ctx context.Context, rt *routes, uri string) (*ups
 		return rt.upstreams[0], nil
 	}
 	if id, ok := g.resourceOwner.Load(uri); ok {
-		if u := rt.byID[id.(string)]; u != nil {
+		if u := rt.byID[id]; u != nil {
 			return u, nil
 		}
 	}
@@ -612,11 +689,11 @@ func (g *Gateway) ownerForURI(ctx context.Context, rt *routes, uri string) (*ups
 	})
 	for i, u := range rt.upstreams {
 		for _, r := range lists[i] {
-			g.resourceOwner.Store(r.URI, u.cfg.ID)
+			g.resourceOwner.Store(r.URI, u.cfg.ID, 0)
 		}
 	}
 	if id, ok := g.resourceOwner.Load(uri); ok {
-		if u := rt.byID[id.(string)]; u != nil {
+		if u := rt.byID[id]; u != nil {
 			return u, nil
 		}
 	}
@@ -637,7 +714,7 @@ func (g *Gateway) instructions() string {
 }
 
 // Handler returns the gateway's HTTP handler: the MCP endpoint plus
-// /.well-known/oauth-protected-resource and /healthz.
+// /.well-known/oauth-protected-resource and /health.
 func (g *Gateway) Handler() http.Handler { return g.handler }
 
 // buildStateProvider selects shared (Redis) or in-process state.
@@ -830,7 +907,7 @@ func (g *Gateway) buildHandler() http.Handler {
 
 	mux := http.NewServeMux()
 	mux.Handle(g.cfg.MCPPath(), mcpChain)
-	mux.HandleFunc("/healthz", g.handleHealth)
+	mux.HandleFunc("/health", g.handleHealth)
 	mux.Handle("/metrics", g.metrics.handler())
 	if g.cfg.ConsoleEnabled() {
 		// The state API is data, so it authenticates like /mcp; the static
@@ -959,32 +1036,24 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 		allowed["127.0.0.1"] = true
 		allowed["::1"] = true
 	}
-	hostname := func(hostport string) string {
-		if h, _, err := net.SplitHostPort(hostport); err == nil {
-			return strings.ToLower(h)
-		}
-		return strings.ToLower(strings.Trim(hostport, "[]"))
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Rejections flow through audit like any other terminal response —
 		// audit is the single exit door, and a DNS-rebinding attempt is
 		// exactly the kind of event an operator wants recorded.
 		if !wildcard {
-			if !allowed[hostname(r.Host)] {
+			host, ok := authorityHost(r.Host)
+			if !ok || !allowed[host] {
 				g.metrics.reject("forbidden_host")
 				g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeForbidden, Error: fmt.Sprintf("forbidden host %q", r.Host)})
 				http.Error(w, "forbidden host", http.StatusForbidden)
 				return
 			}
 			if origin := r.Header.Get("Origin"); origin != "" {
-				// A present Origin must resolve to an allowed host. A
-				// schemeless or opaque origin (e.g. "null" from a sandboxed
-				// document) has no allowed host and fails closed.
-				host := ""
-				if _, after, ok := strings.Cut(origin, "://"); ok {
-					host = hostname(after)
-				}
-				if !allowed[host] {
+				// A present Origin must resolve to an allowed host. An origin
+				// that is not a well-formed absolute URL — "null" from a
+				// sandboxed document, or an authority whose port is not
+				// numeric — has no allowed host and fails closed.
+				if !originAllowed(allowed, origin) {
 					g.metrics.reject("forbidden_origin")
 					g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeForbidden, Error: fmt.Sprintf("forbidden origin %q", origin)})
 					http.Error(w, "forbidden origin", http.StatusForbidden)
@@ -994,6 +1063,41 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authorityHost extracts the lowercase hostname from an HTTP authority.
+//
+// The port is validated rather than merely discarded: net.SplitHostPort
+// splits at the last colon without inspecting what follows, so
+// "localhost:8080.evil.com" would otherwise read as the allowed host
+// "localhost" — a rebinding bypass for any caller that can choose its own
+// Host or Origin header. A malformed authority is rejected outright.
+func authorityHost(hostport string) (string, bool) {
+	if hostport == "" {
+		return "", false
+	}
+	if h, port, err := net.SplitHostPort(hostport); err == nil {
+		for i := range len(port) {
+			if port[i] < '0' || port[i] > '9' {
+				return "", false
+			}
+		}
+		return strings.ToLower(h), true
+	}
+	// No port to split: a bare hostname, or a bracketed IPv6 literal.
+	return strings.ToLower(strings.Trim(hostport, "[]")), true
+}
+
+// originAllowed reports whether an Origin header names an allowed host. The
+// origin is parsed as a URL rather than string-split, so a malformed
+// authority is rejected instead of being silently truncated to its prefix.
+func originAllowed(allowed map[string]bool, origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	host, ok := authorityHost(u.Host)
+	return ok && allowed[host]
 }
 
 // authMiddleware enforces Bearer auth via the SDK's resource-server
@@ -1079,11 +1183,15 @@ func principalFromRequest(r *http.Request) *auth.Principal {
 func (g *Gateway) principalLimiter(p *auth.Principal) state.Limiter {
 	sum := sha256.Sum256([]byte(p.Issuer + "\x00" + p.Subject))
 	scope := "sub:" + hex.EncodeToString(sum[:])
-	if v, ok := g.principalLimits.Load(scope); ok {
-		return v.(state.Limiter)
+	if l, ok := g.principalLimits.Load(scope); ok {
+		return l
 	}
-	v, _ := g.principalLimits.LoadOrStore(scope, g.state.Limiter(scope, g.perPrincipalRPM))
-	return v.(state.Limiter)
+	// The memo is bounded (see internal/bounded): rebuilding an evicted one is
+	// free against Redis, where the window lives in shared state, and costs
+	// at most one fresh in-process window for a principal that has been idle
+	// for a full generation.
+	l, _ := g.principalLimits.LoadOrStore(scope, g.state.Limiter(scope, g.perPrincipalRPM), 0)
+	return l
 }
 
 type statusRecorder struct {
@@ -1103,10 +1211,10 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
-// upstreamHealth is one upstream's health snapshot, shared by /healthz and
+// upstreamHealth is one upstream's health snapshot, shared by /health and
 // the console state API. Sensitive fields (URL, owner, labels, detailed
-// error) are populated only when the caller is trusted: for /healthz that
-// means auth disabled — a public deployment's /healthz stays minimal so an
+// error) are populated only when the caller is trusted: for /health that
+// means auth disabled — a public deployment's /health stays minimal so an
 // unauthenticated caller cannot enumerate the federation or learn secret
 // env-var names from connect errors; the console serves topology to any
 // authenticated principal but reduces raw connect errors to a category
@@ -1128,19 +1236,19 @@ type upstreamHealth struct {
 
 	// Source ("static" | "discovered") and AuthStrategy (the strategy
 	// *name*, never its material) are console-only annotations, set by
-	// handleConsoleState after collection; /healthz leaves them empty so
+	// handleConsoleState after collection; /health leaves them empty so
 	// its response shape is unchanged.
 	Source       string `json:"source,omitempty"`
 	AuthStrategy string `json:"authStrategy,omitempty"`
 }
 
 // collectUpstreamHealth pings every upstream in rt concurrently and reports
-// per-upstream status. Shared by /healthz and the console state API; the
-// caller passes the snapshot it is already answering from, so one request
-// never mixes two worlds across a reload. detailed controls the redaction
-// split (URLs, owners, labels, and raw connect errors are for trusted
-// callers only — raw errors can name secret env vars or internal hosts).
-func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes, detailed bool) (statuses []upstreamHealth, healthy int) {
+// per-upstream status, always in full. Redaction happens at the edge
+// (redactUpstreamHealth) rather than here, so one collection can serve both
+// a trusted and an untrusted caller. Callers pass the snapshot they are
+// already answering from, so one request never mixes two worlds across a
+// reload.
+func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes) (statuses []upstreamHealth, healthy int) {
 	upstreams := rt.upstreams
 	statuses = make([]upstreamHealth, len(upstreams))
 	var wg sync.WaitGroup
@@ -1150,20 +1258,16 @@ func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes, detaile
 				ID:        u.cfg.ID,
 				Namespace: u.cfg.Namespace,
 				Breaker:   u.breaker.State(ctx),
+				URL:       u.cfg.URL,
+				Owner:     u.cfg.Owner,
+				Labels:    u.cfg.Labels,
 			}
 			if len(u.cfg.URLs) > 0 {
-				h.Endpoints = u.endpoints.snapshot(detailed)
-			}
-			if detailed {
-				h.URL = u.cfg.URL
-				h.Owner = u.cfg.Owner
-				h.Labels = u.cfg.Labels
+				h.Endpoints = u.endpoints.snapshot(true)
 			}
 			start := time.Now()
 			if err := u.ping(ctx); err != nil {
-				if detailed {
-					h.Error = err.Error()
-				}
+				h.Error = err.Error()
 			} else {
 				h.Connected = true
 				h.LatencyMs = time.Since(start).Milliseconds()
@@ -1180,10 +1284,72 @@ func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes, detaile
 	return statuses, healthy
 }
 
+// redactUpstreamHealth strips the fields an untrusted caller must not see:
+// URLs, owners, labels, and raw connect errors, which can name secret env
+// vars or internal hosts. It rewrites the copy in place, allocating a fresh
+// endpoint slice so it never reaches back into the cached collection.
+func redactUpstreamHealth(statuses []upstreamHealth) {
+	for i := range statuses {
+		s := &statuses[i]
+		s.URL, s.Owner, s.Labels, s.Error = "", nil, nil, ""
+		if s.Endpoints != nil {
+			bare := make([]endpointStatus, len(s.Endpoints))
+			for j, ep := range s.Endpoints {
+				bare[j] = endpointStatus{Healthy: ep.Healthy}
+			}
+			s.Endpoints = bare
+		}
+	}
+}
+
+// healthFanout bounds one collection; healthCacheTTL bounds how long its
+// result is reused.
+const (
+	healthFanoutTimeout = 5 * time.Second
+	healthCacheTTL      = time.Second
+)
+
+// healthCache single-flights and briefly caches the upstream health
+// fan-out. Every /health and console-state call otherwise sends a real MCP
+// ping to every upstream: the console API is rate limited for exactly that
+// reason, but /health cannot be — it is what orchestrators and load
+// balancers probe — which left an unauthenticated endpoint able to multiply
+// one request into a ping against every backend, as fast as it could be
+// polled. Concurrent callers now share one fan-out, and a poll loop is
+// bounded to one fan-out per TTL. A snapshot swap (reload, discovery sync)
+// invalidates immediately, so a probe never answers from a retired world.
+type healthCache struct {
+	mu       sync.Mutex
+	rt       *routes
+	at       time.Time
+	statuses []upstreamHealth
+	healthy  int
+}
+
+// upstreamHealthFor returns the (possibly cached) full health view for rt.
+// The returned slice is the caller's own copy: redaction and console
+// annotation mutate it freely.
+func (g *Gateway) upstreamHealthFor(ctx context.Context, rt *routes) (statuses []upstreamHealth, healthy int) {
+	c := &g.health
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rt != rt || time.Since(c.at) >= healthCacheTTL {
+		// Detached from the calling request: the fan-out is shared, so one
+		// client hanging up must not cancel the pings every other waiter is
+		// about to read.
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), healthFanoutTimeout)
+		c.statuses, c.healthy = g.collectUpstreamHealth(fctx, rt)
+		cancel()
+		c.rt, c.at = rt, time.Now()
+	}
+	return append([]upstreamHealth(nil), c.statuses...), c.healthy
+}
+
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	statuses, healthy := g.collectUpstreamHealth(ctx, g.rt(), !g.cfg.AuthRequired())
+	statuses, healthy := g.upstreamHealthFor(r.Context(), g.rt())
+	if g.cfg.AuthRequired() {
+		redactUpstreamHealth(statuses)
+	}
 	code := http.StatusOK
 	if healthy == 0 {
 		code = http.StatusServiceUnavailable

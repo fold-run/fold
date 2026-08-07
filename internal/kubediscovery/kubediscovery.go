@@ -310,7 +310,7 @@ func mapService(svc Service, opts MapOptions) (config.Upstream, error) {
 			}
 		}
 	}
-	// Attribution must not be self-asserted: owner surfaces in /healthz and
+	// Attribution must not be self-asserted: owner surfaces in /health and
 	// audit, so a Service could otherwise claim to be another team's.
 	u.Owner = &config.Owner{Org: svc.Metadata.Namespace, Team: svc.Metadata.Name}
 	if hc := u.HealthCheck; hc != nil {
@@ -541,12 +541,12 @@ func (p *Producer) sync(ctx context.Context) {
 	}
 }
 
-// Handler serves the document (any GET path except /healthz) and a health
+// Handler serves the document (any GET path except /health) and a health
 // summary. Before the first successful sync it answers 503 — serving an
 // empty document then would wipe the consuming gateway's discovered set.
 func (p *Producer) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		p.mu.RLock()
 		defer p.mu.RUnlock()
 		status := http.StatusOK
@@ -558,7 +558,7 @@ func (p *Producer) Handler() http.Handler {
 		// Health is unauthenticated. Raw kube-API errors can name internal
 		// hosts and token paths, so a deployment that gates the document
 		// with a bearer token gets a category here, not the text —
-		// mirroring the gateway's own /healthz posture.
+		// mirroring the gateway's own /health posture.
 		errText := ""
 		if p.lastErr != nil {
 			if p.Bearer != "" {

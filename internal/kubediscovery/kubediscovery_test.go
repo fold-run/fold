@@ -312,13 +312,13 @@ func TestProducerServesAndFailsSafe(t *testing.T) {
 		t.Fatalf("document not consumable: %v %q", err, body)
 	}
 
-	// API outage: last good document keeps serving; /healthz reports it.
+	// API outage: last good document keeps serving; /health reports it.
 	failing.Store(true)
 	p.sync(context.Background())
 	if code, body2 := get(); code != http.StatusOK || body2 != body {
 		t.Errorf("outage changed the served document: %d %q", code, body2)
 	}
-	hresp, err := http.Get(front.URL + "/healthz")
+	hresp, err := http.Get(front.URL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,13 +331,13 @@ func TestProducerServesAndFailsSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !health.Synced || health.Error == "" {
-		t.Errorf("healthz after outage = %+v, want synced with error", health)
+		t.Errorf("health after outage = %+v, want synced with error", health)
 	}
-	// /healthz is unauthenticated: with the document gated by a bearer
+	// /health is unauthenticated: with the document gated by a bearer
 	// token, it reports a category rather than raw kube-API error text
 	// (which can name internal hosts and token paths).
 	if strings.Contains(health.Error, api.URL) || health.Error != "sync failing" {
-		t.Errorf("healthz leaked error detail: %q", health.Error)
+		t.Errorf("health leaked error detail: %q", health.Error)
 	}
 }
 

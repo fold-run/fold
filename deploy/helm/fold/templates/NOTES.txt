@@ -26,5 +26,5 @@ it does NOT restart pods — use a reloader controller or:
   kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "fold.fullname" . }}
 {{- end }}
 
-Health:   GET /healthz   (send a Host header the allowlist admits)
+Health:   GET /health   (send a Host header the allowlist admits)
 Metrics:  GET /metrics

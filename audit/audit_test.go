@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,4 +119,43 @@ func TestUnknownSinkTypeIgnored(t *testing.T) {
 		t.Fatal("logger should exist even if no sink matched") // matches New's contract
 	}
 	l.Emit(Event{Method: "tools/call"}) // must not panic with zero sinks
+}
+
+// TestWebhookSinkRefusesRedirect proves a redirecting audit sink cannot pull
+// the configured headers — commonly a delivery token — and the event batch
+// itself onto a host of its choosing.
+func TestWebhookSinkRefusesRedirect(t *testing.T) {
+	var attackerHits atomic.Int64
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer attacker.Close()
+
+	delivered := make(chan struct{}, 1)
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case delivered <- struct{}{}:
+		default:
+		}
+		http.Redirect(w, r, attacker.URL+"/steal", http.StatusTemporaryRedirect)
+	}))
+	defer sink.Close()
+
+	l := New(&config.Audit{Sinks: []config.AuditSink{{
+		Type: "webhook", URL: sink.URL,
+		Headers: map[string]string{"X-Api-Key": "SUPER-SECRET"},
+	}}})
+	l.Emit(Event{Method: "tools/call", Principal: "alice"})
+
+	select {
+	case <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the webhook sink never delivered")
+	}
+	// Give a followed redirect every chance to land before asserting.
+	time.Sleep(200 * time.Millisecond)
+	if n := attackerHits.Load(); n != 0 {
+		t.Fatalf("redirect target received %d deliveries; redirects must be refused", n)
+	}
 }

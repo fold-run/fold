@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,14 +29,27 @@ type UpstreamCredentials struct {
 	cfg    *config.UpstreamAuth
 	client *http.Client
 
-	mu     sync.Mutex
-	tokens map[string]*cachedToken // cache key → token ("" for client-credentials)
+	mu      sync.Mutex
+	tokens  map[string]*cachedToken // cache key → token ("" for client-credentials)
+	fetchMu map[string]*sync.Mutex  // per-key fetch serialization
 }
 
 type cachedToken struct {
 	value   string
 	expires time.Time
 }
+
+// maxTokenResponseBytes bounds a token-endpoint response body. It is the
+// last unbounded read fold performs against a remote party (JWKS and the
+// discovery document are already capped): a compromised or broken token
+// endpoint could otherwise stream until the gateway runs out of memory.
+const maxTokenResponseBytes = 1 << 20 // 1 MiB
+
+// maxCachedTokens bounds the per-upstream exchanged-token cache. Under
+// token-exchange the cache is keyed per (issuer, subject), so it grows with
+// the number of distinct callers and never shrinks on its own — an eviction
+// only costs a re-exchange.
+const maxCachedTokens = 4096
 
 // NewUpstreamCredentials builds the credential injector for one upstream.
 // A nil cfg (or strategy "none") attaches nothing.
@@ -57,7 +71,12 @@ func NewUpstreamCredentials(cfg *config.UpstreamAuth, client *http.Client) *Upst
 	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return &UpstreamCredentials{cfg: cfg, client: &noRedirect, tokens: map[string]*cachedToken{}}
+	return &UpstreamCredentials{
+		cfg:     cfg,
+		client:  &noRedirect,
+		tokens:  map[string]*cachedToken{},
+		fetchMu: map[string]*sync.Mutex{},
+	}
 }
 
 // Apply sets credential headers on hdr for a request running under ctx.
@@ -126,14 +145,31 @@ func (c *UpstreamCredentials) Apply(ctx context.Context, hdr http.Header) error 
 	return fmt.Errorf("unknown auth strategy %q", c.cfg.Strategy)
 }
 
+// cachedFetch returns the cached token for key, or fetches one. Fetches are
+// single-flighted per key: a burst of first-time requests for one principal
+// would otherwise become a burst of token-endpoint calls, each carrying the
+// client secret and (under token-exchange) that caller's own bearer token —
+// the same amplification the JWKS cache already refuses to create.
 func (c *UpstreamCredentials) cachedFetch(ctx context.Context, key string, form func() (url.Values, error)) (string, error) {
-	c.mu.Lock()
-	if t := c.tokens[key]; t != nil && time.Now().Before(t.expires) {
-		v := t.value
-		c.mu.Unlock()
+	if v, ok := c.cached(key); ok {
 		return v, nil
 	}
+
+	c.mu.Lock()
+	fm := c.fetchMu[key]
+	if fm == nil {
+		fm = &sync.Mutex{}
+		c.fetchMu[key] = fm
+	}
 	c.mu.Unlock()
+
+	fm.Lock()
+	defer fm.Unlock()
+
+	// Re-check: the goroutine we queued behind may have filled the entry.
+	if v, ok := c.cached(key); ok {
+		return v, nil
+	}
 
 	values, err := form()
 	if err != nil {
@@ -146,8 +182,42 @@ func (c *UpstreamCredentials) cachedFetch(ctx context.Context, key string, form 
 	c.mu.Lock()
 	// Cache until 60s before expiry.
 	c.tokens[key] = &cachedToken{value: tok, expires: time.Now().Add(ttl - time.Minute)}
+	c.pruneLocked()
 	c.mu.Unlock()
 	return tok, nil
+}
+
+func (c *UpstreamCredentials) cached(key string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if t := c.tokens[key]; t != nil && time.Now().Before(t.expires) {
+		return t.value, true
+	}
+	return "", false
+}
+
+// pruneLocked keeps the token cache bounded: expired entries always go, and
+// if live entries alone still exceed the cap, entries are dropped until they
+// fit. Dropping a live token costs one re-exchange, never correctness.
+// Caller holds c.mu.
+func (c *UpstreamCredentials) pruneLocked() {
+	if len(c.tokens) <= maxCachedTokens {
+		return
+	}
+	now := time.Now()
+	for k, t := range c.tokens {
+		if !now.Before(t.expires) {
+			delete(c.tokens, k)
+			delete(c.fetchMu, k)
+		}
+	}
+	for k := range c.tokens {
+		if len(c.tokens) <= maxCachedTokens {
+			break
+		}
+		delete(c.tokens, k)
+		delete(c.fetchMu, k)
+	}
 }
 
 func (c *UpstreamCredentials) clientCredentialsForm() (url.Values, error) {
@@ -203,7 +273,7 @@ func (c *UpstreamCredentials) tokenRequest(ctx context.Context, form url.Values)
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTokenResponseBytes)).Decode(&body); err != nil {
 		return "", 0, fmt.Errorf("token endpoint: %w", err)
 	}
 	if body.AccessToken == "" {

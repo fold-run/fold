@@ -48,6 +48,20 @@ Task ownership follows the same principle: a task minted through the
 gateway is bound to the minting principal, and another caller's requests
 for it answer exactly like an unknown id — no existence leak.
 
+Because that is an authorization record rather than a routing hint, it
+lives behind `state.Provider` and not in process memory: with Redis
+configured the whole fleet reads the same ownership, so a caller cannot
+reach another principal's task by landing on an instance that did not serve
+the mint, and the binding survives a rolling restart. Records are keyed by
+a digest of the task id and hold a digest of the owning principal — neither
+the id a caller names nor the subject claims go into shared state verbatim.
+A Redis outage falls back to the records that instance mirrored locally, so
+it degrades to per-instance enforcement rather than to none. Two limits are
+worth knowing: records expire after 24 hours, and a gateway *without* Redis
+is still per-instance — in both cases the task falls through to the
+locate-by-probe path and becomes reachable by any caller, exactly as it
+does for a task fold never saw minted.
+
 ## Credentials never travel further than configured
 
 Upstream credentials (API keys, exchanged tokens, passthrough bearers)
@@ -59,13 +73,26 @@ destination host before attaching anything — a hostile upstream answering
 redirects entirely (not just cross-host): Go replays POST bodies on
 307/308, and those requests carry the client secret and — under
 token-exchange — the caller's own bearer token as `subject_token`, so a
-redirecting token endpoint would otherwise hand both to the host it names. Exchanged tokens cache per
-`(upstream, issuer, subject)`; per-caller strategies (passthrough,
-token-exchange) require `auth.mode: "required"` and disable list caching so
-one caller's per-user list can never serve another.
+redirecting token endpoint would otherwise hand both to the host it names.
+Its response is size-bounded like every other body fold reads from a remote
+party, and concurrent first-time callers for one identity share a single
+grant request rather than becoming a burst of them against the IdP.
+Exchanged tokens cache per `(upstream, issuer, subject)` under a bound —
+evicting one costs a re-exchange, never correctness; per-caller strategies
+(passthrough, token-exchange) require `auth.mode: "required"` and disable
+list caching so one caller's per-user list can never serve another.
+
+The same redirect rule covers fold's other two credentialed outbound
+clients. The discovery poller refuses every redirect: the document decides
+where traffic routes, and Go only strips a bearer credential when a
+redirect leaves the *domain*, so a sibling host — or a plain-http same-host
+target — would otherwise receive both the credential and the authority to
+register upstreams. The audit webhook refuses them too: its POST carries
+the sink's configured headers and a batch of records naming principals and
+tools.
 
 Secrets never appear in the config document — `secretRef` fields name
-environment variables — and `/healthz` withholds URLs, owners, and error
+environment variables — and `/health` withholds URLs, owners, and error
 text (which can name env vars or internal hosts) unless auth is disabled,
 i.e. on deployments already private by posture.
 
@@ -126,7 +153,7 @@ two kinds of surface, each with a deliberate trust story:
   Bearer token through the same verifier — and it shares `/mcp`'s global
   and per-principal rate budgets. It never carries secret material:
   `secretRef` *names* are config, values never appear. Its disclosure rule
-  is broader than `/healthz`'s, and deliberately so: **any authenticated
+  is broader than `/health`'s, and deliberately so: **any authenticated
   principal, regardless of policy grants, sees the federation topology**
   (upstream URLs, owners, labels, endpoint rotation, each upstream's
   source — static vs discovered — and its credential-strategy *name*, plus

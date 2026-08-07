@@ -101,7 +101,7 @@ spec:
           {{- if .Values.probes.startup.enabled }}
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
               httpHeaders:
                 - name: Host
@@ -113,7 +113,7 @@ spec:
           {{- if .Values.probes.readiness.enabled }}
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
               httpHeaders:
                 - name: Host
@@ -123,7 +123,7 @@ spec:
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           {{- end }}
           {{- if .Values.probes.liveness.enabled }}
-          # TCP on purpose: /healthz pings every upstream per call, and
+          # TCP on purpose: /health pings every upstream per call, and
           # liveness only needs to detect a wedged process.
           livenessProbe:
             tcpSocket:
