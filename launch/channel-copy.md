@@ -1,6 +1,6 @@
 # channel copy — ready-to-post drafts
 
-Ladders to `messaging.md`. All numbers verifiable: 40/40 conformance (gated per merge), ~0.2 ms added p50 (CI gate < 5 ms), v1.3.0, Apache-2.0, demo.fold.run/mcp, `go run github.com/fold-run/fold/cmd/fold@latest`. "fold" lowercase everywhere, including sentence-initial. No hype adjectives anywhere in this file — receipts only.
+Ladders to `messaging.md`. All numbers verifiable: 40/40 conformance (gated per merge), ~0.2 ms added p50 (CI gate < 5 ms), v1.4.1, Apache-2.0, demo.fold.run/mcp, `go run github.com/fold-run/fold/cmd/fold@latest`. "fold" lowercase everywhere, including sentence-initial. No hype adjectives anywhere in this file — receipts only.
 
 Ported from the archived TypeScript repo and rewritten against the Go implementation. The demo is back (Go-backed, 2026-08-05) but era translation is not — the demo demonstrates federation, governed tasks, and the console, never translation. The drafts lead with the demo, the one-command local run, the conformance receipt, and the protocol depth of federated tasks.
 
@@ -32,7 +32,7 @@ Etiquette notes: no exclamation points, no adjectives, product name lowercase as
 > - Auth without credential sprawl: the client presents one token; fold does RFC 8693 token exchange per upstream (plus an embedded EMA/ID-JAG token endpoint), so upstream credentials never reach clients.
 > - Self-serve federation on Kubernetes: label a Service and it joins the gateway — with default-deny bounds on what credentials a registration may name and where it may send them, because labeling rights must not become secret-exfiltration rights.
 >
-> Current state, honestly: v1.3.0, solo maintainer. It passes all 40 checks of the official conformance suite (gated in CI on every merge, re-run weekly against the latest SDK release), and adds ~0.2 ms p50 on the proxy path — the CI gate is < 5 ms and the instrument is `make bench` in the repo, so measure it yourself rather than taking my number. The gaps are documented too: `subscriptions/listen` fan-in is blocked on the Go SDK's stateless-only 2026 support, and the README says so.
+> Current state, honestly: v1.4.1, solo maintainer. It passes all 40 checks of the official conformance suite (gated in CI on every merge, re-run weekly against the latest SDK release), and adds ~0.2 ms p50 on the proxy path — the CI gate is < 5 ms and the instrument is `make bench` in the repo, so measure it yourself rather than taking my number. The gaps are documented too: `subscriptions/listen` fan-in is blocked on the Go SDK's stateless-only 2026 support, and the README says so.
 >
 > You can try it without signing up for anything: point any MCP client at https://demo.fold.run/mcp — three public MCP servers (Cloudflare's docs server, GitMCP, and a task-minting demo server) federated behind one endpoint. Call `jobs__start_job`, then poll it with `tasks/get` carrying nothing but the task id — that's the routing problem from the post, live. The read-only console at https://demo.fold.run/console shows the federation as you use it. Rate-limited, unauthenticated, no warranty. Or run your own in one command: `go run github.com/fold-run/fold/cmd/fold@latest --config fold.config.json` (or `docker run ghcr.io/fold-run/fold`).
 >
