@@ -81,7 +81,7 @@ spec:
               containerPort: 8090
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
           securityContext:
             allowPrivilegeEscalation: false

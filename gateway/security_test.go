@@ -198,7 +198,7 @@ func TestHealthzHidesDetailsWhenAuthRequired(t *testing.T) {
 	ts, _ := startGateway(t, authedConfig(iss,
 		[]config.Upstream{{ID: "u", URL: up.URL, Owner: &config.Owner{Org: "secret-org"}}}, nil))
 
-	resp, err := http.Get(ts.URL + "/healthz")
+	resp, err := http.Get(ts.URL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,11 +206,11 @@ func TestHealthzHidesDetailsWhenAuthRequired(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	text := string(body)
 	if strings.Contains(text, "secret-org") || strings.Contains(text, up.URL) {
-		t.Errorf("healthz leaked upstream url/owner to unauthenticated caller: %s", text)
+		t.Errorf("health leaked upstream url/owner to unauthenticated caller: %s", text)
 	}
 	// Basic liveness fields still present.
 	if !strings.Contains(text, `"id":"u"`) {
-		t.Errorf("healthz should still report upstream id: %s", text)
+		t.Errorf("health should still report upstream id: %s", text)
 	}
 }
 

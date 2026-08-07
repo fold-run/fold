@@ -56,7 +56,7 @@ cat > "$work/fold.conformance.json" <<EOF
 EOF
 "$work/fold" --config "$work/fold.conformance.json" --port "$GATEWAY_PORT" > "$work/fold.log" 2>&1 &
 GATEWAY_PID=$!
-wait_for "http://127.0.0.1:$GATEWAY_PORT/healthz" fold-gateway
+wait_for "http://127.0.0.1:$GATEWAY_PORT/health" fold-gateway
 
 echo "--- running conformance suite through the gateway"
 npx -y "$CONFORMANCE_PKG" server --url "http://127.0.0.1:$GATEWAY_PORT/mcp"

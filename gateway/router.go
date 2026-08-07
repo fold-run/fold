@@ -338,7 +338,7 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 			// Resource URIs are opaque identifiers clients persist; fold
 			// never rewrites them. Ownership is remembered instead — record
 			// it even for filtered resources so reads still route correctly.
-			g.resourceOwner.Store(r.URI, u.cfg.ID)
+			g.resourceOwner.Store(r.URI, u.cfg.ID, 0)
 			if !rt.policy.Visible(principal, u.cfg.ID, "resources/read", r.URI) {
 				continue
 			}
@@ -400,7 +400,7 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 
 	// Affinity first: route to the upstream the URI was listed from.
 	if id, ok := g.resourceOwner.Load(params.URI); ok {
-		if u := rt.byID[id.(string)]; u != nil {
+		if u := rt.byID[id]; u != nil {
 			evt.Upstream = u.cfg.ID
 			if !rt.policy.Decide(principal, u.cfg.ID, "resources/read", params.URI).Allowed {
 				evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
@@ -423,7 +423,7 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 		}
 		out, err := u.readResource(ctx, params)
 		if err == nil {
-			g.resourceOwner.Store(params.URI, u.cfg.ID)
+			g.resourceOwner.Store(params.URI, u.cfg.ID, 0)
 			evt.Upstream = u.cfg.ID
 			evt.Decision = "allow"
 			tagUpstream(&out.Meta, u)

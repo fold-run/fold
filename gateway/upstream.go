@@ -499,6 +499,13 @@ func (u *upstream) subscribedURIs() []string {
 	return uris
 }
 
+// isSubscribed reports whether the root session holds a subscription for uri.
+func (u *upstream) isSubscribed(uri string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.subscribed[uri]
+}
+
 // sweepBridged closes bridged sessions idle longer than bridgedIdleTimeout.
 func (u *upstream) sweepBridged() {
 	u.mu.Lock()

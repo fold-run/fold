@@ -67,6 +67,90 @@ func (r *Redis) Once(scope string) Once {
 	return &redisOnce{client: r.client, scope: scope, fallback: NewMemOnce()}
 }
 
+// Store implements Provider.
+func (r *Redis) Store(scope string) Store {
+	return &redisStore{client: r.client, scope: scope, mirror: NewMemStore()}
+}
+
+// redisStore shares records fleet-wide. Redis is authoritative — reads go
+// there first, so an instance never serves a record another instance has
+// since replaced — but every write is mirrored locally, so an outage
+// degrades to the per-instance behaviour the memory provider gives rather
+// than to no records at all. Fail-open, like every other primitive here:
+// the caller treats an unreachable Redis as an absent record and takes
+// whatever fallback path it already has for one it has never seen.
+type redisStore struct {
+	client *redis.Client
+	scope  string
+	mirror *MemStore
+}
+
+func (s *redisStore) key(k string) string { return "fold:store:" + s.scope + ":" + k }
+
+func (s *redisStore) Get(ctx context.Context, key string) ([]byte, bool) {
+	rctx, cancel := opCtx(ctx)
+	defer cancel()
+	data, err := s.client.Get(rctx, s.key(key)).Bytes()
+	if err == nil {
+		return data, true
+	}
+	if err == redis.Nil {
+		return nil, false // authoritative absence: do not consult the mirror
+	}
+	return s.mirror.Get(ctx, key)
+}
+
+func (s *redisStore) GetMany(ctx context.Context, keys []string) map[string][]byte {
+	if len(keys) == 0 {
+		return map[string][]byte{}
+	}
+	full := make([]string, len(keys))
+	for i, k := range keys {
+		full[i] = s.key(k)
+	}
+	rctx, cancel := opCtx(ctx)
+	defer cancel()
+	vals, err := s.client.MGet(rctx, full...).Result()
+	if err != nil {
+		return s.mirror.GetMany(ctx, keys)
+	}
+	out := make(map[string][]byte, len(keys))
+	for i, v := range vals {
+		if str, ok := v.(string); ok {
+			out[keys[i]] = []byte(str)
+		}
+	}
+	return out
+}
+
+func (s *redisStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) {
+	s.mirror.Set(ctx, key, value, ttl)
+	rctx, cancel := opCtx(ctx)
+	defer cancel()
+	s.client.Set(rctx, s.key(key), value, ttl)
+}
+
+func (s *redisStore) SetMany(ctx context.Context, entries map[string][]byte, ttl time.Duration) {
+	if len(entries) == 0 {
+		return
+	}
+	s.mirror.SetMany(ctx, entries, ttl)
+	rctx, cancel := opCtx(ctx)
+	defer cancel()
+	pipe := s.client.Pipeline()
+	for k, v := range entries {
+		pipe.Set(rctx, s.key(k), v, ttl)
+	}
+	_, _ = pipe.Exec(rctx) // fail open: the mirror already holds them
+}
+
+func (s *redisStore) Delete(ctx context.Context, key string) {
+	s.mirror.Delete(ctx, key)
+	rctx, cancel := opCtx(ctx)
+	defer cancel()
+	s.client.Del(rctx, s.key(key))
+}
+
 // redisOnce records single-use keys fleet-wide with SET NX. A Redis outage
 // falls back to the per-instance recorder rather than failing open outright:
 // replays on the same instance are still caught, which keeps the common

@@ -4,7 +4,7 @@
 # needed for local use.
 #
 # No healthcheck on the fold service: the image is distroless (no shell or
-# curl). Check from the host instead: curl -fsS http://localhost:8080/healthz
+# curl). Check from the host instead: curl -fsS http://localhost:8080/health
 #
 # Optional shared-state Redis (only useful when running several gateway
 # instances): docker compose --profile redis up

@@ -13,7 +13,7 @@ audit, traffic protection, protocol-faithful bridging — has no counterpart
 there, but two things on its feature list are genuinely absent from fold:
 
 1. **A way to look at a running federation.** fold's operator surface is a
-   JSON document, `/healthz`, and Prometheus. There is no page that shows the
+   JSON document, `/health`, and Prometheus. There is no page that shows the
    federation: upstreams, owners, breaker states, endpoint rotation,
    discovery sync status.
 2. **A way to poke a tool through the gateway** without standing up an MCP
@@ -56,7 +56,7 @@ no-external-fetches rule holds for typography too.
   gateway auth is on; see below).
 
 Both are additive HTTP endpoints — allowed in a minor; the frozen wire
-surface is untouched. Wired in `buildHandler()` alongside `/healthz`, so
+surface is untouched. Wired in `buildHandler()` alongside `/health`, so
 host validation and the body cap wrap them for free. Assets ship with
 `Content-Security-Policy: default-src 'self'` — no external fetches, ever.
 
@@ -79,7 +79,7 @@ The state API reuses the existing gateway verifier. With
 as `/mcp`; any valid principal may view. (The viewer allowlist —
 `server.console.groups` — shipped as the follow-up: an audited 403 for
 principals outside the listed groups.) With auth disabled,
-the endpoint follows `/healthz`'s existing trusted-deployment logic and its
+the endpoint follows `/health`'s existing trusted-deployment logic and its
 redaction discipline: raw connect errors and URLs are never echoed to
 untrusted callers, and `secretRef` *names* only — never values — appear
 anywhere.

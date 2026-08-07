@@ -45,7 +45,7 @@ Notes:
   `config.Schema()` returns the JSON Schema if you want to lint documents
   in your own tooling.
 - **`Handler()`** serves the MCP endpoint plus the operational endpoints
-  (`/healthz`, `/metrics`, and the OAuth endpoints when auth/EMA are
+  (`/health`, `/metrics`, and the OAuth endpoints when auth/EMA are
   configured) — mount it at the root of a listener, not under a prefix.
   fold does not terminate TLS; that is your server's job.
 - **`WithLogger`** supplies a `*slog.Logger` for operational events; without

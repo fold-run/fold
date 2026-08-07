@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"embed"
 	"encoding/json"
 	"io/fs"
@@ -29,7 +28,7 @@ var consoleFS embed.FS
 
 // consoleState is the /console/api/state response. It carries no secret
 // material ever: secretRef *names* are config, not values, and raw connect
-// errors follow the same redaction discipline as /healthz.
+// errors follow the same redaction discipline as /health.
 type consoleState struct {
 	Version      string `json:"version"`
 	AuthRequired bool   `json:"authRequired"`
@@ -78,18 +77,15 @@ type consoleDiscoveryStatus struct {
 // buildHandler wraps this in authMiddleware — reaching here means the
 // caller presented a valid token, so the detailed view is intentional (the
 // console exists to show the federation). With auth off, the deployment is
-// trusted by the same reasoning as /healthz's detailed mode.
+// trusted by the same reasoning as /health's detailed mode.
 func (g *Gateway) handleConsoleState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
 	rt := g.rt()
-	statuses, _ := g.collectUpstreamHealth(ctx, rt, true)
+	statuses, _ := g.upstreamHealthFor(r.Context(), rt)
 	if g.cfg.AuthRequired() {
 		// Any valid principal may view the console — including tenants with
 		// zero policy grants — so raw connect errors, which can name secret

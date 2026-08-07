@@ -71,7 +71,7 @@ func (p *endpointPool) markUp(url string) (restored bool) {
 // all returns every endpoint regardless of health (probe targets).
 func (p *endpointPool) all() []string { return p.urls }
 
-// endpointStatus is one endpoint's balancer view, surfaced in /healthz and
+// endpointStatus is one endpoint's balancer view, surfaced in /health and
 // the endpoint-health metric.
 type endpointStatus struct {
 	URL     string `json:"url,omitempty"`

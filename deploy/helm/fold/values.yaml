@@ -71,10 +71,11 @@ probes:
   # falling back to "localhost" (which the gateway's default allowlist
   # admits). Required when existingConfigMap is set.
   hostHeader: ""
-  # /healthz pings every upstream on each call (5s internal budget), so it
-  # doubles as a real upstream health check: timeouts stay above 5s and
-  # periods conservative. Liveness is a TCP probe on purpose — it should only
-  # detect a wedged process, not generate upstream traffic.
+  # /health pings every upstream (5s internal budget), so it doubles as a
+  # real upstream health check: timeouts stay above 5s and periods
+  # conservative. The fan-out is single-flighted and cached for a second, so
+  # probe frequency no longer sets upstream ping frequency. Liveness stays a
+  # TCP probe on purpose — it should only detect a wedged process.
   startup:
     enabled: true
     periodSeconds: 5
