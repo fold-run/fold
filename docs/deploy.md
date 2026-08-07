@@ -133,6 +133,12 @@ reachable. The chart's probe defaults follow from that:
 - **Startup**: `httpGet /health` with a ~2-minute budget for first upstream
   connects and JWKS fetches.
 
+Upgrading from v1.4 or earlier: the path was `/healthz`, which still works
+as a deprecated alias (identical response, `Deprecation: true` header, one
+log line on first use). Nothing breaks on upgrade, but move probes,
+load-balancer target checks, and uptime monitors to `/health` — the alias
+goes away in the next major.
+
 Shutdown: on SIGTERM the gateway drains for up to 10 s, then exits;
 long-lived SSE streams are cut at that bound. The chart sets
 `terminationGracePeriodSeconds: 30` to stay clear of it.

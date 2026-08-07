@@ -541,12 +541,18 @@ func (p *Producer) sync(ctx context.Context) {
 	}
 }
 
-// Handler serves the document (any GET path except /health) and a health
-// summary. Before the first successful sync it answers 503 — serving an
-// empty document then would wipe the consuming gateway's discovered set.
+// Handler serves the document (any GET path except the health paths) and a
+// health summary. Before the first successful sync it answers 503 — serving
+// an empty document then would wipe the consuming gateway's discovered set.
+//
+// /healthz is the pre-v1.5 spelling of /health, kept as an alias: without
+// it the path falls through to the document handler, so an existing probe
+// would quietly start scraping the upstreams document and reporting 200 on
+// content it never meant to fetch. It goes away in a major, with the
+// gateway's.
 func (p *Producer) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+	health := func(w http.ResponseWriter, _ *http.Request) {
 		p.mu.RLock()
 		defer p.mu.RUnlock()
 		status := http.StatusOK
@@ -573,7 +579,9 @@ func (p *Producer) Handler() http.Handler {
 			"upstreams": p.upstreams,
 			"error":     errText,
 		})
-	})
+	}
+	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if p.Bearer != "" {
 			presented := []byte(r.Header.Get("Authorization"))

@@ -241,3 +241,31 @@ func TestDiscoveryRefusesRedirect(t *testing.T) {
 		t.Fatalf("redirect target was contacted %d times", n)
 	}
 }
+
+// TestDeprecatedHealthzAlias: /healthz answers exactly as /health does, so
+// probes written against the old path keep passing, and carries the RFC
+// 8594 markers that say it is on its way out.
+func TestDeprecatedHealthzAlias(t *testing.T) {
+	up, _ := newUpstreamServer(t, "echo")
+	ts, _ := startGateway(t, &config.Config{Upstreams: []config.Upstream{{ID: "u", URL: up.URL}}})
+
+	fresh, deprecated := getString(t, ts.URL+"/health"), getString(t, ts.URL+"/healthz")
+	if fresh != deprecated {
+		t.Fatalf("alias diverged from /health:\n  /health  = %s\n  /healthz = %s", fresh, deprecated)
+	}
+
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz status = %d, want 200 — an alias that 404s is not an alias", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Deprecation"); got != "true" {
+		t.Errorf("Deprecation header = %q, want \"true\"", got)
+	}
+	if got := resp.Header.Get("Link"); !strings.Contains(got, "/health") {
+		t.Errorf("Link header = %q, want a successor-version pointer to /health", got)
+	}
+}

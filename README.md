@@ -289,7 +289,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 
 ## Operational endpoints
 
-- `GET /health` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, owner, and — for multi-endpoint upstreams — the balancer's per-endpoint rotation state. `503` when no upstream is reachable. The fan-out is shared: concurrent callers ride one collection and the result is reused for a second, so probing this unauthenticated endpoint in a loop cannot multiply into upstream traffic. A reload or discovery sync invalidates it immediately.
+- `GET /health` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, owner, and — for multi-endpoint upstreams — the balancer's per-endpoint rotation state. `503` when no upstream is reachable. (`/healthz` is a deprecated alias serving the same response; see [API stability](#api-stability).) The fan-out is shared: concurrent callers ride one collection and the result is reused for a second, so probing this unauthenticated endpoint in a loop cannot multiply into upstream traffic. A reload or discovery sync invalidates it immediately.
 - `GET /metrics` — Prometheus metrics (see Observability).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata (when auth is enabled).
 - `GET /console/` — the read-only fold console (when `server.console.enabled`): an observability dashboard plus an MCP test console. The test console is a plain MCP client against the gateway's own `/mcp`, so policy, rate limits, and audit apply to it like any other client — there is no privileged path.
@@ -355,7 +355,7 @@ This is the v1 compatibility contract, in force as of v1.0.0.
 
 - **The config document** — field names, meanings, defaults, and validation semantics. The machine-readable contract is [`config/fold.config.schema.json`](config/fold.config.schema.json) (`fold --schema`), kept in lockstep with the code by test. Defaults are part of the freeze — every one was reviewed as a deliberate decision before v1.0 ([`docs/defaults.md`](docs/defaults.md)).
 - **The `fold` CLI** — flags, exit codes, and `FOLD_CONFIG` semantics.
-- **The wire surface** — gateway-minted JSON-RPC error codes, HTTP endpoints (`/mcp`, `/health`, `/metrics`, `/.well-known/*`, `/oauth/token`), metric names and label sets, and the audit event JSON shape.
+- **The wire surface** — gateway-minted JSON-RPC error codes, HTTP endpoints (`/mcp`, `/health`, `/metrics`, `/.well-known/*`, `/oauth/token`), metric names and label sets, and the audit event JSON shape. `/healthz` was the health path through v1.4 and remains a working alias, **deprecated as of v1.5.0** — it answers identically, carries `Deprecation: true`, and is removed no sooner than the next major. Point probes at `/health`.
 - **Go, for embedders** — the `gateway` package (`New`, `Option`, `WithLogger`, `Gateway.Handler/Reload/Close`, `Version`), the `config` package's document structs and `Load`/`Parse`/`Validate`/`Schema`, plus the contract types the gateway hands outward: `auth.Principal` with `WithPrincipal`/`PrincipalFromContext`, and `audit.Event`/`Outcome`. See the [package example](https://pkg.go.dev/github.com/fold-run/fold/gateway).
 
 **Wiring, not API** (may change in any release): the constructors the gateway threads through its packages — `auth.Verifier`/`EMA`/`UpstreamCredentials`, `policy.Engine`, `audit.Logger`/`Sink`. They are exported so the gateway can reach them across package boundaries, not as an extension surface. `internal/` packages are never API.
