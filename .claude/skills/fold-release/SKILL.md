@@ -50,6 +50,14 @@ Never batch commit+push+tag on a single approval.
    `gh run watch`) and report the goreleaser result, including the
    artifacts published.
 
+8. **Refresh the pinned conformance receipt.** The README's "Conformant,
+   provably" paragraph links a specific green `conformance` job by run and
+   job id — the receipt a skeptic clicks. Repoint it at this release's run:
+   `gh run view <ci-run-id> --json jobs --jq '.jobs[] | select(.name=="conformance") | .url'`,
+   then update the link and its version label in the same pass. A receipt
+   naming an old version still verifies, but reads as neglect on the day
+   someone challenges the 40/40 claim.
+
 ## Failure handling
 
 - CI red after push: diagnose and report; fix commits also need per-step
