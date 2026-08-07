@@ -371,6 +371,17 @@ Known gaps, documented deliberately:
 
 ## Changelog
 
+### v1.5.0 — 2026-08-07
+
+Hardening, and task ownership the whole fleet agrees on.
+
+- **Fleet-wide task ownership** — the `taskId → (upstream, minting principal)` index moves out of process memory into a shared-state primitive, so with `REDIS_URL` (or `server.redisUrl`) set every instance reads the same ownership: a caller can no longer reach another principal's task by landing on an instance that did not serve the mint, and the binding survives a rolling restart. Redis is authoritative on reads, every write is mirrored locally, and an outage falls back to that mirror rather than to no records. Entries key on a digest of the task id and hold a digest of the owning principal; `tasks/list` resolves a whole page in one batch read. Records expire after 24 hours and a gateway without Redis is still per-instance — both fall through to the existing locate-by-probe path.
+- **`/health` replaces `/healthz`** — the health path is now `/health`. `/healthz` answers identically as a deprecated alias (`Deprecation: true`, plus one log line on its first use so you can find what still probes it) and is removed no sooner than the next major; point probes at `/health`. Applies to `fold-discovery` too, where the old path would otherwise have fallen through to its document handler.
+- **`/health` is no longer a load amplifier** — every call used to fan a live MCP ping to every upstream, unauthenticated and outside the rate limiter. The fan-out is now single-flighted and reused for a second, invalidated immediately by a reload or discovery sync, so polling it in a loop costs at most one collection per second.
+- **Subscriptions are released when their client goes away** — `resources/unsubscribe` was the only path that decremented the ref count, so a client that subscribed and disconnected left the gateway holding an upstream subscription indefinitely. The idle sweeper now reaps them and drops the shared upstream subscription with the last live subscriber.
+- **Credential paths hardened** — the token endpoint's response body is bounded and its fetches are single-flighted per identity (a burst of first-time callers for one principal became a burst of grant requests, each carrying the client secret and that caller's own bearer token); the discovery poller and the audit webhook now refuse redirects, as the token-endpoint client has since v1.0.1.
+- **Stricter host matching, bounded stores** — a non-numeric port in `Host` or `Origin` is rejected rather than split at the last colon, closing a rebinding bypass where `localhost:8080.evil.com` read as the allowed host `localhost`; and the per-instance affinity caches (resource-URI ownership, the per-principal limiter memo) are size-bounded.
+
 ### v1.4.1 — 2026-08-06
 
 The console wears the brand.
