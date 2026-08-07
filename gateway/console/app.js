@@ -16,6 +16,7 @@ const $ = (id) => document.getElementById(id);
 const S = {
   token: "",
   mcpPath: "/mcp",
+  version: "dev", // replaced by the gateway's stamped version on first state fetch
   sessionId: null,
   protocolVersion: null,
   nextId: 0,
@@ -155,10 +156,13 @@ function authHeaders() {
 function card(label, value, cls) {
   const div = document.createElement("div");
   div.className = "card";
+  const l = document.createElement("span");
+  l.className = "label";
+  l.textContent = label;
   const b = document.createElement("b");
   b.textContent = value;
-  div.append(label + ": ", b);
   if (cls) b.className = cls;
+  div.append(l, b);
   return div;
 }
 
@@ -197,6 +201,7 @@ async function refreshState() {
   }
   const st = await res.json();
   S.mcpPath = st.mcpPath || "/mcp";
+  S.version = st.version || "dev";
   $("version").textContent = /^\d/.test(st.version) ? "v" + st.version : st.version;
 
   // Auth off means no token will ever be needed; hide the input instead of
@@ -379,7 +384,7 @@ async function connect() {
     const init = await rpc("initialize", {
       protocolVersion: "2025-06-18",
       capabilities: {},
-      clientInfo: { name: "fold-console", version: "1" },
+      clientInfo: { name: "fold-console", version: S.version || "dev" },
     });
     S.protocolVersion = init.protocolVersion;
     await rpc("notifications/initialized", undefined, { notification: true });

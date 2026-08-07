@@ -43,6 +43,11 @@ suite; an npm/React toolchain would put a frontend build into every release
 for what is a dashboard and a JSON-RPC console. If the UI outgrows vanilla
 JS, that is a v2 problem to have.
 
+The look is the fold.run design system (dark-only stardust tokens; IBM Plex
+Sans + Geist Mono). The fonts are the site's self-hosted OFL latin subsets,
+embedded in the binary like every other asset (~127 KB), so the CSP's
+no-external-fetches rule holds for typography too.
+
 ### Endpoints
 
 - `GET /console/` — static assets (embedded, no data in them, served
