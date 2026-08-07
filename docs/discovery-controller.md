@@ -119,6 +119,9 @@ authenticate the poll.
 | `--log-format`, `--log-level`, `--version` | `text`, `info` | As in `fold`. |
 
 `GET /health` reports sync status (`503` before the first successful
-list); any other `GET` serves the document. On the gateway side, the sync
+list); any other `GET` serves the document. `/healthz` — the spelling
+through v1.4 — is a deprecated alias of `/health`, kept because without it
+the path would fall through to the document handler and an existing probe
+would quietly start scraping the upstreams document instead. On the gateway side, the sync
 outcomes show up in `fold_discovery_syncs_total` and the reload logs — see
 [operations.md](operations.md).

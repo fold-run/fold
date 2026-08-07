@@ -100,8 +100,10 @@ type Gateway struct {
 	taskOwner *taskOwners
 
 	// health caches and single-flights the upstream health fan-out shared by
-	// /health and the console state API.
-	health healthCache
+	// /health and the console state API; healthzWarn logs the deprecated
+	// /healthz path's first use, once.
+	health      healthCache
+	healthzWarn sync.Once
 
 	// callCtx tracks the context of each in-flight named invocation per
 	// downstream session. Server-initiated traffic from an upstream
@@ -908,6 +910,7 @@ func (g *Gateway) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(g.cfg.MCPPath(), mcpChain)
 	mux.HandleFunc("/health", g.handleHealth)
+	mux.HandleFunc("/healthz", g.handleDeprecatedHealthz)
 	mux.Handle("/metrics", g.metrics.handler())
 	if g.cfg.ConsoleEnabled() {
 		// The state API is data, so it authenticates like /mcp; the static
@@ -1343,6 +1346,22 @@ func (g *Gateway) upstreamHealthFor(ctx context.Context, rt *routes) (statuses [
 		c.rt, c.at = rt, time.Now()
 	}
 	return append([]upstreamHealth(nil), c.statuses...), c.healthy
+}
+
+// handleDeprecatedHealthz answers the pre-v1.5 health path, which `/health`
+// replaced. It serves the same bytes rather than redirecting: kubelet
+// probes and most load-balancer health checks do not follow redirects, so a
+// 301 would read as a failure on exactly the deployments the alias exists
+// to protect. RFC 8594 headers mark it on the wire, and the first hit logs
+// once so an operator can find whatever is still pointed at it before the
+// path goes away in a major.
+func (g *Gateway) handleDeprecatedHealthz(w http.ResponseWriter, r *http.Request) {
+	g.healthzWarn.Do(func() {
+		g.log.Warn("/healthz is deprecated and will be removed in the next major version; probe /health instead")
+	})
+	w.Header().Set("Deprecation", "true")
+	w.Header().Set("Link", `</health>; rel="successor-version"`)
+	g.handleHealth(w, r)
 }
 
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {

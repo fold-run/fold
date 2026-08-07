@@ -400,3 +400,28 @@ func TestNamespacePrefixIsUnambiguous(t *testing.T) {
 		t.Errorf("forged cross-namespace id accepted: %+v", forged)
 	}
 }
+
+// The pre-v1.5 /healthz path must reach the health summary, not fall
+// through to the document handler — a probe that silently starts scraping
+// the upstreams document reports healthy on the wrong thing.
+func TestProducerHealthzAlias(t *testing.T) {
+	p := &Producer{}
+	p.doc = []byte(`{"upstreams":[]}`)
+	srv := httptest.NewServer(p.Handler())
+	defer srv.Close()
+
+	for _, path := range []string{"/health", "/healthz"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s status = %d", path, resp.StatusCode)
+		}
+		if !strings.Contains(string(body), `"synced"`) {
+			t.Errorf("%s served the document, not the health summary: %s", path, body)
+		}
+	}
+}
