@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual dispatch: webhook-triggered runs can be throttled during GitHub
+  # incidents (2026-08-06 outage dropped a release push's run entirely);
+  # API-created dispatches give CI a path that does not depend on webhook
+  # delivery.
+  workflow_dispatch:
 
 permissions:
   contents: read
