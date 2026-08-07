@@ -117,8 +117,8 @@ func TestLoadBalanceFailover(t *testing.T) {
 		t.Errorf("live endpoint %s marked unhealthy: %+v", live.URL, statuses)
 	}
 
-	// /healthz surfaces the per-endpoint view (detailed: auth disabled).
-	resp, err := http.Get(ts.URL + "/healthz")
+	// /health surfaces the per-endpoint view (detailed: auth disabled).
+	resp, err := http.Get(ts.URL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestLoadBalanceFailover(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(health.Upstreams) != 1 || len(health.Upstreams[0].Endpoints) != 2 {
-		t.Fatalf("healthz missing per-endpoint view: %+v", health)
+		t.Fatalf("health missing per-endpoint view: %+v", health)
 	}
 }
 

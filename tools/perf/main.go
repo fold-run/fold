@@ -276,7 +276,7 @@ func runnerMain() error {
 	defer shutdown(upstream, gateway)
 
 	gatewayURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
-	if err := waitHealthy(fmt.Sprintf("http://127.0.0.1:%d/healthz", port)); err != nil {
+	if err := waitHealthy(fmt.Sprintf("http://127.0.0.1:%d/health", port)); err != nil {
 		return err
 	}
 

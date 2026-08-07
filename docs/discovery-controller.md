@@ -118,7 +118,7 @@ authenticate the poll.
 | `--min-health-interval-ms` | `1000` | Floor for a Service's `healthCheck.intervalMs`, so a registration cannot turn the gateway into a probe flood. |
 | `--log-format`, `--log-level`, `--version` | `text`, `info` | As in `fold`. |
 
-`GET /healthz` reports sync status (`503` before the first successful
+`GET /health` reports sync status (`503` before the first successful
 list); any other `GET` serves the document. On the gateway side, the sync
 outcomes show up in `fold_discovery_syncs_total` and the reload logs — see
 [operations.md](operations.md).

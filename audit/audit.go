@@ -109,8 +109,20 @@ func newWebhookSink(url string, headers map[string]string) *webhookSink {
 	s := &webhookSink{
 		url:     url,
 		headers: headers,
-		client:  &http.Client{Timeout: 10 * time.Second},
-		ch:      make(chan Event, 1024),
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			// A POST carrying the sink's configured headers (commonly an API
+			// token) and a batch of audit records naming principals and
+			// tools. Go replays the body verbatim on 307/308 and keeps the
+			// headers on any same-domain redirect, so a redirecting sink
+			// would hand both to whatever host it names. A redirect is never
+			// a legitimate step in delivering a webhook.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return fmt.Errorf("audit webhook: refusing redirect from %q to %q",
+					via[0].URL.Redacted(), req.URL.Redacted())
+			},
+		},
+		ch: make(chan Event, 1024),
 	}
 	go s.run()
 	return s

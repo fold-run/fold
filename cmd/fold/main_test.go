@@ -131,7 +131,7 @@ func (s *syncBuffer) String() string {
 }
 
 // startServing boots the fold CLI as a subprocess on a free port with the
-// given config file and args, and waits until /healthz answers.
+// given config file and args, and waits until /health answers.
 func startServing(t *testing.T, configPath string, extraArgs ...string) (cmd *exec.Cmd, port int, stderr *syncBuffer) {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -154,7 +154,7 @@ func startServing(t *testing.T, configPath string, extraArgs ...string) (cmd *ex
 		cmd.Wait()
 	})
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(url)
@@ -168,10 +168,10 @@ func startServing(t *testing.T, configPath string, extraArgs ...string) (cmd *ex
 	return nil, 0, nil
 }
 
-// waitHealthzContains polls /healthz until the body contains want.
+// waitHealthzContains polls /health until the body contains want.
 func waitHealthzContains(t *testing.T, port int, want string, timeout time.Duration) bool {
 	t.Helper()
-	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(url)
@@ -193,7 +193,7 @@ const twoUpstreamConfig = `{"upstreams":[
 	{"id":"u2","url":"https://example.org/mcp","namespace":"u2"}]}`
 
 // TestSIGHUPReloadsConfig: editing the config file and sending SIGHUP makes
-// the new upstream set live without a restart, visible via /healthz.
+// the new upstream set live without a restart, visible via /health.
 func TestSIGHUPReloadsConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fold.config.json")
 	if err := os.WriteFile(path, []byte(validConfig), 0o600); err != nil {
@@ -260,7 +260,7 @@ func TestSIGHUPKeepsRunningOnBadConfig(t *testing.T) {
 }
 
 // TestServeAndGracefulShutdown boots the real server, confirms it answers
-// /healthz, and expects SIGTERM to produce a clean (code 0) exit.
+// /health, and expects SIGTERM to produce a clean (code 0) exit.
 func TestServeAndGracefulShutdown(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -280,7 +280,7 @@ func TestServeAndGracefulShutdown(t *testing.T) {
 	// Any HTTP answer proves the process is serving; the status itself
 	// reflects upstream health, which is 503 here (the example.com upstream
 	// is unreachable) and not what this test asserts.
-	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
 	deadline := time.Now().Add(5 * time.Second)
 	up := false
 	for time.Now().Before(deadline) {

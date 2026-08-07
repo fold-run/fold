@@ -298,13 +298,13 @@ func TestHealthEndpoint(t *testing.T) {
 	ts, _ := startGateway(t, &config.Config{Upstreams: []config.Upstream{
 		{ID: "u", URL: up.URL, Owner: &config.Owner{Org: "acme", Team: "devex"}},
 	}})
-	resp, err := http.Get(ts.URL + "/healthz")
+	resp, err := http.Get(ts.URL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("healthz status %d", resp.StatusCode)
+		t.Fatalf("health status %d", resp.StatusCode)
 	}
 	var body struct {
 		Status    string           `json:"status"`

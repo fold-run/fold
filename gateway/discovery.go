@@ -65,9 +65,22 @@ func newDiscoverer(g *Gateway, cfg *config.Discovery) *discoverer {
 		interval = time.Duration(cfg.IntervalMs) * time.Millisecond
 	}
 	return &discoverer{
-		g:        g,
-		cfg:      cfg,
-		client:   &http.Client{Timeout: 10 * time.Second},
+		g:   g,
+		cfg: cfg,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			// The discovery URL is a trust anchor — whoever answers it can
+			// add upstreams — and validation forces it onto https. A redirect
+			// would let the source hand that authority to a host of its
+			// choosing, and Go only strips the bearer credential when the
+			// redirect leaves the *domain*, so a sibling host or a plain-http
+			// same-host target would still receive it. Neither is ever a
+			// legitimate step in fetching a JSON document.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return fmt.Errorf("discovery: refusing redirect from %q to %q",
+					via[0].URL.Redacted(), req.URL.Redacted())
+			},
+		},
 		interval: interval,
 		stop:     make(chan struct{}),
 	}

@@ -162,7 +162,7 @@ func TestFederatedTasks(t *testing.T) {
 	if taskID == "" {
 		t.Fatalf("no task minted; meta=%v", out.Meta)
 	}
-	if rec, ok := gw.taskOwner.Load(taskID); !ok || rec.(taskRecord).upstreamID != "a" {
+	if rec, ok := gw.taskOwner.load(t.Context(), taskID); !ok || rec.upstreamID != "a" {
 		t.Errorf("affinity not pinned to a: %v", rec)
 	}
 
@@ -176,7 +176,7 @@ func TestFederatedTasks(t *testing.T) {
 	}
 
 	// A task fold never saw (evict the affinity) is found by probe fallback.
-	gw.taskOwner.Delete(taskID)
+	gw.taskOwner.delete(t.Context(), taskID)
 	res, err = callTaskMethod(t, session, "tasks/get", map[string]any{"taskId": taskID})
 	if err != nil {
 		t.Fatalf("tasks/get after eviction: %v", err)
@@ -184,7 +184,7 @@ func TestFederatedTasks(t *testing.T) {
 	if !strings.Contains(string(res), taskID) {
 		t.Errorf("probe fallback failed: %s", res)
 	}
-	if rec, ok := gw.taskOwner.Load(taskID); !ok || rec.(taskRecord).upstreamID != "a" {
+	if rec, ok := gw.taskOwner.load(t.Context(), taskID); !ok || rec.upstreamID != "a" {
 		t.Errorf("probe did not re-pin affinity: %v", rec)
 	}
 
@@ -312,11 +312,11 @@ func TestTaskPrincipalIsolation(t *testing.T) {
 	// A task with no ownership record (fold restarted, or minted out of
 	// band) stays reachable by any caller via the probe fallback, and the
 	// probe never claims ownership for the prober.
-	gw.taskOwner.Delete(taskID)
+	gw.taskOwner.delete(t.Context(), taskID)
 	if _, err := callTaskMethod(t, bob, "tasks/get", map[string]any{"taskId": taskID}); err != nil {
 		t.Errorf("unowned task should be probe-reachable: %v", err)
 	}
-	if v, ok := gw.taskOwner.Load(taskID); !ok || v.(taskRecord).owner != "" {
+	if v, ok := gw.taskOwner.load(t.Context(), taskID); !ok || v.owner != "" {
 		t.Errorf("probe must not assign ownership: %+v", v)
 	}
 	if _, err := callTaskMethod(t, alice, "tasks/get", map[string]any{"taskId": taskID}); err != nil {

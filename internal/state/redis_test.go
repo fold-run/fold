@@ -239,3 +239,96 @@ func TestRedisOnceOutageFallback(t *testing.T) {
 		t.Error("same-instance replay during outage was admitted")
 	}
 }
+
+// The record store is the ownership index's backing: two instances must
+// agree on what it holds.
+func TestRedisStoreSharedRecords(t *testing.T) {
+	a, b := twoProviders(t)
+	ctx := context.Background()
+
+	sa, sb := a.Store("task"), b.Store("task")
+	sa.Set(ctx, "t1", []byte(`{"u":"alpha"}`), time.Hour)
+
+	got, ok := sb.Get(ctx, "t1")
+	if !ok || string(got) != `{"u":"alpha"}` {
+		t.Fatalf("second instance sees %q, %v", got, ok)
+	}
+	if _, ok := sb.Get(ctx, "absent"); ok {
+		t.Error("an unwritten key must read as absent")
+	}
+
+	// Scopes are separate namespaces.
+	if _, ok := b.Store("other").Get(ctx, "t1"); ok {
+		t.Error("record leaked across scopes")
+	}
+
+	sb.Delete(ctx, "t1")
+	if _, ok := sa.Get(ctx, "t1"); ok {
+		t.Error("delete did not propagate")
+	}
+}
+
+func TestRedisStoreBatch(t *testing.T) {
+	a, b := twoProviders(t)
+	ctx := context.Background()
+
+	a.Store("task").SetMany(ctx, map[string][]byte{
+		"t1": []byte("one"), "t2": []byte("two"), "t3": []byte("three"),
+	}, time.Hour)
+
+	got := b.Store("task").GetMany(ctx, []string{"t1", "missing", "t3"})
+	if len(got) != 2 || string(got["t1"]) != "one" || string(got["t3"]) != "three" {
+		t.Fatalf("GetMany = %v", got)
+	}
+	if _, present := got["missing"]; present {
+		t.Error("GetMany reported an absent key as present")
+	}
+	if len(b.Store("task").GetMany(ctx, nil)) != 0 {
+		t.Error("GetMany over no keys should be empty")
+	}
+}
+
+func TestRedisStoreExpires(t *testing.T) {
+	mr := miniredis.RunT(t)
+	p, err := NewRedis("redis://" + mr.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	s := p.Store("task")
+	s.Set(context.Background(), "t1", []byte("v"), time.Minute)
+	mr.FastForward(2 * time.Minute)
+	if _, ok := s.Get(context.Background(), "t1"); ok {
+		t.Fatal("record outlived its ttl")
+	}
+}
+
+// A Redis outage falls back to the locally mirrored records rather than to
+// no records at all — the same posture as the single-use recorder.
+func TestRedisStoreOutageFallsBackToMirror(t *testing.T) {
+	mr := miniredis.RunT(t)
+	p, err := NewRedis("redis://" + mr.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	ctx := context.Background()
+	s := p.Store("task")
+	s.Set(ctx, "t1", []byte("mine"), time.Hour)
+	s.SetMany(ctx, map[string][]byte{"t2": []byte("also-mine")}, time.Hour)
+
+	mr.Close() // outage
+
+	if got, ok := s.Get(ctx, "t1"); !ok || string(got) != "mine" {
+		t.Errorf("Get during outage = %q, %v; want the mirrored record", got, ok)
+	}
+	if got := s.GetMany(ctx, []string{"t1", "t2"}); len(got) != 2 {
+		t.Errorf("GetMany during outage = %v; want both mirrored records", got)
+	}
+	// A key this instance never wrote is genuinely unknown, outage or not.
+	if _, ok := s.Get(ctx, "elsewhere"); ok {
+		t.Error("outage invented a record")
+	}
+}
