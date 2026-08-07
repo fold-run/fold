@@ -2,9 +2,9 @@
 
 Source of truth for all marketing copy. Every downstream asset (site, docs framing, channel copy, PR) ladders up to this file. "fold" is always lowercase, including at the start of a sentence.
 
-Ported from the archived TypeScript repo's launch messaging and rewritten against the Go implementation; every claim below is verified against v1.3.0. Dead TS-era claims (Cloudflare Workers runtime, protocol-era translation, SEP-2549 caching, `subscriptions/listen` fan-in, throughput figures) do not appear here and must not be reintroduced without shipped code behind them.
+Ported from the archived TypeScript repo's launch messaging and rewritten against the Go implementation; every claim below is verified against v1.4.1. Dead TS-era claims (Cloudflare Workers runtime, protocol-era translation, SEP-2549 caching, `subscriptions/listen` fan-in, throughput figures) do not appear here and must not be reintroduced without shipped code behind them.
 
-The live demo is back as of 2026-08-05 — **demo.fold.run/mcp** runs the unmodified v1.3.0 binary federating three public MCP servers, with the console at demo.fold.run/console. It is a *federation and governance* demo: never attach the old era-translation story to it, and never present it as a benchmark target (it's rate-limited and containerized — `make bench` is the measurement answer).
+The live demo is back as of 2026-08-05 — **demo.fold.run/mcp** runs the unmodified v1.4.1 binary federating three public MCP servers, with the console at demo.fold.run/console. It is a *federation and governance* demo: never attach the old era-translation story to it, and never present it as a benchmark target (it's rate-limited and containerized — `make bench` is the measurement answer).
 
 ---
 

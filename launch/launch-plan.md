@@ -5,7 +5,7 @@ Primary CTA everywhere: **hit demo.fold.run/mcp** (secondary: `go run github.com
 Message: one line, from messaging.md — *fold is the open-source enterprise MCP gateway: every MCP client, every MCP server, one governed endpoint — 40/40 official conformance, gated in CI on every merge.*
 Owner of everything: Blake. Assets marked **[done]** are already live and need no work beyond a final check.
 
-Ported from the archived TypeScript repo's Aug 3–14 plan and rewritten against the Go implementation. Structural changes from the TS plan: the demo is back (Go-backed as of 2026-08-05 — the unmodified v1.3.0 binary in a container at demo.fold.run) but demonstrates federation/governance, not era translation; and the Cloudflare DevRel channel is gone with the Workers runtime, replaced by Go-ecosystem channels. Dates are relative (L = launch day) — pin L to a Tue/Wed/Thu morning and the rest follows.
+Ported from the archived TypeScript repo's Aug 3–14 plan and rewritten against the Go implementation. Structural changes from the TS plan: the demo is back (Go-backed as of 2026-08-05 — the unmodified released binary, v1.4.1 today, in a container at demo.fold.run) but demonstrates federation/governance, not era translation; and the Cloudflare DevRel channel is gone with the Workers runtime, replaced by Go-ecosystem channels. Dates are relative (L = launch day) — pin L to a Tue/Wed/Thu morning and the rest follows.
 
 ---
 
