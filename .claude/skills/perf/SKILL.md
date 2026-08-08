@@ -10,6 +10,15 @@ The merge gate: added p50 through the gateway < 5 ms
 `FOLD_BENCH=1`). Performance here is a test, not a vibe — every claim
 needs a `BENCH_RESULT` number behind it.
 
+**The gate has a blind spot, by design.** Its fixture is one upstream with
+one trivial tool, so it measures the proxy hop and nothing that scales with
+federation size. For anything touching the list path — merge, policy
+filtering, namespacing, cursors — the instrument is
+`go test ./gateway -run '^$' -bench BenchmarkFederatedListTools -benchmem`,
+and allocations per request are the signal to watch (they are stable across
+machines in a way ns/op is not). `FOLD_LOAD_UPSTREAMS` / `FOLD_LOAD_TOOLS`
+give `tools/perf` the same federated shape.
+
 ## Workflow
 
 1. **Measure**: launch the **bench-profiler** agent (yellow) to run the

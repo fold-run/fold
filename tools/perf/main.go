@@ -30,6 +30,12 @@
 //	FOLD_LOAD_WARMUP       seconds of unmeasured warmup per stage (default 3)
 //	FOLD_LOAD_SCENARIOS    comma-separated: tools/call,tools/list (default both;
 //	                       note tools/list through fold rides the list cache)
+//	FOLD_LOAD_UPSTREAMS    fixture upstreams to federate (default 1). The
+//	                       tools/list path fans out to every one of them,
+//	                       merges, filters, namespaces, and paginates, so its
+//	                       cost scales with this and with FOLD_LOAD_TOOLS —
+//	                       a size-1 federation does not exercise any of it.
+//	FOLD_LOAD_TOOLS        tools each fixture upstream exposes (default 1)
 //	FOLD_LOAD_JSON         path to write full results as JSON
 //	FOLD_LOAD_FOLD_URL     bench an already-running gateway at this /mcp URL
 //	                       instead of spawning the topology (pair with
@@ -74,16 +80,33 @@ func main() {
 	}
 }
 
+// upstreamID names the i-th fixture upstream; it is both the config id and,
+// in namespaced mode, the namespace its tools are exposed under.
+func upstreamID(i int) string { return fmt.Sprintf("load%02d", i) }
+
 // --- fixture upstream (child process) --------------------------------------
 
 func upstreamMain() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "load-upstream", Version: "1.0"}, nil)
+	echo := func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+	}
+	// "echo" is always present — it is what the tools/call scenario invokes.
+	// Any extra tools exist to give the list path something to merge, and
+	// carry a representative schema because a real tool list is mostly
+	// schema by volume.
 	server.AddTool(&mcp.Tool{
 		Name:        "echo",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
-	}, func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
-	})
+	}, echo)
+	filler := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"the search query to run against the corpus"},"limit":{"type":"integer"},"filters":{"type":"array","items":{"type":"string"}}},"required":["query"]}`)
+	for i := 1; i < envInt("FOLD_LOAD_TOOLS", 1); i++ {
+		server.AddTool(&mcp.Tool{
+			Name:        fmt.Sprintf("tool-%04d", i),
+			Description: "a representative tool with a representative description string",
+			InputSchema: filler,
+		}, echo)
+	}
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -110,17 +133,31 @@ type config struct {
 	warmup      time.Duration
 	scenarios   []string
 	jsonOut     string
+	upstreams   int
+	tools       int
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
-		mode:     envOr("FOLD_LOAD_MODE", "namespaced"),
-		duration: time.Duration(envInt("FOLD_LOAD_DURATION", 10)) * time.Second,
-		warmup:   time.Duration(envInt("FOLD_LOAD_WARMUP", 3)) * time.Second,
-		jsonOut:  os.Getenv("FOLD_LOAD_JSON"),
+		mode:      envOr("FOLD_LOAD_MODE", "namespaced"),
+		duration:  time.Duration(envInt("FOLD_LOAD_DURATION", 10)) * time.Second,
+		warmup:    time.Duration(envInt("FOLD_LOAD_WARMUP", 3)) * time.Second,
+		jsonOut:   os.Getenv("FOLD_LOAD_JSON"),
+		upstreams: envInt("FOLD_LOAD_UPSTREAMS", 1),
+		tools:     envInt("FOLD_LOAD_TOOLS", 1),
 	}
 	if cfg.mode != "namespaced" && cfg.mode != "passthrough" {
 		return cfg, fmt.Errorf("FOLD_LOAD_MODE must be namespaced or passthrough, got %q", cfg.mode)
+	}
+	if cfg.upstreams < 1 {
+		return cfg, fmt.Errorf("FOLD_LOAD_UPSTREAMS must be at least 1, got %d", cfg.upstreams)
+	}
+	if cfg.tools < 1 {
+		return cfg, fmt.Errorf("FOLD_LOAD_TOOLS must be at least 1, got %d", cfg.tools)
+	}
+	// Passthrough is by definition a single un-namespaced upstream.
+	if cfg.mode == "passthrough" && cfg.upstreams != 1 {
+		return cfg, fmt.Errorf("FOLD_LOAD_MODE=passthrough requires FOLD_LOAD_UPSTREAMS=1, got %d", cfg.upstreams)
 	}
 	for _, s := range strings.Split(envOr("FOLD_LOAD_CONNECTIONS", "8,64,256"), ",") {
 		n, err := strconv.Atoi(strings.TrimSpace(s))
@@ -229,51 +266,64 @@ func runnerMain() error {
 	if err != nil {
 		return err
 	}
-	upstream := exec.Command(exe, "-upstream") //nolint:gosec // re-exec self as the fixture upstream
-	upstreamOut, err := upstream.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	upstream.Stderr = os.Stderr
-	if err := upstream.Start(); err != nil {
-		return err
-	}
-	upstreamURL, err := scanFor(upstreamOut, "UPSTREAM_URL=")
-	if err != nil {
-		shutdown(upstream)
-		return err
-	}
-	watch(upstream, "upstream")
-
+	// One fixture process per federated upstream, each carrying the same tool
+	// count. The first is also the DIRECT baseline's target, so the direct
+	// and fold stages hit an identical server.
 	type upstreamEntry struct {
 		ID        string `json:"id"`
 		URL       string `json:"url"`
 		Namespace string `json:"namespace,omitempty"`
 	}
-	entry := upstreamEntry{ID: "load", URL: upstreamURL}
-	if cfg.mode == "namespaced" {
-		entry.Namespace = "load"
+	var upstreams []*exec.Cmd
+	var entries []upstreamEntry
+	for i := range cfg.upstreams {
+		up := exec.Command(exe, "-upstream") //nolint:gosec // re-exec self as the fixture upstream
+		up.Env = append(os.Environ(), fmt.Sprintf("FOLD_LOAD_TOOLS=%d", cfg.tools))
+		out, err := up.StdoutPipe()
+		if err != nil {
+			shutdown(upstreams...)
+			return err
+		}
+		up.Stderr = os.Stderr
+		if err := up.Start(); err != nil {
+			shutdown(upstreams...)
+			return err
+		}
+		upstreams = append(upstreams, up)
+		url, err := scanFor(out, "UPSTREAM_URL=")
+		if err != nil {
+			shutdown(upstreams...)
+			return err
+		}
+		watch(up, fmt.Sprintf("upstream-%d", i))
+
+		entry := upstreamEntry{ID: upstreamID(i), URL: url}
+		if cfg.mode == "namespaced" {
+			entry.Namespace = entry.ID
+		}
+		entries = append(entries, entry)
 	}
-	foldCfg, _ := json.Marshal(map[string]any{"upstreams": []upstreamEntry{entry}})
+	upstreamURL := entries[0].URL
+	foldCfg, _ := json.Marshal(map[string]any{"upstreams": entries})
 	cfgPath := filepath.Join(tmp, "fold.config.json")
 	if err := os.WriteFile(cfgPath, foldCfg, 0o600); err != nil {
-		shutdown(upstream)
+		shutdown(upstreams...)
 		return err
 	}
 
 	port, err := freePort()
 	if err != nil {
-		shutdown(upstream)
+		shutdown(upstreams...)
 		return err
 	}
 	gateway := exec.Command(foldBin, "--config", cfgPath, "--port", strconv.Itoa(port)) //nolint:gosec // the binary we just built
 	gateway.Stderr = os.Stderr
 	if err := gateway.Start(); err != nil {
-		shutdown(upstream)
+		shutdown(upstreams...)
 		return err
 	}
 	watch(gateway, "gateway")
-	defer shutdown(upstream, gateway)
+	defer shutdown(append(upstreams, gateway)...)
 
 	gatewayURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
 	if err := waitHealthy(fmt.Sprintf("http://127.0.0.1:%d/health", port)); err != nil {
@@ -289,7 +339,7 @@ func runnerMain() error {
 func sweep(cfg config, targets [][2]string) error {
 	toolName := func(target string) string {
 		if target == "fold" && cfg.mode == "namespaced" {
-			return "load__echo"
+			return upstreamID(0) + "__echo"
 		}
 		return "echo"
 	}

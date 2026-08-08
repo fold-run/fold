@@ -18,6 +18,11 @@ make check                                   # fmt-check + tidy-check + vet + bu
 go test ./gateway -run TestName -v           # one test
 make bench                                   # latency gate (FOLD_BENCH=1; skipped without it)
 make conformance                             # official MCP conformance suite through the gateway (needs node/npx)
+
+# Federation cost — the list path, whose work scales with federation size and
+# which the latency gate's 1-upstream fixture does not exercise:
+go test ./gateway -run '^$' -bench BenchmarkFederatedListTools -benchmem
+FOLD_LOAD_UPSTREAMS=20 FOLD_LOAD_TOOLS=50 make loadtest
 ```
 
 CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, `go mod tidy -diff`, vet, build, `go test -race`, golangci-lint, govulncheck, the added-latency benchmark (added p50 < 5 ms through the proxy path), and the conformance suite (40/40 checks, pinned to a commit in `scripts/conformance.sh` — bump deliberately).
@@ -32,7 +37,7 @@ CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, `go mod tidy -diff`
 
 **Two kinds of upstream session** (`gateway/upstream.go`): each upstream holds one shared `rootSession` for lists, reads, and subscriptions, plus per-downstream-client `bridgedSession`s keyed by downstream session ID. Bridged sessions carry server-initiated traffic (sampling, elicitation, logging, progress) back to the originating client: `Gateway.callCtx` tracks each in-flight named invocation's context so the SDK routes upstream-initiated requests over that call's own stream. Idle bridged sessions are swept after 5 minutes.
 
-**Shared state goes behind `state.Provider`** (`internal/state`): rate-limit windows, circuit breakers, list caches, single-use records (EMA `jti`), and the task-ownership store are interfaces with two providers — in-memory (default) and Redis (`REDIS_URL` / `server.redisUrl`), which makes a gateway fleet behave as one. Redis outages fail open with a 500 ms bound per operation; `Once` and `Store` additionally fall back to a local mirror, so an outage degrades to per-instance enforcement rather than none. New cross-instance state belongs behind this interface, not in ad-hoc maps. Per-instance affinity caches (`resourceOwner`, `principalLimits`) use `internal/bounded` — every one of them must be size-bounded, because all are keyed by identifiers the gateway does not choose.
+**Shared state goes behind `state.Provider`** (`internal/state`): rate-limit windows, circuit breakers, list caches, single-use records (EMA `jti`), and the task-ownership store are interfaces with two providers — in-memory (default) and Redis (`REDIS_URL` / `server.redisUrl`), which makes a gateway fleet behave as one. Redis outages fail open with a 500 ms bound per operation; `Once` and `Store` additionally fall back to a local mirror, so an outage degrades to per-instance enforcement rather than none. New cross-instance state belongs behind this interface, not in ad-hoc maps. Per-instance affinity caches (`resourceOwner`, `principalLimits`) use `internal/bounded` — every one of them must be size-bounded, because all are keyed by identifiers the gateway does not choose. `ListCache` stores serialized JSON so entries can live in Redis, so each upstream memoizes the *decoded* form of its lists (`cachedList`, keyed by list kind — fold-chosen, at most one entry per list method, hence not `bounded`); the memo is validated by the identity of the cached bytes, which makes it self-invalidating and keeps it off for upstreams whose caching is disabled because their credential is caller-derived. **Items returned from `cachedList` are shared across requests and must be treated as read-only** — the egress paths that rewrite a name copy the item first.
 
 **Naming and identity**: tools/prompts are exposed as `{namespace}__{name}`; a single upstream without a namespace runs passthrough (no rewriting). Resource URIs are opaque and never rewritten — `Gateway.resourceOwner` remembers which upstream listed each URI. Policy filters list results per principal *and* denies named invocations; invisibility plus call-denial is the enforcement pair.
 
