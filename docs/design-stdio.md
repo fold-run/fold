@@ -261,7 +261,12 @@ and reparented to PID 1 — the shim itself. The container entrypoint's
 `0.0.0.0` bind is now backed by a startup refusal when no bearer is configured,
 rather than by documentation.
 
-Not yet done: a compose example.
+- **A compose example** under the `stdio` profile, demonstrating the shape
+  worth copying: the shim unpublished to the host, requiring a bearer, with the
+  gateway brokering that bearer through the `static` strategy so the agent
+  never holds it.
+
+Every item in the ship list above is now done.
 
 ## Explicitly out of scope
 
