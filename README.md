@@ -304,6 +304,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/embedding.md](docs/embedding.md) — the Go embedding surface, with CI-compiled examples.
 - [docs/defaults.md](docs/defaults.md) — the v1.0 defaults review, every default a decision on record.
 - [docs/roadmap.md](docs/roadmap.md) — direction: what fold intends to build next, and what it deliberately declines.
+- [docs/design-stdio.md](docs/design-stdio.md) — design record: why stdio upstreams arrive as a sidecar shim rather than subprocess supervision in the gateway.
 
 ## Deploying
 

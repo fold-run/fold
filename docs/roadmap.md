@@ -163,8 +163,11 @@ would run the server and expose it over streamable HTTP — would leave the
 gateway unchanged, let the existing credential, health-check, and
 load-balancing machinery apply without special cases, and follow the precedent
 `fold-discovery` already set for shipping a second binary rather than widening
-the first. Neither exists today. **The shim is the recommended shape**; the
-decision gets its own design record before implementation.
+the first. Neither exists today. **The shim is the decided shape** — the
+reasoning, and the argument that settled it (stdio binds one process per
+session, and fold opens a root session plus one bridged session per downstream
+client to every upstream), is recorded in
+[design-stdio.md](design-stdio.md).
 
 ### 8. Policy depth
 
