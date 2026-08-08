@@ -351,3 +351,109 @@ func (c *redisCache) Invalidate(ctx context.Context, prefix string) {
 	defer cancel()
 	c.client.Incr(ctx, c.genKey(family(prefix)))
 }
+
+// ---- budget ----
+
+// budgetAddScript is the atomic check-and-increment behind a shared budget.
+//
+// It must be one atomic unit, not INCRBY-then-compare in Go: two instances
+// incrementing concurrently would each see a different total and could both
+// admit past the allowance. Doing the comparison inside the script also lets a
+// rejected Add leave the counter untouched, so an over-budget caller retrying
+// in a loop does not inflate the recorded consumption.
+//
+// KEYS[1] counter   ARGV[1] units   ARGV[2] limit   ARGV[3] ttl seconds
+// Returns {allowed, used}.
+var budgetAddScript = redis.NewScript(`
+local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+local n    = tonumber(ARGV[1])
+local limit= tonumber(ARGV[2])
+if used + n > limit then
+  return {0, used}
+end
+used = redis.call('INCRBY', KEYS[1], n)
+if used == n then
+  redis.call('EXPIRE', KEYS[1], ARGV[3])
+end
+return {1, used}
+`)
+
+// redisBudget accumulates consumption fleet-wide against a calendar-aligned
+// allowance. The key carries the window, so rollover needs no sweeper: the old
+// window's key simply stops being addressed and expires on its own.
+//
+// Fail-open matches every other primitive here — a Redis blip must not refuse
+// all service — but a budget failing open is unbounded in a direction that
+// costs money, so the fallback is a per-instance budget rather than no budget,
+// and every degraded decision says so in its result.
+type redisBudget struct {
+	client   *redis.Client
+	scope    string
+	period   Period
+	limit    int64
+	fallback Budget
+}
+
+func (b *redisBudget) key(now time.Time) string {
+	return fmt.Sprintf("fold:budget:%s:%s", b.scope, b.period.key(now))
+}
+
+func (b *redisBudget) Add(ctx context.Context, n int64) BudgetResult {
+	now := time.Now()
+	rctx, cancel := opCtx(ctx)
+	defer cancel()
+
+	res, err := budgetAddScript.Run(rctx, b.client,
+		[]string{b.key(now)}, n, b.limit, int(b.period.ttl(now).Seconds())).Int64Slice()
+	if err != nil || len(res) != 2 {
+		return b.degrade(b.fallback.Add(ctx, n))
+	}
+	return BudgetResult{
+		Allowed: res[0] == 1,
+		Used:    res[1],
+		Limit:   b.limit,
+		Resets:  b.period.next(now),
+	}
+}
+
+func (b *redisBudget) Used(ctx context.Context) BudgetResult {
+	now := time.Now()
+	rctx, cancel := opCtx(ctx)
+	defer cancel()
+
+	used, err := b.client.Get(rctx, b.key(now)).Int64()
+	if err != nil && err != redis.Nil {
+		return b.degrade(b.fallback.Used(ctx))
+	}
+	return BudgetResult{
+		Allowed: used < b.limit,
+		Used:    used,
+		Limit:   b.limit,
+		Resets:  b.period.next(now),
+	}
+}
+
+// degrade marks a result as decided per-instance, so the caller can audit and
+// alert on a fleet that is running unbudgeted.
+func (b *redisBudget) degrade(r BudgetResult) BudgetResult {
+	r.Degraded = true
+	r.Limit = b.limit
+	return r
+}
+
+// Budget implements Provider.
+func (r *Redis) Budget(scope string, period Period, limit int64) Budget {
+	if limit <= 0 {
+		return unlimitedBudget{}
+	}
+	if !period.Valid() {
+		period = PeriodMonth
+	}
+	return &redisBudget{
+		client:   r.client,
+		scope:    scope,
+		period:   period,
+		limit:    limit,
+		fallback: newMemBudget(period, limit),
+	}
+}
