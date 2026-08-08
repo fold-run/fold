@@ -22,8 +22,25 @@ type Decision struct {
 // Engine evaluates policy rules.
 type Engine struct {
 	defaultAllow bool
-	rules        []config.PolicyRule
+	rules        []compiledRule
 	enabled      bool
+}
+
+// compiledRule is one configured rule with its name patterns pre-split.
+// Policy filters every item of every list per principal, so a pattern that
+// re-parses itself on each evaluation costs one allocation per item per
+// request; patterns come from config and never change for the life of an
+// engine, and an engine is built once per routing snapshot.
+type compiledRule struct {
+	id       string
+	subjects *config.PolicySubjects
+	allow    []compiledAllow
+}
+
+type compiledAllow struct {
+	server  string
+	methods []string
+	names   []glob
 }
 
 // New builds an engine from configuration. A nil config yields an allow-all
@@ -32,11 +49,28 @@ func New(cfg *config.Policy) *Engine {
 	if cfg == nil {
 		return &Engine{defaultAllow: true}
 	}
-	return &Engine{
+	e := &Engine{
 		defaultAllow: cfg.DefaultDecision == "allow",
-		rules:        cfg.Rules,
+		rules:        make([]compiledRule, 0, len(cfg.Rules)),
 		enabled:      true,
 	}
+	for i := range cfg.Rules {
+		r := &cfg.Rules[i]
+		cr := compiledRule{
+			id:       r.ID,
+			subjects: r.Subjects,
+			allow:    make([]compiledAllow, 0, len(r.Allow)),
+		}
+		for _, a := range r.Allow {
+			ca := compiledAllow{server: a.Server, methods: a.Methods}
+			for _, pattern := range a.Names {
+				ca.names = append(ca.names, compileGlob(pattern))
+			}
+			cr.allow = append(cr.allow, ca)
+		}
+		e.rules = append(e.rules, cr)
+	}
+	return e
 }
 
 // Decide checks whether principal may invoke method (e.g. "tools/call") with
@@ -49,20 +83,21 @@ func (e *Engine) Decide(p *auth.Principal, upstreamID, method, name string) Deci
 	}
 	for i := range e.rules {
 		r := &e.rules[i]
-		if !subjectsMatch(r.Subjects, p) {
+		if !subjectsMatch(r.subjects, p) {
 			continue
 		}
-		for _, a := range r.Allow {
-			if a.Server != "*" && a.Server != upstreamID {
+		for j := range r.allow {
+			a := &r.allow[j]
+			if a.server != "*" && a.server != upstreamID {
 				continue
 			}
-			if len(a.Methods) > 0 && !contains(a.Methods, method) {
+			if len(a.methods) > 0 && !contains(a.methods, method) {
 				continue
 			}
-			if len(a.Names) > 0 && !globAny(a.Names, name) {
+			if len(a.names) > 0 && !globAny(a.names, name) {
 				continue
 			}
-			return Decision{Allowed: true, RuleID: r.ID}
+			return Decision{Allowed: true, RuleID: r.id}
 		}
 	}
 	return Decision{Allowed: e.defaultAllow}
@@ -137,32 +172,49 @@ func claimsMatch(required map[string]any, claims map[string]any) bool {
 	return true
 }
 
-// globAny reports whether name matches any pattern. Patterns support "*"
-// wildcards (any position); everything else matches literally.
-func globAny(patterns []string, name string) bool {
-	for _, pat := range patterns {
-		if globMatch(pat, name) {
+// glob is a name pattern with its wildcard split already done. Patterns
+// support "*" wildcards (any position); everything else matches literally.
+type glob struct {
+	// parts is the pattern split on "*"; a single part means a literal
+	// pattern with no wildcard at all.
+	parts []string
+}
+
+// compileGlob splits a pattern once, at engine-construction time.
+func compileGlob(pattern string) glob {
+	return glob{parts: strings.Split(pattern, "*")}
+}
+
+func (g glob) match(name string) bool {
+	if len(g.parts) == 1 {
+		return g.parts[0] == name
+	}
+	if !strings.HasPrefix(name, g.parts[0]) {
+		return false
+	}
+	name = name[len(g.parts[0]):]
+	for i := 1; i < len(g.parts)-1; i++ {
+		idx := strings.Index(name, g.parts[i])
+		if idx < 0 {
+			return false
+		}
+		name = name[idx+len(g.parts[i]):]
+	}
+	return strings.HasSuffix(name, g.parts[len(g.parts)-1])
+}
+
+// globAny reports whether name matches any of the compiled patterns.
+func globAny(globs []glob, name string) bool {
+	for _, g := range globs {
+		if g.match(name) {
 			return true
 		}
 	}
 	return false
 }
 
+// globMatch compiles and matches in one step. Kept for the pattern-semantics
+// tests; the request path uses pre-compiled globs.
 func globMatch(pattern, name string) bool {
-	parts := strings.Split(pattern, "*")
-	if len(parts) == 1 {
-		return pattern == name
-	}
-	if !strings.HasPrefix(name, parts[0]) {
-		return false
-	}
-	name = name[len(parts[0]):]
-	for i := 1; i < len(parts)-1; i++ {
-		idx := strings.Index(name, parts[i])
-		if idx < 0 {
-			return false
-		}
-		name = name[idx+len(parts[i]):]
-	}
-	return strings.HasSuffix(name, parts[len(parts)-1])
+	return compileGlob(pattern).match(name)
 }
