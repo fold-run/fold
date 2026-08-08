@@ -292,6 +292,7 @@ func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
 	u := newUpstream(ucfg, g.state)
 	u.metrics = g.metrics
 	u.tracer = g.tracer
+	u.sep = g.sep
 	u.log = g.log.With("upstream", ucfg.ID)
 	u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
 		_ = g.server.ResourceUpdated(ctx, params) // best-effort fan-out

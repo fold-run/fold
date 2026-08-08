@@ -87,6 +87,57 @@ type upstream struct {
 	session    *mcp.ClientSession       // root session
 	bridged    map[string]*bridgedEntry // downstream session ID → bridged session
 	subscribed map[string]bool          // URIs subscribed on the root session
+
+	// decoded memoizes the parsed form of each cached list, so a warm cache
+	// hit does not re-run json.Unmarshal on every request (see cachedList).
+	// Keyed by list kind, so it holds at most one entry per list method.
+	decodedMu sync.Mutex
+	decoded   map[string]decodedList
+
+	// sep is the gateway's namespace separator, fixed for this upstream's
+	// life (the routing section is construction-wired and cannot hot-reload).
+	// Set by newWiredUpstream; empty for an un-namespaced upstream, which is
+	// never rewritten anyway.
+	sep string
+
+	// publicTools / publicPrompts memoize the namespaced view of the cached
+	// lists — the egress rewrite is a pure function of the decoded list, the
+	// namespace, and the separator, so it belongs next to the decode rather
+	// than on every request. See publicView.
+	publicMu      sync.Mutex
+	publicTools   publicView[mcp.Tool]
+	publicPrompts publicView[mcp.Prompt]
+}
+
+// publicView is a namespaced list, index-aligned with the bare list it was
+// built from. from is retained for the identity check that validates it:
+// bare lists come from the decode memo, so a refill yields a different slice
+// and rebuilds the view — the same self-invalidating trick cachedList uses.
+type publicView[T any] struct {
+	from  []*T
+	items []*T
+}
+
+// get returns the memoized view for bare, if it was built from exactly that
+// slice.
+func (v publicView[T]) get(bare []*T) ([]*T, bool) {
+	if len(v.from) != len(bare) {
+		return nil, false
+	}
+	if len(bare) > 0 && &v.from[0] != &bare[0] {
+		return nil, false
+	}
+	return v.items, true
+}
+
+// decodedList is one cached list's parsed form, valid only for the exact
+// bytes it was parsed from. bytes is retained rather than just its address:
+// holding the backing array alive is what makes the identity check in
+// cachedList sound, because no later allocation can reuse that address while
+// this reference exists.
+type decodedList struct {
+	bytes []byte
+	items any // []T for the T the list was decoded as
 }
 
 type bridgedEntry struct {
@@ -435,10 +486,23 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 	return session, nil
 }
 
+// bridgeOpts builds the client options for a bridged session on demand. It is
+// only called when a session must actually be connected — see bridgeFor.
+type bridgeOpts func() *mcp.ClientOptions
+
+// build resolves the options, tolerating a nil thunk (unbridged callers).
+func (b bridgeOpts) build() *mcp.ClientOptions {
+	if b == nil {
+		return nil
+	}
+	return b()
+}
+
 // bridgedSession connects (or reuses) the per-client session for downstream
-// session key. opts carries the handlers that forward server-initiated
-// traffic (sampling, elicitation, logging, progress) back to that client.
-func (u *upstream) bridgedSession(ctx context.Context, key string, opts *mcp.ClientOptions) (*mcp.ClientSession, error) {
+// session key. opts builds the handlers that forward server-initiated
+// traffic (sampling, elicitation, logging, progress) back to that client;
+// it is resolved only on the connect path.
+func (u *upstream) bridgedSession(ctx context.Context, key string, opts bridgeOpts) (*mcp.ClientSession, error) {
 	u.mu.Lock()
 	if e := u.bridged[key]; e != nil {
 		e.lastUsed = time.Now()
@@ -448,7 +512,7 @@ func (u *upstream) bridgedSession(ctx context.Context, key string, opts *mcp.Cli
 	}
 	u.mu.Unlock()
 
-	session, err := u.connect(ctx, opts)
+	session, err := u.connect(ctx, opts.build())
 	if err != nil {
 		return nil, err
 	}
@@ -548,7 +612,7 @@ func (u *upstream) do(ctx context.Context, fn func(context.Context, *mcp.ClientS
 }
 
 // doBridged runs one guarded request on the per-client session for key.
-func (u *upstream) doBridged(ctx context.Context, key string, opts *mcp.ClientOptions, fn func(context.Context, *mcp.ClientSession) error) error {
+func (u *upstream) doBridged(ctx context.Context, key string, opts bridgeOpts, fn func(context.Context, *mcp.ClientSession) error) error {
 	if key == "" {
 		return u.do(ctx, fn)
 	}
@@ -649,6 +713,14 @@ func isConnectionError(err error) bool {
 // cachedList fetches a list through the upstream's shared cache, which
 // stores serialized JSON so entries can live in Redis and be shared across
 // gateway instances.
+//
+// The returned slice and the items it points at are shared with every other
+// caller of this list and MUST be treated as read-only: the parsed form is
+// memoized per upstream (see loadDecoded), so decoding is paid once per cache
+// generation rather than once per request — the difference between ~450 µs
+// and ~60 ns on a 200-tool upstream, multiplied by every upstream in the
+// federation on every list request. Callers that rewrite a name (egress
+// namespacing) copy the item first.
 func cachedList[T any](ctx context.Context, u *upstream, key string, fetch func(context.Context, *mcp.ClientSession) ([]T, error)) ([]T, error) {
 	data, err := u.lists.GetOrFill(ctx, key, u.cacheTTL, func(ctx context.Context) ([]byte, error) {
 		var items []T
@@ -665,11 +737,121 @@ func cachedList[T any](ctx context.Context, u *upstream, key string, fetch func(
 	if err != nil {
 		return nil, err
 	}
+	if items, ok := loadDecoded[T](u, key, data); ok {
+		return items, nil
+	}
 	var items []T
 	if err := json.Unmarshal(data, &items); err != nil {
 		return nil, fmt.Errorf("decode cached %s for upstream %q: %w", key, u.cfg.ID, err)
 	}
+	storeDecoded(u, key, data, items)
 	return items, nil
+}
+
+// loadDecoded returns the memoized parse of data, if the last parse of this
+// list was of these exact bytes.
+//
+// Identity, not equality: the in-process cache hands back the same backing
+// array on every hit, so this matches whenever the entry has not been
+// refilled — and any refill or Invalidate produces a different array, which
+// misses and re-decodes. That makes the memo self-invalidating, with no
+// second invalidation path to keep in sync with the cache's own. The Redis
+// provider decodes a fresh slice per call, so it always misses and keeps
+// exactly today's behavior.
+func loadDecoded[T any](u *upstream, key string, data []byte) ([]T, bool) {
+	if !u.memoizable(data) {
+		return nil, false
+	}
+	u.decodedMu.Lock()
+	d, ok := u.decoded[key]
+	u.decodedMu.Unlock()
+	if !ok || !sameBytes(d.bytes, data) {
+		return nil, false
+	}
+	items, ok := d.items.([]T)
+	return items, ok
+}
+
+func storeDecoded[T any](u *upstream, key string, data []byte, items []T) {
+	if !u.memoizable(data) {
+		return
+	}
+	u.decodedMu.Lock()
+	defer u.decodedMu.Unlock()
+	if u.decoded == nil {
+		u.decoded = map[string]decodedList{}
+	}
+	u.decoded[key] = decodedList{bytes: data, items: items}
+}
+
+// memoizable reports whether a fetched list may be memoized. An upstream with
+// caching disabled fetches fresh bytes per request — which is the point when
+// the credential is caller-derived and the list is per-user — so nothing is
+// retained for it.
+func (u *upstream) memoizable(data []byte) bool {
+	return u.cacheTTL > 0 && len(data) > 0
+}
+
+// sameBytes reports whether two slices share a backing array and length.
+func sameBytes(a, b []byte) bool {
+	return len(a) == len(b) && len(a) > 0 && &a[0] == &b[0]
+}
+
+// publicName rewrites a bare upstream name into the namespaced name clients
+// see. An upstream without a namespace runs passthrough and is never
+// rewritten.
+func (u *upstream) publicName(bare string) string {
+	if u.cfg.Namespace == "" {
+		return bare
+	}
+	return u.cfg.Namespace + u.sep + bare
+}
+
+// namespacedTools returns the tool list as clients see it — names rewritten
+// to {namespace}{sep}{name} — index-aligned with bare, so a caller can decide
+// visibility on the bare name and emit the public item at the same index.
+//
+// The rewrite used to run per request, copying every tool and building every
+// name again for a result that only changes when the cache refills. Both the
+// returned slice and its items are shared and read-only, like everything else
+// from the list path (see cachedList).
+func (u *upstream) namespacedTools(bare []*mcp.Tool) []*mcp.Tool {
+	if u.cfg.Namespace == "" {
+		return bare // passthrough: names are already public, nothing to rewrite
+	}
+	u.publicMu.Lock()
+	defer u.publicMu.Unlock()
+	if items, ok := u.publicTools.get(bare); ok {
+		return items
+	}
+	items := make([]*mcp.Tool, len(bare))
+	for i, t := range bare {
+		nt := *t
+		nt.Name = u.publicName(t.Name)
+		items[i] = &nt
+	}
+	u.publicTools = publicView[mcp.Tool]{from: bare, items: items}
+	return items
+}
+
+// namespacedPrompts is namespacedTools for prompts.
+func (u *upstream) namespacedPrompts(bare []*mcp.Prompt) []*mcp.Prompt {
+	if u.cfg.Namespace == "" {
+		return bare
+	}
+	u.publicMu.Lock()
+	defer u.publicMu.Unlock()
+	if items, ok := u.publicPrompts.get(bare); ok {
+		return items
+	}
+	items := make([]*mcp.Prompt, len(bare))
+	for i, p := range bare {
+		np := *p
+		np.Name = u.publicName(p.Name)
+		items[i] = &np
+	}
+	u.publicPrompts = publicView[mcp.Prompt]{from: bare, items: items}
+	return items
 }
 
 // listTools returns the upstream's full (un-namespaced) tool list, cached.
@@ -725,7 +907,7 @@ func (u *upstream) listResourceTemplates(ctx context.Context) ([]*mcp.ResourceTe
 	})
 }
 
-func (u *upstream) callTool(ctx context.Context, key string, opts *mcp.ClientOptions, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+func (u *upstream) callTool(ctx context.Context, key string, opts bridgeOpts, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
 	var out *mcp.CallToolResult
 	err := u.doBridged(ctx, key, opts, func(ctx context.Context, s *mcp.ClientSession) error {
 		var err error
@@ -735,7 +917,7 @@ func (u *upstream) callTool(ctx context.Context, key string, opts *mcp.ClientOpt
 	return out, err
 }
 
-func (u *upstream) getPrompt(ctx context.Context, key string, opts *mcp.ClientOptions, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
+func (u *upstream) getPrompt(ctx context.Context, key string, opts bridgeOpts, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
 	var out *mcp.GetPromptResult
 	err := u.doBridged(ctx, key, opts, func(ctx context.Context, s *mcp.ClientSession) error {
 		var err error
@@ -793,7 +975,7 @@ func (u *upstream) unsubscribe(ctx context.Context, uri string) error {
 
 // setLoggingLevel propagates a client's logging level to its bridged
 // session (logging notifications flow back per client).
-func (u *upstream) setLoggingLevel(ctx context.Context, key string, opts *mcp.ClientOptions, level mcp.LoggingLevel) error {
+func (u *upstream) setLoggingLevel(ctx context.Context, key string, opts bridgeOpts, level mcp.LoggingLevel) error {
 	return u.doBridged(ctx, key, opts, func(ctx context.Context, s *mcp.ClientSession) error {
 		return s.SetLoggingLevel(ctx, &mcp.SetLoggingLevelParams{Level: level})
 	})
