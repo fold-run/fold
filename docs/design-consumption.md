@@ -76,18 +76,29 @@ is a TTL set-if-absent, and `Limiter` is the sliding window above.
 // Budget admits consumption against a fixed, calendar-aligned allowance that
 // resets at the period boundary.
 type Budget interface {
-    // Add records n units and reports whether they fit. When they do not, it
-    // returns the time the period resets — not a retry delay, because the
-    // answer to an exhausted budget is "not until the 1st", and a caller that
-    // treats it as a backoff will hammer the gateway for a fortnight.
-    Add(ctx context.Context, n int64) (ok bool, resets time.Time)
-    // Used reports consumption and allowance, for metrics and /health.
-    Used(ctx context.Context) (used, limit int64, resets time.Time)
+    // Add records n units and reports whether they fit.
+    Add(ctx context.Context, n int64) BudgetResult
+    // Used reports the window's state without consuming any of it.
+    Used(ctx context.Context) BudgetResult
+}
+
+type BudgetResult struct {
+    Allowed     bool
+    Used, Limit int64
+    // Resets is when the window rolls over — not a retry delay, because the
+    // answer to an exhausted monthly budget is "not until the 1st", and a
+    // caller that backs off by this amount would sleep for a fortnight.
+    Resets   time.Time
+    Degraded bool // decided per-instance; shared state was unreachable
 }
 ```
 
 `Used` is not optional garnish. A budget that can only reject is a budget an
 operator discovers at 100%; the whole value is knowing at 80%.
+
+*(Implementation note: the first sketch returned bare tuples. It had nowhere to
+put `Degraded`, which the fail-open decision below makes mandatory, so both
+methods return one struct instead.)*
 
 ## What counts as one unit
 

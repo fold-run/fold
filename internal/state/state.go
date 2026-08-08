@@ -77,6 +77,9 @@ type Provider interface {
 	// Limiter returns a rate limiter for scope admitting rpm requests per
 	// minute. rpm <= 0 returns an unlimited limiter.
 	Limiter(scope string, rpm int) Limiter
+	// Budget returns an accumulating allowance for scope over a
+	// calendar-aligned period. limit <= 0 returns an unlimited budget.
+	Budget(scope string, period Period, limit int64) Budget
 	// Breaker returns a circuit breaker for scope.
 	Breaker(scope string, threshold int, halfOpenAfter time.Duration) Breaker
 	// ListCache returns the list cache for scope.
