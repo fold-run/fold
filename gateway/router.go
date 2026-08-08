@@ -92,6 +92,8 @@ func classify(err error) audit.Outcome {
 			return audit.OutcomeUpstreamDown
 		case codeDenied:
 			return audit.OutcomeDenied
+		case codeBudgetExhausted:
+			return audit.OutcomeBudgetExhausted
 		}
 	}
 	return audit.OutcomeError

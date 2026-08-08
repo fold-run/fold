@@ -201,7 +201,6 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 			return nil, err
 		}
 	}
-	g.routes.Store(g.buildRoutes(cfg, nil))
 	globalRPM := 0
 	if cfg.Server != nil && cfg.Server.RateLimit != nil {
 		globalRPM = cfg.Server.RateLimit.RequestsPerMinute
@@ -213,8 +212,11 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	if cfg.Server != nil {
 		serverBudget = cfg.Server.Budget
 	}
+	// Built before the first snapshot: every upstream carries a reference to
+	// it, so it must exist before buildRoutes constructs them.
 	g.globalBudget = provider.Budget("global",
 		state.Period(serverBudget.ResolvedPeriod()), serverBudget.Allowance())
+	g.routes.Store(g.buildRoutes(cfg, nil))
 	// A budget is only a budget across a fleet: without shared state each
 	// instance keeps its own counter, so N instances enforce N allowances.
 	// Say so rather than let an operator discover it from a bill.
@@ -319,6 +321,7 @@ func (g *Gateway) buildRoutes(cfg *config.Config, prev *routes) *routes {
 // notification time, so construction order does not matter.
 func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
 	u := newUpstream(ucfg, g.state)
+	u.globalBudget = g.globalBudget
 	u.metrics = g.metrics
 	u.tracer = g.tracer
 	u.sep = g.sep

@@ -26,12 +26,13 @@ scrapers must send an allowed `Host` header (see
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `fold_requests_total` | `method`, `outcome` | MCP requests through the gateway. Outcomes mirror audit: `ok`, `error`, `denied`, `rate_limited`, `upstream_down`. |
+| `fold_requests_total` | `method`, `outcome` | MCP requests through the gateway. Outcomes mirror audit: `ok`, `error`, `denied`, `rate_limited`, `budget_exhausted`, `upstream_down`. |
 | `fold_request_duration_seconds` | `method` | End-to-end request duration histogram. |
-| `fold_upstream_requests_total` | `upstream`, `outcome` | Proxied upstream calls. Outcomes: `ok`, `rate_limited`, `circuit_open`, `connect_error`, `error`. A JSON-RPC error from the upstream counts as `ok` — the upstream answered; its error passes through verbatim. |
+| `fold_upstream_requests_total` | `upstream`, `outcome` | Proxied upstream calls. Outcomes: `ok`, `rate_limited`, `budget_exhausted`, `circuit_open`, `connect_error`, `error`. A JSON-RPC error from the upstream counts as `ok` — the upstream answered; its error passes through verbatim. |
 | `fold_upstream_request_duration_seconds` | `upstream` | Upstream call duration histogram. |
 | `fold_upstream_breaker_state` | `upstream` | 0 closed, 1 half-open, 2 open. |
 | `fold_upstream_endpoint_healthy` | `upstream`, `endpoint` | Multi-endpoint upstreams only: 1 in rotation, 0 ejected after a connect failure (or by an active health probe). |
+| `fold_budget_degraded_total` | `scope` | Budget decisions taken per-instance because shared state was unreachable. Budgets fail open by design, so this is the signal that a fleet is not enforcing one allowance — **alert on any non-zero rate**. |
 | `fold_http_rejections_total` | `reason` | Requests refused before the MCP layer: `body_too_large`, `forbidden_host`, `forbidden_origin`, `unauthenticated`, `rate_limited`, `oauth_token_rate_limited`. |
 | `fold_discovery_syncs_total` | `outcome` | Discovery polls: `applied`, `unchanged`, `rejected` (document failed parse or merged validation), `error` (fetch failed). |
 | `fold_build_info` | `version` | Always 1. |
@@ -54,7 +55,7 @@ asynchronous and batched, never adding request latency). Fields:
 | `name` | Namespaced tool/prompt name or resource URI. |
 | `upstream` | Routed upstream id. |
 | `decision`, `ruleId` | Policy outcome (`allow`/`deny`) and the matching rule. |
-| `outcome` | `ok`, `error`, `denied`, `rate_limited`, `unauthenticated`, `upstream_down`, `forbidden`. |
+| `outcome` | `ok`, `error`, `denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`. |
 | `error` | Error text, when the request failed. |
 | `latencyMs` | End-to-end latency. |
 
@@ -69,6 +70,7 @@ errors pass through verbatim):
 | `-32041` | Upstream unavailable (circuit open / unreachable / all down) | Retry later; transient. |
 | `-32042` | Policy denied the invocation | Not transient — the principal lacks a grant. |
 | `-32043` | Name resolves to no configured namespace | Refetch the tool list. |
+| `-32044` | Consumption budget exhausted for the period | Not transient within the period — the message names the reset instant. Do **not** treat it as a backoff delay; a monthly reset would mean sleeping for weeks. |
 | `-32002` | Task id not owned by any upstream | The task is unknown or belongs to another principal. |
 | `-32602` | Invalid or expired list cursor | Restart the list from the beginning. |
 
