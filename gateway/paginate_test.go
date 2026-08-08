@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -139,5 +141,35 @@ func TestPaginationDisabled(t *testing.T) {
 	// fold never minted a cursor in this mode, so any cursor is invalid.
 	if _, err := session.ListTools(context.Background(), &mcp.ListToolsParams{Cursor: "anything"}); err == nil {
 		t.Error("cursor accepted while pagination is disabled")
+	}
+}
+
+// The fingerprint's byte stream is wire-visible: it is baked into every
+// cursor a client holds. Hashing the names straight off the items must
+// produce exactly what building a []string first produced, or a client
+// paging across a gateway upgrade would be told to restart the list.
+func TestSnapshotGenByteStreamUnchanged(t *testing.T) {
+	names := []string{"", "alpha", "ns__beta", "with\x00nul", "üñî"}
+
+	// The pre-existing formulation, kept here as the reference.
+	reference := func(kind string, names []string) string {
+		h := sha256.New()
+		h.Write([]byte(kind))
+		for _, n := range names {
+			h.Write([]byte{0})
+			h.Write([]byte(n))
+		}
+		return hex.EncodeToString(h.Sum(nil)[:6])
+	}
+
+	for _, kind := range []string{"tools", "prompts", "resources", "resourceTemplates"} {
+		for i := range names {
+			subset := names[:i]
+			want := reference(kind, subset)
+			got := snapshotGen(kind, subset, func(s string) string { return s })
+			if got != want {
+				t.Errorf("snapshotGen(%q, %q) = %s, want %s", kind, subset, got, want)
+			}
+		}
 	}
 }

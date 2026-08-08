@@ -144,12 +144,12 @@ func (g *Gateway) resolve(rt *routes, name string) (*upstream, string, error) {
 	}
 }
 
-// public returns the namespaced public name for an upstream's bare name.
+// public returns the namespaced public name for an upstream's bare name —
+// the inverse of resolve. The rewrite itself lives on the upstream, which
+// carries the same separator (newWiredUpstream), so the per-request path and
+// the memoized list view cannot drift apart.
 func (g *Gateway) public(u *upstream, name string) string {
-	if u.cfg.Namespace == "" {
-		return name
-	}
-	return u.cfg.Namespace + g.sep + name
+	return u.publicName(name)
 }
 
 // fanOut runs fn against every upstream concurrently and collects results
@@ -199,13 +199,14 @@ func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, _ 
 	}
 	out := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Meta: meta}
 	for i, u := range rt.upstreams {
-		for _, t := range lists[i] {
+		// Visibility is decided on the bare name, the item emitted is the
+		// namespaced one; the two lists are index-aligned.
+		public := u.namespacedTools(lists[i])
+		for j, t := range lists[i] {
 			if !rt.policy.Visible(principal, u.cfg.ID, "tools/call", t.Name) {
 				continue
 			}
-			nt := *t
-			nt.Name = g.public(u, t.Name)
-			out.Tools = append(out.Tools, &nt)
+			out.Tools = append(out.Tools, public[j])
 		}
 	}
 	cursor := ""
@@ -271,13 +272,12 @@ func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, 
 	}
 	out := &mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}, Meta: meta}
 	for i, u := range rt.upstreams {
-		for _, p := range lists[i] {
+		public := u.namespacedPrompts(lists[i]) // index-aligned — see listTools
+		for j, p := range lists[i] {
 			if !rt.policy.Visible(principal, u.cfg.ID, "prompts/get", p.Name) {
 				continue
 			}
-			np := *p
-			np.Name = g.public(u, p.Name)
-			out.Prompts = append(out.Prompts, &np)
+			out.Prompts = append(out.Prompts, public[j])
 		}
 	}
 	cursor := ""
@@ -342,6 +342,8 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 			if !rt.policy.Visible(principal, u.cfg.ID, "resources/read", r.URI) {
 				continue
 			}
+			// Shared with every other caller of this list (see cachedList):
+			// forwarded as-is, never mutated.
 			out.Resources = append(out.Resources, r)
 		}
 	}
@@ -373,6 +375,7 @@ func (g *Gateway) listResourceTemplates(ctx context.Context, rt *routes, req mcp
 			if !rt.policy.Visible(principal, u.cfg.ID, "resources/read", tpl.URITemplate) {
 				continue
 			}
+			// Shared, never mutated — see listResources.
 			out.ResourceTemplates = append(out.ResourceTemplates, tpl)
 		}
 	}
@@ -437,15 +440,22 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 	return nil, mcp.ResourceNotFoundError(params.URI)
 }
 
-// bridgeFor returns the per-client session key and bridge options for a
-// request, so server-initiated traffic (sampling, elicitation, logging,
-// progress) flows back to the calling client.
-func (g *Gateway) bridgeFor(req mcp.Request) (string, *mcp.ClientOptions) {
+// bridgeFor returns the per-client session key and a way to build the bridge
+// options for a request, so server-initiated traffic (sampling, elicitation,
+// logging, progress) flows back to the calling client.
+//
+// The options are returned as a thunk rather than built here because only the
+// connect path reads them: a named invocation against an already-open bridged
+// session never touches them, and in steady state that is nearly all of them.
+// The thunk may run more than once (once per upstream that must connect on a
+// logging/setLevel fan-out); each call builds an equivalent value, since the
+// options depend only on the downstream session.
+func (g *Gateway) bridgeFor(req mcp.Request) (string, bridgeOpts) {
 	ss, ok := req.GetSession().(*mcp.ServerSession)
 	if !ok || ss.ID() == "" {
 		return "", nil
 	}
-	return ss.ID(), g.bridgeOptions(ss)
+	return ss.ID(), func() *mcp.ClientOptions { return g.bridgeOptions(ss) }
 }
 
 // complete routes completion/complete to the upstream owning the reference:

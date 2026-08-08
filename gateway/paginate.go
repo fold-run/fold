@@ -44,13 +44,21 @@ func principalCursorKey(p *auth.Principal) string {
 	return hex.EncodeToString(sum[:6])
 }
 
-// snapshotGen fingerprints the filtered snapshot a cursor walks.
-func snapshotGen(kind string, names []string) string {
+// snapshotGen fingerprints the filtered snapshot a cursor walks. It reads the
+// names straight off the items rather than materializing a []string first —
+// on a large federation that intermediate slice was one of the bigger
+// allocations left on the list path. The hashed byte stream is unchanged
+// (kind, then a NUL and the name for each item), so cursors minted before and
+// after this are identical.
+func snapshotGen[T any](kind string, items []T, name func(T) string) string {
 	h := sha256.New()
-	h.Write([]byte(kind))
-	for _, n := range names {
-		h.Write([]byte{0})
-		h.Write([]byte(n))
+	buf := make([]byte, 0, 64)
+	buf = append(buf, kind...)
+	h.Write(buf)
+	for _, it := range items {
+		buf = append(buf[:0], 0)
+		buf = append(buf, name(it)...)
+		h.Write(buf)
 	}
 	return hex.EncodeToString(h.Sum(nil)[:6])
 }
@@ -84,11 +92,7 @@ func paginate[T any](items []T, name func(T) string, kind, rawCursor string, siz
 		return items, "", nil
 	}
 
-	names := make([]string, len(items))
-	for i, it := range items {
-		names[i] = name(it)
-	}
-	gen := snapshotGen(kind, names)
+	gen := snapshotGen(kind, items, name)
 	pkey := principalCursorKey(principal)
 
 	offset := 0

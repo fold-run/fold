@@ -28,7 +28,10 @@ func FuzzResolve(f *testing.F) {
 			return // invalid combinations are the parser's problem, not routing's
 		}
 
-		u := &upstream{cfg: cfg.Upstreams[0]}
+		// An upstream carries the gateway's separator (newWiredUpstream), so
+		// the fixture must too — public and resolve are only inverses when
+		// they agree on it.
+		u := &upstream{cfg: cfg.Upstreams[0], sep: cfg.NamespaceSeparator()}
 		g := &Gateway{sep: cfg.NamespaceSeparator()}
 		rt := &routes{
 			passthrough: cfg.Passthrough(),
