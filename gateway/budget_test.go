@@ -2,11 +2,20 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/fold-run/fold/audit"
 	"github.com/fold-run/fold/config"
 )
 
@@ -208,5 +217,157 @@ func TestBudgetPeriodDefaultsToMonth(t *testing.T) {
 	resets := gw.rt().byID["a"].budget.Used(context.Background()).Resets.UTC()
 	if resets.Day() != 1 || resets.Hour() != 0 {
 		t.Fatalf("an unset period resets at %v, want the 1st at midnight UTC", resets)
+	}
+}
+
+// ---- enforcement (phase 3) ----
+
+// The per-upstream allowance stops calls once spent, and says so with -32044
+// rather than the rate-limit code: the remedies differ.
+func TestUpstreamBudgetExhaustionRejectsWith32044(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, budgetCfg(up.URL, &config.Budget{Period: "day", UpstreamCalls: 2}))
+	session := connect(t, ts.URL, nil)
+	ctx := context.Background()
+
+	for i := range 2 {
+		if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "a__tool"}); err != nil {
+			t.Fatalf("call %d rejected inside the allowance: %v", i, err)
+		}
+	}
+	_, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "a__tool"})
+	if err == nil {
+		t.Fatal("call admitted past an exhausted budget")
+	}
+	var wire *jsonrpc.Error
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %v (%T), want a JSON-RPC error", err, err)
+	}
+	if wire.Code != codeBudgetExhausted {
+		t.Fatalf("code = %d, want %d — exhaustion must not reuse the rate-limit code",
+			wire.Code, codeBudgetExhausted)
+	}
+	// The message must point at the reset, not at a retry delay: a client
+	// backing off by a monthly reset would sleep for a fortnight.
+	if !strings.Contains(wire.Message, "resets") {
+		t.Fatalf("message = %q, want it to name when the budget resets", wire.Message)
+	}
+}
+
+// The server budget is the wider net: it stops calls regardless of which
+// upstream they were routed to.
+func TestServerBudgetSpansUpstreams(t *testing.T) {
+	upA, _ := newUpstreamServer(t, "alpha")
+	upB, _ := newUpstreamServer(t, "beta")
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{
+			{ID: "a", URL: upA.URL, Namespace: "a"},
+			{ID: "b", URL: upB.URL, Namespace: "b"},
+		},
+		Server: &config.ServerSection{Budget: &config.Budget{Period: "day", UpstreamCalls: 2}},
+	})
+	session := connect(t, ts.URL, nil)
+	ctx := context.Background()
+
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "a__alpha"}); err != nil {
+		t.Fatalf("first call rejected: %v", err)
+	}
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "b__beta"}); err != nil {
+		t.Fatalf("second call rejected: %v", err)
+	}
+	// Third call, either upstream: the shared allowance is spent.
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "a__alpha"}); err == nil {
+		t.Fatal("a third call was admitted past a server budget of 2")
+	}
+}
+
+// Exhaustion is audited with its own outcome — audit is the single exit door,
+// and "we are being throttled" must not read the same as "we spent the month".
+func TestBudgetExhaustionIsAudited(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+
+	var mu sync.Mutex
+	var events []audit.Event
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch []audit.Event
+		if err := json.NewDecoder(r.Body).Decode(&batch); err == nil {
+			mu.Lock()
+			events = append(events, batch...)
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(collector.Close)
+
+	cfg := budgetCfg(up.URL, &config.Budget{Period: "day", UpstreamCalls: 1})
+	cfg.Audit = &config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: collector.URL}}}
+	ts, _ := startGateway(t, cfg)
+	session := connect(t, ts.URL, nil)
+	ctx := context.Background()
+
+	_, _ = session.CallTool(ctx, &mcp.CallToolParams{Name: "a__tool"})
+	_, _ = session.CallTool(ctx, &mcp.CallToolParams{Name: "a__tool"}) // exhausts
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		found := false
+		for _, e := range events {
+			if e.Outcome == audit.OutcomeBudgetExhausted {
+				found = true
+			}
+		}
+		mu.Unlock()
+		if found {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("no budget_exhausted audit event among %d events", len(events))
+}
+
+// A rate-limited call never reaches the upstream, so it must not spend budget.
+// Otherwise a caller being throttled would also burn the month's allowance.
+func TestRateLimitedCallsDoNotSpendBudget(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	_, gw := startGateway(t, &config.Config{Upstreams: []config.Upstream{{
+		ID: "a", URL: up.URL, Namespace: "a",
+		RateLimit: &config.RateLimit{RequestsPerMinute: 1},
+		Budget:    &config.Budget{Period: "day", UpstreamCalls: 100},
+	}}})
+
+	u := gw.rt().byID["a"]
+	ctx := context.Background()
+	// Drive the upstream directly: the first call passes the limiter, the
+	// rest are refused by it.
+	for range 5 {
+		_, _ = u.listTools(ctx)
+	}
+	if used := u.budget.Used(ctx).Used; used > 1 {
+		t.Fatalf("budget used = %d after one admitted and four rate-limited calls, want 1", used)
+	}
+}
+
+// An open circuit means the upstream is not serving, so those calls must not
+// spend budget either — a month-long outage would otherwise burn a month's
+// allowance on calls nobody answered.
+func TestCircuitOpenDoesNotSpendBudget(t *testing.T) {
+	// No server on this port: every connect fails and opens the breaker.
+	_, gw := startGateway(t, &config.Config{Upstreams: []config.Upstream{{
+		ID: "a", URL: "http://127.0.0.1:1", Namespace: "a",
+		CircuitBreaker: &config.CircuitBreaker{FailureThreshold: 2, HalfOpenAfterMs: 60000},
+		Timeouts:       &config.Timeouts{ConnectMs: 200},
+		Budget:         &config.Budget{Period: "day", UpstreamCalls: 100},
+	}}})
+
+	u := gw.rt().byID["a"]
+	ctx := context.Background()
+	for range 6 {
+		_, _ = u.listTools(ctx)
+	}
+	if used := u.budget.Used(ctx).Used; used != 0 {
+		t.Fatalf("budget used = %d against an upstream that never connected, want 0", used)
 	}
 }

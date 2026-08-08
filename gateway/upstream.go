@@ -29,6 +29,7 @@ const (
 	codeUpstreamDown      = -32041 // circuit open or upstream unreachable
 	codeDenied            = -32042 // policy denied the invocation
 	codeUnknownNamespace  = -32043 // name does not resolve to an upstream
+	codeBudgetExhausted   = -32044 // consumption budget exhausted for the period
 	defaultCacheTTL       = 30 * time.Second
 	defaultConnectTimeout = 5 * time.Second
 	defaultRequestTimeout = 60 * time.Second
@@ -52,8 +53,11 @@ type upstream struct {
 
 	limiter state.Limiter
 	budget  state.Budget
-	breaker state.Breaker
-	lists   state.ListCache
+	// globalBudget is the server-wide allowance, shared by every upstream.
+	// Nil in tests that build an upstream directly.
+	globalBudget state.Budget
+	breaker      state.Breaker
+	lists        state.ListCache
 
 	connectTimeout time.Duration
 	requestTimeout time.Duration
@@ -374,6 +378,53 @@ func (u *upstream) connectTo(ctx context.Context, endpoint string, opts *mcp.Cli
 	}, nil)
 }
 
+// chargeBudgets consumes one upstream invocation from the per-upstream and
+// server allowances, returning a wire error when either is exhausted.
+//
+// The per-upstream budget is charged first so its rejection names the upstream
+// the caller actually asked for; the server budget is the wider net. An
+// exhausted per-upstream budget does not consume the server one — being
+// refused by one allowance must not spend another.
+func (u *upstream) chargeBudgets(ctx context.Context) *jsonrpc.Error {
+	if r := u.budget.Add(ctx, 1); !r.Allowed {
+		u.noteDegraded(r, "upstream")
+		return budgetError(fmt.Sprintf("upstream %q", u.cfg.ID), r)
+	}
+	if u.globalBudget != nil {
+		if r := u.globalBudget.Add(ctx, 1); !r.Allowed {
+			u.noteDegraded(r, "server")
+			return budgetError("server", r)
+		}
+	}
+	return nil
+}
+
+// noteDegraded surfaces a budget decision made without shared state. Failing
+// open is deliberate — a Redis blip must not refuse all service — but a fleet
+// running unbudgeted has to be visible rather than inferred, so it is counted
+// and logged rather than passed over in silence.
+func (u *upstream) noteDegraded(r state.BudgetResult, scope string) {
+	if !r.Degraded {
+		return
+	}
+	if u.metrics != nil {
+		u.metrics.observeBudgetDegraded(scope)
+	}
+	u.log.Warn("budget decided without shared state", "scope", scope)
+}
+
+// budgetError renders an exhausted allowance. It reports when the window
+// resets rather than a retry delay: the answer to an exhausted monthly budget
+// is "not until the 1st", and a client treating it as a backoff would sleep
+// for a fortnight.
+func budgetError(scope string, r state.BudgetResult) *jsonrpc.Error {
+	return &jsonrpc.Error{
+		Code: codeBudgetExhausted,
+		Message: fmt.Sprintf("%s budget exhausted (%d/%d); resets %s",
+			scope, r.Used, r.Limit, r.Resets.UTC().Format(time.RFC3339)),
+	}
+}
+
 // startHealthProbes begins the active endpoint probe loop when healthCheck
 // is configured. Called after the upstream is wired (logger set), so the
 // goroutine never races construction. Idempotent.
@@ -658,6 +709,15 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 		u.breaker.Record(ctx, false)
 		observe("connect_error")
 		return &jsonrpc.Error{Code: codeUpstreamDown, Message: err.Error()}
+	}
+	// Budgets are checked here, after the session is in hand, so consumption
+	// counts only invocations that actually reach the upstream. Checking
+	// earlier would charge the allowance for requests a rate limit, an open
+	// circuit, or a failed connect stopped — and a month-long outage would
+	// then burn a month's budget on calls nobody served.
+	if err := u.chargeBudgets(ctx); err != nil {
+		observe("budget_exhausted")
+		return err
 	}
 	rctx, cancel := context.WithTimeout(ctx, u.requestTimeout)
 	defer cancel()

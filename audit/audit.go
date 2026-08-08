@@ -27,6 +27,11 @@ const (
 	OutcomeUnauthenticated Outcome = "unauthenticated"
 	OutcomeUpstreamDown    Outcome = "upstream_down"
 	OutcomeForbidden       Outcome = "forbidden" // host/origin rejected (DNS rebinding)
+	// OutcomeBudgetExhausted is distinct from OutcomeRateLimited because the
+	// remedy differs: a rate limit clears in seconds, an exhausted budget not
+	// until the period rolls over. Collapsing them would make "we are being
+	// throttled" and "we have spent the month" the same line in a SIEM.
+	OutcomeBudgetExhausted Outcome = "budget_exhausted"
 )
 
 // Event is one audit record.

@@ -126,10 +126,14 @@ type memBudget struct {
 	period Period
 	limit  int64
 
-	mu     sync.Mutex
-	window string
-	used   int64
-	now    func() time.Time
+	mu sync.Mutex
+	// windowEnd is when the current window rolls. Tracking the boundary
+	// rather than the window's key keeps Add allocation-free: formatting a
+	// key string per call would allocate on the request path, and this
+	// counter is consulted on every upstream invocation.
+	windowEnd time.Time
+	used      int64
+	now       func() time.Time
 }
 
 func newMemBudget(period Period, limit int64) Budget {
@@ -144,8 +148,8 @@ func newMemBudget(period Period, limit int64) Budget {
 
 // roll resets the counter when the calendar window has changed. Caller holds mu.
 func (b *memBudget) roll(now time.Time) {
-	if w := b.period.key(now); w != b.window {
-		b.window, b.used = w, 0
+	if !now.Before(b.windowEnd) {
+		b.windowEnd, b.used = b.period.next(now), 0
 	}
 }
 
@@ -155,10 +159,10 @@ func (b *memBudget) Add(_ context.Context, n int64) BudgetResult {
 	defer b.mu.Unlock()
 	b.roll(now)
 	if b.used+n > b.limit {
-		return BudgetResult{Used: b.used, Limit: b.limit, Resets: b.period.next(now)}
+		return BudgetResult{Used: b.used, Limit: b.limit, Resets: b.windowEnd}
 	}
 	b.used += n
-	return BudgetResult{Allowed: true, Used: b.used, Limit: b.limit, Resets: b.period.next(now)}
+	return BudgetResult{Allowed: true, Used: b.used, Limit: b.limit, Resets: b.windowEnd}
 }
 
 func (b *memBudget) Used(context.Context) BudgetResult {
@@ -170,7 +174,7 @@ func (b *memBudget) Used(context.Context) BudgetResult {
 		Allowed: b.used < b.limit,
 		Used:    b.used,
 		Limit:   b.limit,
-		Resets:  b.period.next(now),
+		Resets:  b.windowEnd,
 	}
 }
 

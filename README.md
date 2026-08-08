@@ -281,6 +281,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 | `-32041` | Upstream unavailable (circuit open / unreachable / all upstreams down) |
 | `-32042` | Policy denied the invocation |
 | `-32043` | Name does not resolve to a configured namespace |
+| `-32044` | Consumption budget exhausted for the period (server or per-upstream) |
 | `-32002` | Task id not owned by any upstream |
 
 ## Observability

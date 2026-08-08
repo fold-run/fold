@@ -23,6 +23,7 @@ type metricsSet struct {
 	upstreamDur *prometheus.HistogramVec // upstream request duration by upstream
 	httpRejects *prometheus.CounterVec   // HTTP-level rejections by reason
 	discovery   *prometheus.CounterVec   // discovery syncs by outcome
+	budgetDegr  *prometheus.CounterVec   // budget decisions made without shared state
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -54,9 +55,14 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_discovery_syncs_total",
 			Help: "Upstream-discovery polls by outcome: applied, unchanged, rejected, error.",
 		}, []string{"outcome"}),
+		budgetDegr: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_budget_degraded_total",
+			Help: "Budget decisions made per-instance because shared state was unreachable, by scope. Non-zero means the fleet is not enforcing one allowance — alert on it.",
+		}, []string{"scope"}),
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
+		m.budgetDegr,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -128,6 +134,12 @@ func (m *metricsSet) observeUpstream(upstreamID, outcome string, d time.Duration
 
 func (m *metricsSet) reject(reason string) {
 	m.httpRejects.WithLabelValues(reason).Inc()
+}
+
+// observeBudgetDegraded counts a budget decision taken without shared state.
+// Fail-open is deliberate, but a fleet running unbudgeted must be visible.
+func (m *metricsSet) observeBudgetDegraded(scope string) {
+	m.budgetDegr.WithLabelValues(scope).Inc()
 }
 
 func (m *metricsSet) discoverySync(outcome string) {
