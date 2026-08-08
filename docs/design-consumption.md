@@ -1,7 +1,15 @@
 # Design: quotas, budgets, and consumption metering
 
-Status: **proposed**. This records the design for the [roadmap](roadmap.md)'s
-Horizon 1 headline — the one governance pillar where fold has nothing today.
+Status: **implemented** across four phases. This recorded the design before
+implementation and now serves as the decision record; the operator-facing
+documentation lives in the README and [operations.md](operations.md). It
+covers the [roadmap](roadmap.md)'s Horizon 1 headline — the one governance
+pillar where fold had nothing.
+
+Three things in the original proposal changed under implementation: the
+`Budget` interface returns a struct rather than tuples, `responseBytes` was
+dropped from metering, and the enforcement point moved. Each is recorded
+inline where the original text stands.
 
 ## Motivation
 
@@ -185,9 +193,15 @@ Additive `audit.Event` fields — the contract permits adding, and audit is
 already the single exit door every terminal response passes through:
 
 - `upstreamCalls` — invocations behind this request (the fan-out, ≥ 1)
-- `responseBytes` — serialized result size
-- `toolsServed` — items returned after policy filtering, on list methods
+- `itemsServed` — items returned after policy filtering, on list methods
 - `usage` — counters an upstream published in `_meta`, carried verbatim
+
+*(Implementation note: `responseBytes` was proposed here and dropped. fold does
+not serialize the result — the SDK does, downstream — so measuring it would
+mean an extra `json.Marshal` per request purely to produce a number, trading
+the allocation discipline the proxy path is gated on for a figure an operator
+can already get from their ingress logs. `itemsServed` is the free half of the
+same question, and it is the half that actually predicts context cost.)*
 
 New metrics alongside the existing `fold_*` set: upstream invocations by
 upstream, a response-size histogram, budget consumption as a fraction of
@@ -197,6 +211,12 @@ allowance, and the fail-open counter above.
 currency anywhere in the gateway. The audit stream and `/metrics` are the
 integration surface, and they are already the ones operators ship to a SIEM and
 a TSDB.
+
+## Status
+
+All four phases have landed: the `state.Budget` primitive, config and snapshot
+placement, enforcement with `-32044`, and metering. The per-tenant dimension
+noted above still waits on the tenant object.
 
 ## Implementation phases
 

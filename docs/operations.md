@@ -32,6 +32,7 @@ scrapers must send an allowed `Host` header (see
 | `fold_upstream_request_duration_seconds` | `upstream` | Upstream call duration histogram. |
 | `fold_upstream_breaker_state` | `upstream` | 0 closed, 1 half-open, 2 open. |
 | `fold_upstream_endpoint_healthy` | `upstream`, `endpoint` | Multi-endpoint upstreams only: 1 in rotation, 0 ejected after a connect failure (or by an active health probe). |
+| `fold_request_upstream_calls` | — | Upstream invocations per downstream request. A federated list fans out to every upstream, so the histogram's tail is the width of the federation and its `1` bucket is named calls. Watch it to see what a cheap-looking client request really costs. |
 | `fold_budget_degraded_total` | `scope` | Budget decisions taken per-instance because shared state was unreachable. Budgets fail open by design, so this is the signal that a fleet is not enforcing one allowance — **alert on any non-zero rate**. |
 | `fold_http_rejections_total` | `reason` | Requests refused before the MCP layer: `body_too_large`, `forbidden_host`, `forbidden_origin`, `unauthenticated`, `rate_limited`, `oauth_token_rate_limited`. |
 | `fold_discovery_syncs_total` | `outcome` | Discovery polls: `applied`, `unchanged`, `rejected` (document failed parse or merged validation), `error` (fetch failed). |
@@ -56,6 +57,9 @@ asynchronous and batched, never adding request latency). Fields:
 | `upstream` | Routed upstream id. |
 | `decision`, `ruleId` | Policy outcome (`allow`/`deny`) and the matching rule. |
 | `outcome` | `ok`, `error`, `denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`. |
+| `upstreamCalls` | Upstream invocations this request cost — the fan-out. Not always 1. |
+| `itemsServed` | Items a list returned **after** per-principal policy filtering and pagination: the surface this caller was handed, not the federation's total. |
+| `usage` | Counters the upstream published in its result `_meta`, verbatim. Absent means the upstream reported nothing — fold never synthesizes it. |
 | `error` | Error text, when the request failed. |
 | `latencyMs` | End-to-end latency. |
 

@@ -24,6 +24,7 @@ type metricsSet struct {
 	httpRejects *prometheus.CounterVec   // HTTP-level rejections by reason
 	discovery   *prometheus.CounterVec   // discovery syncs by outcome
 	budgetDegr  *prometheus.CounterVec   // budget decisions made without shared state
+	fanOut      prometheus.Histogram     // upstream invocations per downstream request
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -55,6 +56,13 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_discovery_syncs_total",
 			Help: "Upstream-discovery polls by outcome: applied, unchanged, rejected, error.",
 		}, []string{"outcome"}),
+		fanOut: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "fold_request_upstream_calls",
+			Help: "Upstream invocations per downstream request. A federated list fans out to every upstream, so this is where a cheap-looking client request shows its real cost.",
+			// Federation sizes, not latencies: 1 is the named-call case, the
+			// tail is the width of the federation.
+			Buckets: []float64{1, 2, 5, 10, 20, 50, 100},
+		}),
 		budgetDegr: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fold_budget_degraded_total",
 			Help: "Budget decisions made per-instance because shared state was unreachable, by scope. Non-zero means the fleet is not enforcing one allowance — alert on it.",
@@ -62,7 +70,7 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
-		m.budgetDegr,
+		m.budgetDegr, m.fanOut,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -134,6 +142,11 @@ func (m *metricsSet) observeUpstream(upstreamID, outcome string, d time.Duration
 
 func (m *metricsSet) reject(reason string) {
 	m.httpRejects.WithLabelValues(reason).Inc()
+}
+
+// observeFanOut records what one downstream request cost in upstream calls.
+func (m *metricsSet) observeFanOut(n int) {
+	m.fanOut.Observe(float64(n))
 }
 
 // observeBudgetDegraded counts a budget decision taken without shared state.

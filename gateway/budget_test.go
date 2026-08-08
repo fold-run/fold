@@ -371,3 +371,175 @@ func TestCircuitOpenDoesNotSpendBudget(t *testing.T) {
 		t.Fatalf("budget used = %d against an upstream that never connected, want 0", used)
 	}
 }
+
+// ---- metering (phase 4) ----
+
+// collectAudit runs a webhook sink and returns a snapshot accessor.
+func collectAudit(t *testing.T) (*config.Audit, func() []audit.Event) {
+	t.Helper()
+	var mu sync.Mutex
+	var events []audit.Event
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch []audit.Event
+		if err := json.NewDecoder(r.Body).Decode(&batch); err == nil {
+			mu.Lock()
+			events = append(events, batch...)
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	return &config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: srv.URL}}},
+		func() []audit.Event {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]audit.Event(nil), events...)
+		}
+}
+
+// awaitEvent polls for the first audit event matching pred.
+func awaitEvent(t *testing.T, snap func() []audit.Event, pred func(audit.Event) bool) audit.Event {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, e := range snap() {
+			if pred(e) {
+				return e
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no matching audit event among %d", len(snap()))
+	return audit.Event{}
+}
+
+// The metered cost of a federated list is the fan-out, not 1. This is the
+// number that makes a cheap-looking client request show its real price.
+func TestMeteredFanOutCountsEveryUpstream(t *testing.T) {
+	upA, _ := newUpstreamServer(t, "alpha")
+	upB, _ := newUpstreamServer(t, "beta")
+	upC, _ := newUpstreamServer(t, "gamma")
+	auditCfg, snap := collectAudit(t)
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{
+			{ID: "a", URL: upA.URL, Namespace: "a"},
+			{ID: "b", URL: upB.URL, Namespace: "b"},
+			{ID: "c", URL: upC.URL, Namespace: "c"},
+		},
+		Audit: auditCfg,
+	})
+	session := connect(t, ts.URL, nil)
+	if _, err := session.ListTools(context.Background(), nil); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	e := awaitEvent(t, snap, func(e audit.Event) bool { return e.Method == "tools/list" })
+	if e.UpstreamCalls != 3 {
+		t.Fatalf("upstreamCalls = %d for a 3-upstream list, want 3", e.UpstreamCalls)
+	}
+}
+
+// A named call routes to exactly one upstream, so it costs one.
+func TestMeteredNamedCallCostsOne(t *testing.T) {
+	upA, _ := newUpstreamServer(t, "alpha")
+	upB, _ := newUpstreamServer(t, "beta")
+	auditCfg, snap := collectAudit(t)
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{
+			{ID: "a", URL: upA.URL, Namespace: "a"},
+			{ID: "b", URL: upB.URL, Namespace: "b"},
+		},
+		Audit: auditCfg,
+	})
+	session := connect(t, ts.URL, nil)
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "a__alpha"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	e := awaitEvent(t, snap, func(e audit.Event) bool { return e.Method == "tools/call" })
+	if e.UpstreamCalls != 1 {
+		t.Fatalf("upstreamCalls = %d for a named call, want 1", e.UpstreamCalls)
+	}
+}
+
+// itemsServed is what this caller received after policy filtering — the size
+// of the surface handed over, not the federation's total.
+func TestMeteredItemsServedIsPostPolicy(t *testing.T) {
+	up, _ := newUpstreamServer(t, "alpha", "beta", "gamma")
+	auditCfg, snap := collectAudit(t)
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "a", URL: up.URL, Namespace: "a"}},
+		Policy: &config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID:    "some",
+				Allow: []config.PolicyAllow{{Server: "a", Methods: []string{"tools/list", "tools/call"}, Names: []string{"alpha", "beta"}}},
+			}},
+		},
+		Audit: auditCfg,
+	})
+	session := connect(t, ts.URL, nil)
+	res, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(res.Tools) != 2 {
+		t.Fatalf("served %d tools, want 2", len(res.Tools))
+	}
+
+	e := awaitEvent(t, snap, func(e audit.Event) bool { return e.Method == "tools/list" })
+	if e.ItemsServed != 2 {
+		t.Fatalf("itemsServed = %d, want 2 — it must count what policy let through, not the upstream's 3", e.ItemsServed)
+	}
+}
+
+// Usage an upstream publishes in _meta is carried verbatim. fold never
+// synthesizes it, so an upstream reporting nothing yields no usage field.
+func TestMeteredUsageIsCarriedVerbatim(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "usage-fixture", Version: "1.0"}, nil)
+	srv.AddTool(&mcp.Tool{Name: "reports", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Meta:    mcp.Meta{"usage": map[string]any{"inputTokens": float64(12), "outputTokens": float64(34)}},
+				Content: []mcp.Content{&mcp.TextContent{Text: "ok"}},
+			}, nil
+		})
+	srv.AddTool(&mcp.Tool{Name: "silent", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+		})
+	up := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil))
+	t.Cleanup(up.Close)
+
+	auditCfg, snap := collectAudit(t)
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "a", URL: up.URL, Namespace: "a"}},
+		Audit:     auditCfg,
+	})
+	session := connect(t, ts.URL, nil)
+	ctx := context.Background()
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "a__reports"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	e := awaitEvent(t, snap, func(e audit.Event) bool {
+		return e.Method == "tools/call" && e.Name == "a__reports"
+	})
+	if e.Usage == nil {
+		t.Fatal("usage absent for an upstream that reported it")
+	}
+	if got := e.Usage["inputTokens"]; got != float64(12) {
+		t.Fatalf("usage[inputTokens] = %v, want 12 — it must pass through verbatim", got)
+	}
+
+	// An upstream that reports nothing must not gain an invented usage record.
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "a__silent"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	e2 := awaitEvent(t, snap, func(e audit.Event) bool {
+		return e.Method == "tools/call" && e.Name == "a__silent"
+	})
+	if e2.Usage != nil {
+		t.Fatalf("usage = %v for an upstream that reported none — fold must not synthesize it", e2.Usage)
+	}
+}
