@@ -38,7 +38,7 @@ release (`v0.7.0`).
 ## docker compose
 
 [`compose.yaml`](../compose.yaml) at the repo root runs the gateway with
-`./fold.config.json` mounted, plus an optional Redis under a profile:
+`./fold.config.json` mounted, plus optional services under profiles:
 
 ```bash
 cp fold.config.example.json fold.config.json   # then edit
@@ -46,7 +46,15 @@ docker compose up -d
 curl -fsS http://localhost:8080/health
 
 docker compose --profile redis up -d           # with shared-state Redis
+
+# With a local stdio MCP server behind the shim (see docs/stdio.md):
+SHIM_TOKEN=$(openssl rand -hex 16) docker compose --profile stdio up -d
 ```
+
+Dockerfiles live in [`deploy/docker/`](../deploy/docker) — `fold.Dockerfile`,
+`discovery.Dockerfile`, and `stdio.Dockerfile`. The compose file references the
+published images by default; the `build:` stanzas to run from source are
+commented in place.
 
 The fold service has no compose healthcheck — distroless images carry no
 shell or curl to run one with. Probe `/health` from the host or your

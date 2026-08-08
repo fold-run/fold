@@ -140,10 +140,22 @@ docker build -f deploy/docker/stdio.Dockerfile --build-arg RUNTIME_BASE=python:3
 ```
 
 The gateway image stays distroless — that separation is the point of putting
-the runtime here. On Kubernetes, run the shim as a sidecar or its own
-Deployment and Service, and let [`fold-discovery`](discovery-controller.md)
-register it like any other Service: label it `fold.run/upstream: "true"` and it
-joins the federation.
+the runtime here.
+
+`compose.yaml` ships a worked example under the `stdio` profile:
+
+```bash
+SHIM_TOKEN=$(openssl rand -hex 16) docker compose --profile stdio up
+```
+
+It shows the shape worth copying: the shim is not published to the host (only
+the gateway needs it), it requires a bearer, and the gateway brokers that
+bearer with the `static` credential strategy — so the shim is protected and the
+agent never holds the token.
+
+On Kubernetes, run the shim as a sidecar or its own Deployment and Service, and
+let [`fold-discovery`](discovery-controller.md) register it like any other
+Service: label it `fold.run/upstream: "true"` and it joins the federation.
 
 **Cold starts are per session.** `npx` resolves and starts the package on every
 spawn, which is seconds — and since each session spawns a child, that cost is

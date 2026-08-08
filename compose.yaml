@@ -8,12 +8,17 @@
 #
 # Optional shared-state Redis (only useful when running several gateway
 # instances): docker compose --profile redis up
+#
+# Optional stdio shim, to federate an MCP server that has no HTTP endpoint:
+# docker compose --profile stdio up   (see the stdio service below)
 
 services:
   fold:
     image: ghcr.io/fold-run/fold:latest
     # To run from source instead:
-    # build: .
+    # build:
+    #   context: .
+    #   dockerfile: deploy/docker/fold.Dockerfile
     command:
       - --config
       - /etc/fold/fold.config.json
@@ -30,6 +35,7 @@ services:
     environment: []
     #  - ML_SEARCH_API_KEY=${ML_SEARCH_API_KEY}
     #  - REDIS_URL=redis://redis:6379   # with: docker compose --profile redis up
+    #  - SHIM_TOKEN=${SHIM_TOKEN}       # with: docker compose --profile stdio up
     restart: unless-stopped
 
   redis:
@@ -37,4 +43,64 @@ services:
     image: redis:7-alpine # valkey/valkey:8-alpine is a drop-in alternative
     ports:
       - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+  # The stdio shim: runs one local MCP server and serves it over streamable
+  # HTTP, so the gateway can federate a server that has no network endpoint.
+  # One shim per server — see docs/stdio.md.
+  #
+  # Add the matching upstream to fold.config.json. The shim requires a bearer
+  # (its entrypoint binds 0.0.0.0, and a non-loopback bind without a token is
+  # refused at startup), so the gateway brokers one with the `static` strategy
+  # — the agent never holds it:
+  #
+  #   {
+  #     "id": "files",
+  #     "url": "http://stdio:8091/mcp",
+  #     "namespace": "files",
+  #     "auth": { "strategy": "static", "secretRef": "SHIM_TOKEN" },
+  #     "timeouts": { "connectMs": 30000 }
+  #   }
+  #
+  # connectMs is raised because npx resolves and starts the server on every
+  # spawn, and each session spawns one. Set SHIM_TOKEN in the environment of
+  # both services (the same value), or use an env_file.
+  stdio:
+    profiles: ["stdio"]
+    # Published from the first release that carries the shim; until then, or to
+    # run your own runtime base, build from source by uncommenting `build`.
+    image: ghcr.io/fold-run/fold-stdio:latest
+    # build:
+    #   context: .
+    #   dockerfile: deploy/docker/stdio.Dockerfile
+    command:
+      - --bearer-env
+      - SHIM_TOKEN
+      - --env-passthrough
+      - HOME,PATH
+      - --log-format
+      - json
+      # Everything after `--` is the server. Fixed here at startup: the shim
+      # never takes a command from the network.
+      - --
+      - npx
+      - -y
+      - "@modelcontextprotocol/server-filesystem"
+      - /data
+    # Set SHIM_TOKEN to a random string. Deliberately not a compose-level
+    # required variable: that is evaluated for the whole file regardless of
+    # profile, so it would break `docker compose up` for anyone not running the
+    # shim. The binary refuses to start on an empty token anyway, which keeps
+    # the enforcement in one place.
+    environment:
+      - SHIM_TOKEN=${SHIM_TOKEN}
+    # What the filesystem server is allowed to see. Create ./data before the
+    # first run, or compose will make it for you and the server will find it
+    # empty.
+    volumes:
+      - ./data:/data:ro
+    # Not published to the host: only the gateway needs to reach it, and the
+    # shim runs processes on demand. Expose it only if you mean to.
+    expose:
+      - "8091"
     restart: unless-stopped
