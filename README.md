@@ -132,6 +132,8 @@ A JSON Schema for the document ships with fold — [`config/fold.config.schema.j
 
 List freshness works end to end: when an upstream emits a `list_changed` notification, the gateway invalidates its cache **and re-emits the notification to every connected client**, so clients refetch and see the change immediately. TTLs remain the backstop when no notification arrives.
 
+**Stdio servers.** `url` is always an HTTP endpoint — the gateway never runs a process. To federate an MCP server that speaks stdio (which is most of them), put [`fold-stdio`](docs/stdio.md) in front of it: it runs the server and exposes it over streamable HTTP, so the upstream entry is an ordinary `url` and every strategy, guard, and policy rule above applies unchanged. The command is fixed at the shim's argv and never travels over the network — which is why stdio is not a field here. See [docs/design-stdio.md](docs/design-stdio.md) for why the process supervision lives in a sidecar rather than in the gateway.
+
 ### Upstream auth strategies
 
 | Strategy | Fields | When |
@@ -300,6 +302,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/operations.md](docs/operations.md) — day-2 reference: every endpoint, metric, audit field, and error code, and how reloads, discovery, and probes surface in logs and metrics.
 - [docs/security-model.md](docs/security-model.md) — the architecture: trust anchors, the inbound chain, the enforcement pair, credential containment, tenant isolation.
 - [docs/discovery-controller.md](docs/discovery-controller.md) — `fold-discovery`, the Kubernetes producer: label a Service and it joins the federation.
+- [docs/stdio.md](docs/stdio.md) — `fold-stdio`, the shim that puts a local stdio MCP server behind the gateway as an ordinary http upstream.
 - [docs/benchmarks.md](docs/benchmarks.md) — the latency gate and the throughput sweep: methodology, numbers, how to reproduce.
 - [docs/embedding.md](docs/embedding.md) — the Go embedding surface, with CI-compiled examples.
 - [docs/defaults.md](docs/defaults.md) — the v1.0 defaults review, every default a decision on record.
@@ -321,6 +324,7 @@ fold is a single static binary with no local state — see [docs/deploy.md](docs
 |---|---|
 | `cmd/fold` | The `fold` CLI |
 | `cmd/fold-discovery` | The Kubernetes discovery-document producer (`internal/kubediscovery`) |
+| `cmd/fold-stdio` | The stdio shim: runs one local MCP server over streamable HTTP (`internal/stdiobridge`) |
 | `gateway` | Gateway engine: pipeline, federation routing, proxying, health |
 | `config` | Config schema + validation |
 | `auth` | OAuth resource server (JWKS verifier) + upstream credential strategies |

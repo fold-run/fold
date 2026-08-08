@@ -1,8 +1,15 @@
 # Design: stdio upstreams
 
-Status: **proposed**. This doc records the design before implementation, and
-the decision the [roadmap](roadmap.md) deferred to it: fold gains stdio reach
-through a sidecar shim, not through subprocess supervision inside the gateway.
+Status: **implemented** (`cmd/fold-stdio`, `internal/stdiobridge`). This doc
+recorded the design before implementation and now serves as the decision
+record; the operator guide is [stdio.md](stdio.md). It settles the decision the
+[roadmap](roadmap.md) deferred to it: fold gains stdio reach through a sidecar
+shim, not through subprocess supervision inside the gateway.
+
+Two things in the original proposal did not survive implementation — the
+`--shared-process` option turned out to be unsound rather than merely slower,
+and the bridge ended up protocol-blind rather than protocol-aware. Both are
+recorded under [What implementation changed](#what-implementation-changed).
 
 ## Motivation
 
@@ -90,7 +97,8 @@ cheaper than supporting an ecosystem of them.
 
 **`fold-stdio`** — a second binary that runs one stdio MCP server and exposes
 it over streamable HTTP, using the SDK's `mcp.CommandTransport` on the process
-side and `mcp.NewStreamableHTTPHandler` on the network side.
+side and `mcp.NewStreamableHTTPHandler` on the network side. (The network side
+changed during implementation; see below.)
 
 The gateway does not change at all. A shimmed server is an ordinary
 `http://` upstream, so credential strategies, health checks, load balancing,
@@ -119,7 +127,8 @@ Everything after `--` is the command and its argv, fixed at startup.
 - `GET|POST /mcp` — the streamable HTTP endpoint the gateway points at.
 - `GET /health` — matching fold's own `/health` semantics, so chart probes
   and `healthCheck.intervalMs` behave identically.
-- `GET /metrics` — process state, session count, restarts, spawn failures.
+- `GET /metrics` — session count and ceiling, spawns, spawn failures,
+  refusals at the ceiling.
 
 Flags follow `fold-discovery`'s shape: `--port`, `--host`, `--log-format`,
 `--log-level`, `--version`, plus `--bearer-env` for the same reason discovery
@@ -139,22 +148,16 @@ allowlist of variable names rather than by inheriting the shim's environment,
 so a shim holding its own bearer secret does not hand it to the server it
 supervises.
 
-### One process per session, by default
+### One process per session
 
-The one real design question. Stdio servers are written for a single client,
-and many keep per-client state; multiplexing several gateway sessions onto
-one process would let one downstream client observe another's state, which is
-a correctness and isolation bug that would be invisible until it bit.
+One subprocess per incoming MCP session, bounded by `--max-sessions` — the
+bound being the thing the gateway could not have provided — with processes
+reaped on session close.
 
-So the default is one subprocess per incoming MCP session, bounded by
-`--max-sessions` (the bound is the thing the gateway could not have), with
-idle processes reaped on session close. `--shared-process` is available as an
-opt-in for servers documented as multi-client-safe, and for the common
-single-agent case where the fan-out is one anyway.
-
-This deserves measurement before the default is frozen — if typical
-federations run few enough concurrent clients that per-session spawning is
-free, the default is easy; if not, the flag matters more than the default.
+The original proposal offered `--shared-process` as an opt-in for servers
+documented as multi-client-safe, and called the default a question that
+deserved measurement. Implementation answered it more decisively than
+measurement would have: see below.
 
 ## Config and docs
 
@@ -163,29 +166,102 @@ upstream like any other, which is the strongest evidence the shape is right —
 this feature ships without touching the frozen config surface, the schema, or
 the v1 contract.
 
-## Implementation phases
+## What implementation changed
 
-1. **The shim** — `cmd/fold-stdio` plus `internal/stdiobridge`:
-   `CommandTransport` on one side, `NewStreamableHTTPHandler` on the other,
-   session-to-process mapping, `--max-sessions`, reaping, `/health`,
-   `/metrics`, and the env allowlist.
-2. **Lifecycle hardening** — crash restart with backoff, spawn-failure
-   surfacing through `/health` so the gateway's breaker sees it as an
-   unhealthy endpoint rather than as a hang; child stderr relayed to the
-   shim's logger at `debug`.
-3. **Tests**, per repo rule 1 — a real SDK stdio server behind the shim
-   behind the gateway, asserting the federated path end to end: namespacing,
-   policy denial, audit, and the bridged surfaces (sampling and elicitation
-   through two hops is the interesting case). Plus process-level tests: crash
-   restart, `--max-sessions` refusal, no env leakage, and no orphans after
-   shutdown.
-4. **Packaging** — `Dockerfile.stdio` with a runtime base, a goreleaser entry
-   (linux only, like `fold-discovery`), and a compose example.
-5. **Review** — security-auditor, since this is a process-spawning network
-   service; gateway-reviewer is largely a no-op because the gateway does not
-   change.
-6. **Docs** — `docs/stdio.md` as the operator guide, a README section, and a
-   roadmap update moving the item from Horizon 2 to shipped.
+Three findings, recorded because each contradicts something written above.
+
+**`--shared-process` was unsound, not merely slower.** The proposal framed
+sharing as a performance/isolation trade to be settled by measurement. It is
+not a trade. A stdio connection carries exactly one MCP session, so two
+downstream sessions on one process share a JSON-RPC id space: two pump
+goroutines reading one connection steal each other's replies, and two clients
+can both pick id `1`. The first implementation of the flag deadlocked the
+second client immediately. Making it work would mean rewriting ids,
+synthesizing per-client handshakes, and fanning out notifications — a
+protocol-aware proxy, which is precisely what the gateway in front of the shim
+already is. The flag was removed rather than fixed, and
+`TestConcurrentSessionsDoNotCrossTalk` pins the invariant.
+
+**The bridge is protocol-blind.** The proposal assumed the SDK's
+`NewStreamableHTTPHandler` fronting an `mcp.Server` that forwards to the child.
+That path cannot be transparent: server dispatch consults a per-server method
+table *before* middleware runs, so the shim would have to enumerate every
+method and would answer method-not-found for anything the SDK learned later.
+Instead the bridge connects `mcp.StreamableServerTransport` and
+`mcp.CommandTransport` directly and pumps `jsonrpc.Message` values between
+them verbatim. Framing still belongs entirely to the SDK on both sides; the
+bridge owns only session bookkeeping and the pump. Sampling and elicitation
+work without the bridge knowing they exist, which is the property that matters.
+
+The one exception, and it is deliberate: the bridge reads the JSON-RPC envelope
+of a session-less POST to see whether it is an `initialize`. Only an initialize
+earns a durable session; anything else — notably the protocol-negotiation probe
+the SDK client sends first — is served on a session torn down with the request.
+Without that, every client connect stranded a process for the life of the
+shim. It is a routing decision about session durability, not inspection: no
+message is altered.
+
+**The shim is not linux-only.** `fold-discovery` is, because it runs in a
+cluster. The shim runs wherever the stdio servers run, which includes developer
+machines pointing a local gateway at a local server, so it releases for darwin
+too. Its image also cannot be distroless: executing servers delivered by `npx`
+or `uvx` needs a runtime, so `deploy/docker/stdio.Dockerfile` takes the base as a build
+argument and defaults to Node. The gateway image stays distroless — keeping
+that split is exactly why the runtime lives here and not there.
+
+## What shipped
+
+- **The bridge** — `internal/stdiobridge`: session-to-process mapping, the
+  bidirectional pump, `--max-sessions` with a `503` + `Retry-After` refusal the
+  breaker can read, reaping on session close and on shutdown, the env
+  allowlist, and a body cap matching the gateway's own default.
+- **The shim** — `cmd/fold-stdio`: `/mcp`, `/health`, `/metrics`, `--probe`,
+  `--bearer-env` with a constant-time compare, and `fold-discovery`'s flag
+  shape. `/health` is memoized for one second and single-flighted, and a live
+  session short-circuits it entirely — a probe costs a process, so an
+  unmemoized health endpoint would have been a fork bomb driven by whatever
+  polls it. That is the same load amplification the gateway closed for its own
+  `/health` in v1.5.0, and it would have been easy to reintroduce here.
+- **Crash behaviour** — a child that dies ends its session cleanly rather than
+  being restarted. The proposal called for restart with backoff; that is wrong
+  for a per-session process, because the MCP handshake died with it and a
+  silently restarted child would serve a client that believes it is initialized.
+  The client reconnects, which is the honest signal. Child stderr relays to the
+  shim's logger at `debug`, since stdio servers log there.
+- **Tests**, per repo rule 1 — `gateway/stdio_test.go` runs a real SDK stdio
+  server behind the bridge behind the gateway, asserting namespacing, the
+  policy enforcement pair, and audit. `internal/stdiobridge/bridge_test.go`
+  covers the process contract: transparency of the child's identity,
+  server-initiated sampling across the bridge, env non-leakage, per-session
+  isolation, cross-talk, the session ceiling, spawn failure, crash, and
+  no orphans after `Close`.
+- **Packaging** — `deploy/docker/stdio.Dockerfile` (runtime base as a build argument,
+  defaulting to Node) and goreleaser entries for linux and darwin.
+
+**The security review found the cost of being protocol-blind.** Connecting the
+SDK's transport directly skips `StreamableHTTPHandler`, and that handler is
+where the SDK keeps its *inbound* protections — loopback DNS-rebinding
+rejection, cross-origin checks, the `application/json` requirement, and the
+request-body cap. Bypassing it silently dropped all four, which on a loopback
+shim meant any web page able to rebind DNS could drive the local server. They
+are now re-applied in `Bridge.ServeHTTP`. The lesson generalizes: taking a
+lower-level SDK seam means inheriting the responsibilities of the layer
+skipped, and those were not visible from the design.
+
+The same review closed a set of resource-bounding defects, each now covered by
+a test: the session ceiling bounded map entries rather than processes (a slot
+was released before its child died, so open-and-abandon ran far past the
+bound); the body cap covered only the handshake; a body that was not JSON-RPC
+at all still spawned a process, making an empty POST a fork/exec amplifier;
+there was no idle sweeper, so an abandoned session pinned a process forever;
+an unauthenticated `/health` could be poisoned by an aborted request into
+reporting the shim unhealthy to every prober; and children were not put in
+their own process group, so an `npx` wrapper's grandchildren survived teardown
+and reparented to PID 1 — the shim itself. The container entrypoint's
+`0.0.0.0` bind is now backed by a startup refusal when no bearer is configured,
+rather than by documentation.
+
+Not yet done: a compose example.
 
 ## Explicitly out of scope
 

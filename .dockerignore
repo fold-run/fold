@@ -2,7 +2,7 @@
 .github
 *.log
 fold
-Dockerfile
+deploy/docker
 README.md
 LICENSE
 scripts

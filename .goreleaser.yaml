@@ -31,6 +31,21 @@ builds:
       - -s -w -X main.version={{ .Tag }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  # The stdio shim. Unlike fold-discovery this is not linux-only: it runs
+  # wherever the stdio servers run, which includes developer machines pointing
+  # a local gateway at a local server.
+  - id: fold-stdio
+    main: ./cmd/fold-stdio
+    binary: fold-stdio
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
   # Keep the pre-goreleaser naming: fold_v1.2.3_linux_amd64.tar.gz
   - id: fold
@@ -50,6 +65,14 @@ archives:
       - LICENSE
       - src: deploy/fold-discovery.yaml
         dst: fold-discovery.yaml
+
+  - id: fold-stdio
+    ids: [fold-stdio]
+    name_template: "fold-stdio_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - src: docs/stdio.md
+        dst: stdio.md
 
 checksum:
   name_template: checksums.txt
