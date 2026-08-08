@@ -61,6 +61,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: deploy/docker/fold.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: VERSION=${{ github.ref_name }}
@@ -72,10 +73,26 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: Dockerfile.discovery
+          file: deploy/docker/discovery.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/fold-run/fold-discovery:${{ github.ref_name }}
             ghcr.io/fold-run/fold-discovery:latest
+
+      # The shim's image is not distroless: its job is to execute a server, and
+      # most stdio servers arrive through a language runtime. The published
+      # image carries Node, since npx-delivered servers are the common case;
+      # operators serving Python servers rebuild with --build-arg RUNTIME_BASE.
+      - name: build and push stdio shim image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/stdio.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ github.ref_name }}
+          tags: |
+            ghcr.io/fold-run/fold-stdio:${{ github.ref_name }}
+            ghcr.io/fold-run/fold-stdio:latest

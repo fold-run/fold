@@ -148,26 +148,20 @@ only literal `TODO` in the tree.
 Directional. Each names the open design question rather than pretending it is
 settled.
 
-### 7. Reach: stdio and local upstreams
+### 7. Reach: stdio and local upstreams — **shipped**
 
-The largest adoption gap in fold, and it comes from the ecosystem rather than
+The largest adoption gap in fold, and it came from the ecosystem rather than
 from the competitive review: config validation accepts only `http` and `https`
-upstream URLs, so fold cannot front an MCP server that runs as a local
+upstream URLs, so fold could not front an MCP server that runs as a local
 process — which is most of them.
 
-Two shapes are possible. An in-gateway supervised subprocess keeps deployment
-to one binary but puts process lifecycle, restart policy, and stdio framing
-inside a component whose whole design is a stateless network process behind a
-latency gate. A sidecar shim — a small binary, provisionally `fold-stdio`, that
-would run the server and expose it over streamable HTTP — would leave the
-gateway unchanged, let the existing credential, health-check, and
-load-balancing machinery apply without special cases, and follow the precedent
-`fold-discovery` already set for shipping a second binary rather than widening
-the first. Neither exists today. **The shim is the decided shape** — the
-reasoning, and the argument that settled it (stdio binds one process per
-session, and fold opens a root session plus one bridged session per downstream
-client to every upstream), is recorded in
-[design-stdio.md](design-stdio.md).
+Closed by `fold-stdio`, a sidecar shim that runs one stdio server and exposes
+it over streamable HTTP. The gateway did not change: a shimmed server is an
+ordinary `http://` upstream, so credentials, health checks, load balancing,
+policy, and audit all apply with no special case, and nothing in the frozen
+config surface moved. Operator guide: [stdio.md](stdio.md). The reasoning, the
+argument that settled the shape, and the two proposals that did not survive
+implementation: [design-stdio.md](design-stdio.md).
 
 ### 8. Policy depth
 
