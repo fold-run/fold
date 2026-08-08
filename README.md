@@ -303,6 +303,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/benchmarks.md](docs/benchmarks.md) — the latency gate and the throughput sweep: methodology, numbers, how to reproduce.
 - [docs/embedding.md](docs/embedding.md) — the Go embedding surface, with CI-compiled examples.
 - [docs/defaults.md](docs/defaults.md) — the v1.0 defaults review, every default a decision on record.
+- [docs/roadmap.md](docs/roadmap.md) — direction: what fold intends to build next, and what it deliberately declines.
 
 ## Deploying
 
@@ -324,7 +325,7 @@ fold is a single static binary with no local state — see [docs/deploy.md](docs
 | `auth` | OAuth resource server (JWKS verifier) + upstream credential strategies |
 | `policy` | Allowlist policy engine + per-principal list filtering |
 | `audit` | Audit events + sinks (stdout, webhook) |
-| `docs` | Deploy, operations, security-model, embedding, and defaults guides |
+| `docs` | Guides and decision records — see [Guides](#guides) above, plus the [roadmap](docs/roadmap.md) |
 | `internal/ratelimit` | Sliding-window limiter |
 | `internal/breaker` | Circuit breaker |
 | `internal/cache` | TTL cache with single-flight refresh |
@@ -368,6 +369,8 @@ Known gaps, documented deliberately:
 
 - **SEP-2575 `subscriptions/listen` streams** — the Go SDK supports the 2026-07-28 protocol on its streamable HTTP server only in stateless mode, which fold cannot use: session-keyed bridging (sampling, elicitation, per-client streams) requires stateful sessions. Clients on the legacy handshake — which is what the SDK negotiates against stateful servers today — get full notification fan-in (list-changed and resource-updated, tested in `gateway/listen_test.go`). fold's fan-in already sits on the surfaces the SDK reuses for listen streams, and a drift canary in that test fails when the SDK lifts the restriction. Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
 - **Content inspection (DLP / PII filtering / prompt-injection detection)** — deliberately out of scope. Inspecting request and response bodies means buffering and rewriting traffic, which conflicts with fold's invisibility rule (behavior through the gateway matches hitting the upstream directly) and its latency gate — and inline detection is a product of its own, not a gateway feature. fold's security model is structural instead: deny-by-default tool allowlists, per-principal invisibility, claim-gated (ABAC) rules, credential brokering so agents never hold upstream keys, and a full audit trail to feed the SIEM that does the detecting. If inline inspection becomes table stakes, the fold-shaped answer is an opt-in content-inspection hook (an external policy endpoint on the ingress/egress path), not built-in scanning.
+
+Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SDK dependency it waits on, the second as a standing non-goal — alongside the rest of what fold does and does not intend to build.
 
 ## Changelog
 

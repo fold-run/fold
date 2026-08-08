@@ -225,7 +225,7 @@ type CircuitBreaker struct {
 	HalfOpenAfterMs  int `json:"halfOpenAfterMs,omitempty"`  // default 30000
 }
 
-// RateLimit is a fixed-window request budget.
+// RateLimit is a sliding-window request budget over the trailing minute.
 type RateLimit struct {
 	RequestsPerMinute int `json:"requestsPerMinute"`
 	// PerPrincipalPerMinute additionally caps each authenticated principal
