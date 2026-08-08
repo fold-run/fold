@@ -161,6 +161,11 @@ type Upstream struct {
 	CircuitBreaker *CircuitBreaker `json:"circuitBreaker,omitempty"`
 	RateLimit      *RateLimit      `json:"rateLimit,omitempty"`
 
+	// Budget caps total consumption of this upstream over a calendar period.
+	// Distinct from RateLimit: a rate limit smooths a burst and forgets it,
+	// a budget accumulates until the period rolls over.
+	Budget *Budget `json:"budget,omitempty"`
+
 	// HealthCheck enables active endpoint probing: every intervalMs the
 	// gateway connects to each endpoint, ejecting dead replicas from the
 	// balancer before client traffic hits them and restoring recovered ones
@@ -233,6 +238,55 @@ type RateLimit struct {
 	// budget and starve every other tenant. Server-level only; requires
 	// auth (anonymous callers are governed by the global budget alone).
 	PerPrincipalPerMinute int `json:"perPrincipalPerMinute,omitempty"`
+}
+
+// Budget caps total consumption over a calendar-aligned period that resets at
+// the boundary — the "how much this month" question a rate limit cannot
+// answer, since a sliding window forgets rather than accumulates.
+//
+// The unit is upstream invocations, not downstream requests: one tools/list
+// fans out to every upstream in the federation, so counting client requests
+// would price a list the same as a ping. See docs/design-consumption.md.
+type Budget struct {
+	// Period is the window: "hour", "day", or "month" (default). Boundaries
+	// are UTC, so a fleet spanning zones agrees on which month it is.
+	Period string `json:"period,omitempty"`
+	// UpstreamCalls is the allowance. Absent or <= 0 means no budget.
+	UpstreamCalls int64 `json:"upstreamCalls,omitempty"`
+}
+
+// ResolvedPeriod returns the configured period, defaulting to "month".
+func (b *Budget) ResolvedPeriod() string {
+	if b == nil || b.Period == "" {
+		return "month"
+	}
+	return b.Period
+}
+
+// Allowance returns the configured allowance, or 0 for "no budget".
+func (b *Budget) Allowance() int64 {
+	if b == nil || b.UpstreamCalls < 0 {
+		return 0
+	}
+	return b.UpstreamCalls
+}
+
+// validate checks a budget block. where names the owning section for errors.
+func (b *Budget) validate(where string) error {
+	if b == nil {
+		return nil
+	}
+	switch b.Period {
+	case "", "hour", "day", "month":
+	default:
+		return fmt.Errorf("%s: budget.period must be %q, %q, or %q", where, "hour", "day", "month")
+	}
+	// A zero allowance would silently mean "unlimited", which is the opposite
+	// of what someone writing `"budget": {}` intends. Make them say a number.
+	if b.UpstreamCalls <= 0 {
+		return fmt.Errorf("%s: budget.upstreamCalls must be positive", where)
+	}
+	return nil
 }
 
 // Auth configures the gateway's OAuth 2.0 resource server.
@@ -357,6 +411,12 @@ type ServerSection struct {
 	MCPPath      string     `json:"mcpPath,omitempty"`      // default "/mcp"
 	AllowedHosts []string   `json:"allowedHosts,omitempty"` // default localhost set; ["*"] disables
 	RateLimit    *RateLimit `json:"rateLimit,omitempty"`    // global, across all upstreams
+
+	// Budget caps total consumption across every upstream over a calendar
+	// period. Like the rest of this section it is construction-wired: Reload
+	// rejects a change to it, so a budget cannot be widened by editing config
+	// under a running gateway.
+	Budget *Budget `json:"budget,omitempty"`
 
 	// MaxBodyBytes caps request body size (413 beyond it), bounding the
 	// memory one request can pin. Default 1 MiB.
@@ -511,6 +571,9 @@ func (c *Config) Validate() error {
 		if u.HealthCheck != nil && u.HealthCheck.IntervalMs <= 0 {
 			return fmt.Errorf("upstream %q: healthCheck.intervalMs must be positive", u.ID)
 		}
+		if err := u.Budget.validate(fmt.Sprintf("upstream %q", u.ID)); err != nil {
+			return err
+		}
 		switch u.Protocol {
 		case "", "session", "auto", "2026-07-28":
 		default:
@@ -540,6 +603,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Server != nil && c.Server.MaxBodyBytes < 0 {
 		return fmt.Errorf("server: maxBodyBytes must be positive")
+	}
+	if c.Server != nil {
+		if err := c.Server.Budget.validate("server"); err != nil {
+			return err
+		}
 	}
 	if c.Server != nil && c.Server.Console != nil && len(c.Server.Console.Groups) > 0 {
 		for _, gr := range c.Server.Console.Groups {

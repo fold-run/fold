@@ -22,6 +22,7 @@ var schemaDefs = map[string]reflect.Type{
 	"timeouts":       reflect.TypeOf(Timeouts{}),
 	"circuitBreaker": reflect.TypeOf(CircuitBreaker{}),
 	"rateLimit":      reflect.TypeOf(RateLimit{}),
+	"budget":         reflect.TypeOf(Budget{}),
 	"healthCheck":    reflect.TypeOf(HealthCheck{}),
 	"auth":           reflect.TypeOf(Auth{}),
 	"issuer":         reflect.TypeOf(Issuer{}),

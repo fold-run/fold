@@ -49,6 +49,7 @@
         "timeouts": { "$ref": "#/definitions/timeouts" },
         "circuitBreaker": { "$ref": "#/definitions/circuitBreaker" },
         "rateLimit": { "$ref": "#/definitions/rateLimit" },
+        "budget": { "$ref": "#/definitions/budget" },
         "healthCheck": { "$ref": "#/definitions/healthCheck" },
         "cacheTtlMs": { "type": "integer" }
       }
@@ -114,6 +115,15 @@
       "properties": {
         "requestsPerMinute": { "type": "integer", "minimum": 0 },
         "perPrincipalPerMinute": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["upstreamCalls"],
+      "properties": {
+        "period": { "enum": ["hour", "day", "month"] },
+        "upstreamCalls": { "type": "integer", "minimum": 1 }
       }
     },
     "healthCheck": {
@@ -238,6 +248,7 @@
         "mcpPath": { "type": "string" },
         "allowedHosts": { "type": "array", "items": { "type": "string" } },
         "rateLimit": { "$ref": "#/definitions/rateLimit" },
+        "budget": { "$ref": "#/definitions/budget" },
         "maxBodyBytes": { "type": "integer", "minimum": 0 },
         "redisUrl": { "type": "string", "format": "uri" },
         "console": { "$ref": "#/definitions/console" }

@@ -37,6 +37,8 @@ implementation order. Verdict for all: **keep**.
 | `timeouts` | connect 5 s, request 60 s, streamIdle 120 s | Request 60 s accommodates slow tools; connect 5 s fails over quickly (multi-endpoint upstreams try the next replica within the same attempt). |
 | `circuitBreaker` | 5 failures / 30 s half-open | Conventional values; also the endpoint pool's cooldown, by design (one "retry the unhealthy thing after" knob). |
 | `rateLimit` (global, per-upstream) | none | The gateway must never throttle by surprise; limits are an operator's policy, opted into. |
+| `budget` (server, per-upstream) | absent (no budget) | Added in v1.7. Same reasoning as `rateLimit`, and stronger: a default allowance is a default outage waiting for a busy month, and there is no number that is right for every federation. Opt in. |
+| `budget.period` | `month` | The period an allowance is usually negotiated over. Boundaries are UTC so a fleet spanning zones agrees on which month it is — a local-time month would also move under a DST transition. |
 | `healthCheck` | absent (passive) | Active probing costs a connect per endpoint per interval; passive ejection + cooldown is free and correct. Opt in. |
 | `discovery.intervalMs` | 30000 | Registry churn is minutes-scale; 30 s balances freshness against load on the source. |
 | `discovery.allowedAuthStrategies` / `allowedSecretRefs` | absent (unrestricted) | Compatibility with pre-hardening discovery deployments; restricting by default post-v1.0 would break them. The producer (`fold-discovery`) is the inverse — default-deny — because it shipped with the hardening. Set the gateway allowlists whenever the discovery source is not operated by the gateway's operators. |
