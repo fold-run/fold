@@ -308,6 +308,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/defaults.md](docs/defaults.md) — the v1.0 defaults review, every default a decision on record.
 - [docs/roadmap.md](docs/roadmap.md) — direction: what fold intends to build next, and what it deliberately declines.
 - [docs/design-stdio.md](docs/design-stdio.md) — design record: why stdio upstreams arrive as a sidecar shim rather than subprocess supervision in the gateway.
+- [docs/design-consumption.md](docs/design-consumption.md) — design record: quotas, budgets, and metering — what a gateway on the MCP path can honestly govern, and what it must refuse to guess.
 
 ## Deploying
 
