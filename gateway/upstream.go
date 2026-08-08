@@ -719,6 +719,10 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 		observe("budget_exhausted")
 		return err
 	}
+	// Counted here, next to the budget charge and for the same reason: this is
+	// the point at which an invocation is really made, so the metered cost and
+	// the billed cost cannot drift apart.
+	countUpstreamCall(ctx)
 	rctx, cancel := context.WithTimeout(ctx, u.requestTimeout)
 	defer cancel()
 	err = fn(rctx, session)

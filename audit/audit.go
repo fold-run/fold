@@ -47,6 +47,23 @@ type Event struct {
 	Outcome   Outcome   `json:"outcome"`
 	Error     string    `json:"error,omitempty"`
 	LatencyMs int64     `json:"latencyMs"`
+
+	// Consumption metering. fold records what it can observe; a billing
+	// system consumes these. Nothing here is estimated — see
+	// docs/design-consumption.md for why there is no token count.
+
+	// UpstreamCalls is how many upstream invocations this one request cost.
+	// It is not always 1: a federated list fans out to every upstream, so
+	// this is where a cheap-looking client request shows its real price.
+	UpstreamCalls int `json:"upstreamCalls,omitempty"`
+	// ItemsServed is how many tools/prompts/resources a list returned after
+	// per-principal policy filtering — the size of the surface this caller
+	// was actually handed, which is what lands in a model's context.
+	ItemsServed int `json:"itemsServed,omitempty"`
+	// Usage carries counters an upstream published in its result `_meta`,
+	// verbatim. fold never synthesizes these; an absent field means the
+	// upstream reported nothing, not that nothing was consumed.
+	Usage map[string]any `json:"usage,omitempty"`
 }
 
 // Sink receives audit events.

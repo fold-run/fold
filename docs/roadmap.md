@@ -71,7 +71,7 @@ coherent, so it comes first. None of these are "not yet" — they are decisions.
 Concrete, scoped, and additive. These close the cost gap and finish the last
 mile on observability.
 
-### 1. Quotas and budgets
+### 1. Quotas and budgets — **shipped**
 
 Today's limiter is a sliding minute that resets. An enterprise asking "what can
 this team spend this month" has nothing to configure. Add accumulating periods
@@ -93,7 +93,7 @@ as a parameter on it. The record also settles what counts as one unit (upstream
 invocations, since one `tools/list` fans out to every upstream) and why an
 exhausted budget earns its own error code rather than reusing `-32040`.
 
-### 2. Consumption metering
+### 2. Consumption metering — **shipped**
 
 The market pillar this answers is "cost visibility," and fold's honest
 position is that it is the wrong component to bill from but the right one to

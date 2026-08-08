@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -47,6 +48,8 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 			ctx, span = g.tracer.startServer(ctx, method, hdr)
 		}
 
+		ctx, m := withMeter(ctx)
+
 		evt := audit.Event{Method: method}
 		if principal != nil {
 			evt.Principal = principal.Subject
@@ -55,6 +58,10 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 
 		res, err := g.route(ctx, method, req, &evt, next)
 
+		evt.UpstreamCalls = int(m.upstreamCalls.Load())
+		if u := m.usage.Load(); u != nil {
+			evt.Usage = *u
+		}
 		evt.LatencyMs = time.Since(start).Milliseconds()
 		if err != nil {
 			evt.Error = err.Error()
@@ -66,6 +73,9 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 		}
 		if !plumbing {
 			g.metrics.observeRequest(method, string(evt.Outcome), time.Since(start))
+			if evt.UpstreamCalls > 0 {
+				g.metrics.observeFanOut(evt.UpstreamCalls)
+			}
 			g.audit.Emit(evt)
 			endServer(span, &evt, err)
 		}
@@ -190,7 +200,7 @@ func partialFailureMeta(failed []string, total int) (mcp.Meta, error) {
 	return mcp.Meta{metaPartialFailure: map[string]any{"failedUpstreams": failed}}, nil
 }
 
-func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, _ *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
 	principal := auth.PrincipalFromContext(ctx)
 	lists, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Tool, error) {
 		return u.listTools(ctx)
@@ -221,6 +231,7 @@ func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, _ 
 		return nil, jerr
 	}
 	out.Tools, out.NextCursor = page, next
+	evtItems(evt, len(out.Tools))
 	return out, nil
 }
 
@@ -259,11 +270,12 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 	// If the call minted a task, pin its ownership so later task calls skip
 	// the probe.
 	g.noteMintedTask(ctx, u, out.Meta)
+	noteUsage(ctx, out.Meta)
 	tagUpstream(&out.Meta, u)
 	return out, nil
 }
 
-func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, _ *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
 	principal := auth.PrincipalFromContext(ctx)
 	lists, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Prompt, error) {
 		return u.listPrompts(ctx)
@@ -292,6 +304,7 @@ func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, 
 		return nil, jerr
 	}
 	out.Prompts, out.NextCursor = page, next
+	evtItems(evt, len(out.Prompts))
 	return out, nil
 }
 
@@ -325,7 +338,7 @@ func (g *Gateway) getPrompt(ctx context.Context, rt *routes, req mcp.Request, ev
 	return out, nil
 }
 
-func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request, _ *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
 	lists, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
 		return u.listResources(ctx)
 	})
@@ -359,10 +372,11 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 		return nil, jerr
 	}
 	out.Resources, out.NextCursor = page, next
+	evtItems(evt, len(out.Resources))
 	return out, nil
 }
 
-func (g *Gateway) listResourceTemplates(ctx context.Context, rt *routes, req mcp.Request, _ *audit.Event) (mcp.Result, error) {
+func (g *Gateway) listResourceTemplates(ctx context.Context, rt *routes, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
 	lists, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.ResourceTemplate, error) {
 		return u.listResourceTemplates(ctx)
 	})
@@ -391,6 +405,7 @@ func (g *Gateway) listResourceTemplates(ctx context.Context, rt *routes, req mcp
 		return nil, jerr
 	}
 	out.ResourceTemplates, out.NextCursor = page, next
+	evtItems(evt, len(out.ResourceTemplates))
 	return out, nil
 }
 
@@ -557,4 +572,71 @@ func asWireError(err error, target **jsonrpc.Error) bool {
 		e = u.Unwrap()
 	}
 	return false
+}
+
+// evtItems records how many items a list handed this caller, after policy
+// filtering and pagination — the surface the caller actually received, not the
+// federation's total.
+func evtItems(evt *audit.Event, n int) {
+	if evt != nil {
+		evt.ItemsServed = n
+	}
+}
+
+// metaUsageKey is the result `_meta` key an upstream sets to report its own
+// consumption. fold carries whatever it finds there verbatim and never
+// synthesizes it — an absent key means the upstream reported nothing, not that
+// nothing was consumed.
+const metaUsageKey = "usage"
+
+// meterKey carries the per-request consumption counter.
+type meterKey struct{}
+
+// meter counts what one downstream request cost. A federated list fans out to
+// every upstream, so the count is the request's real price rather than the one
+// call the client made.
+type meter struct {
+	upstreamCalls atomic.Int64
+	usage         atomic.Pointer[map[string]any]
+}
+
+// withMeter attaches a fresh counter to ctx.
+func withMeter(ctx context.Context) (context.Context, *meter) {
+	m := &meter{}
+	return context.WithValue(ctx, meterKey{}, m), m
+}
+
+// meterFrom returns the request's counter, or nil outside a metered request.
+func meterFrom(ctx context.Context) *meter {
+	m, _ := ctx.Value(meterKey{}).(*meter)
+	return m
+}
+
+// countUpstreamCall records one upstream invocation against the request.
+func countUpstreamCall(ctx context.Context) {
+	if m := meterFrom(ctx); m != nil {
+		m.upstreamCalls.Add(1)
+	}
+}
+
+// noteUsage records counters an upstream published in a result's `_meta`.
+// Last writer wins: a fan-out reporting usage from several upstreams is not a
+// case fold can merge without inventing arithmetic over units it does not
+// define, so only named invocations — which route to exactly one upstream —
+// carry usage through.
+func noteUsage(ctx context.Context, meta mcp.Meta) {
+	if len(meta) == 0 {
+		return
+	}
+	raw, ok := meta[metaUsageKey]
+	if !ok {
+		return
+	}
+	vals, ok := raw.(map[string]any)
+	if !ok || len(vals) == 0 {
+		return
+	}
+	if m := meterFrom(ctx); m != nil {
+		m.usage.Store(&vals)
+	}
 }
