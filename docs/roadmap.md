@@ -207,10 +207,15 @@ and a console group allowlist add up to isolation, and
 object. `Owner{org, team, contact}` is metadata on an upstream, not a
 boundary.
 
-A `tenants[]` object binding an issuer and claim to an upstream subset, a
-quota, an audit partition, and a console scope would make the thing operators
-are already assembling by hand into one declaration — and would give quotas
-(Horizon 1) a dimension worth having.
+A `tenants[]` object binding verified claims to an upstream subset, a budget,
+a rate limit, and a line in the audit record makes the thing operators already
+assemble by hand into one declaration — and gives the budgets shipped in
+Horizon 1 the dimension they actually want. Designed in
+[design-tenancy.md](design-tenancy.md), which holds one line above all: a
+tenant groups principals, it does not authenticate them. The open question it
+names rather than assumes is cardinality — matching a principal against N
+tenant definitions is per-request work, and whether that indexes cleanly
+decides how many tenants a document can hold.
 
 ### 11. Catalog reads
 
