@@ -51,6 +51,7 @@ type upstream struct {
 	endpoints *endpointPool
 
 	limiter state.Limiter
+	budget  state.Budget
 	breaker state.Breaker
 	lists   state.ListCache
 
@@ -182,6 +183,12 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 		rpm = rl.RequestsPerMinute
 	}
 	u.limiter = provider.Limiter("up:"+cfg.ID, rpm)
+	// The budget scope keys on the upstream id, not on this upstream object,
+	// so consumption survives a reload that retires and rebuilds it. With
+	// shared state that holds fleet-wide; without it, a rebuild starts a fresh
+	// in-process counter, exactly as the rate-limit window does.
+	u.budget = provider.Budget("up:"+cfg.ID,
+		state.Period(cfg.Budget.ResolvedPeriod()), cfg.Budget.Allowance())
 	threshold, halfOpen := 5, 30*time.Second
 	if cb := cfg.CircuitBreaker; cb != nil {
 		if cb.FailureThreshold > 0 {

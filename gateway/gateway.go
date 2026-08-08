@@ -82,6 +82,11 @@ type Gateway struct {
 
 	globalLimit state.Limiter
 
+	// globalBudget caps consumption across every upstream over a calendar
+	// period. Construction-wired like the rest of the server section, so a
+	// running gateway's allowance cannot be widened by editing config.
+	globalBudget state.Budget
+
 	// perPrincipalRPM caps each authenticated principal on its own bucket;
 	// principalLimits memoizes those limiters per hashed identity.
 	perPrincipalRPM int
@@ -203,6 +208,31 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		g.perPrincipalRPM = cfg.Server.RateLimit.PerPrincipalPerMinute
 	}
 	g.globalLimit = provider.Limiter("global", globalRPM)
+	redisOn := (cfg.Server != nil && cfg.Server.RedisURL != "") || os.Getenv("REDIS_URL") != ""
+	var serverBudget *config.Budget
+	if cfg.Server != nil {
+		serverBudget = cfg.Server.Budget
+	}
+	g.globalBudget = provider.Budget("global",
+		state.Period(serverBudget.ResolvedPeriod()), serverBudget.Allowance())
+	// A budget is only a budget across a fleet: without shared state each
+	// instance keeps its own counter, so N instances enforce N allowances.
+	// Say so rather than let an operator discover it from a bill.
+	if !redisOn {
+		var scopes []string
+		if serverBudget.Allowance() > 0 {
+			scopes = append(scopes, "server")
+		}
+		for i := range cfg.Upstreams {
+			if cfg.Upstreams[i].Budget.Allowance() > 0 {
+				scopes = append(scopes, "upstream:"+cfg.Upstreams[i].ID)
+			}
+		}
+		if len(scopes) > 0 {
+			g.log.Warn("budget configured without shared state — each instance enforces its own allowance",
+				"scopes", scopes, "hint", "set server.redisUrl or REDIS_URL")
+		}
+	}
 	if cfg.AuthRequired() {
 		g.verifier = auth.NewVerifier(cfg.Auth, http.DefaultClient)
 		if cfg.Auth.EMA != nil {
@@ -217,7 +247,6 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 			g.verifier.TrustLocal(ema.Issuer(), ema.PublicKey())
 		}
 	}
-	redisOn := (cfg.Server != nil && cfg.Server.RedisURL != "") || os.Getenv("REDIS_URL") != ""
 	g.log.Info("gateway configured",
 		"version", version,
 		"upstreams", len(g.rt().upstreams),
