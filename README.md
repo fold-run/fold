@@ -379,6 +379,18 @@ Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SD
 
 ## Changelog
 
+### v1.6.0 — 2026-08-08
+
+Local MCP servers join the federation, and the list path stops rebuilding what it already holds.
+
+- **`fold-stdio`, the shim for local servers** — fold federates HTTP endpoints, but most MCP servers are stdio processes. The shim runs one of them and serves it over streamable HTTP, so it joins the federation as an ordinary `url` upstream: credential strategies, health checks, load balancing, breakers, timeouts, policy, pagination, and audit all apply with no special case, and nothing in the config document changed. Ships as its own binary, image (`ghcr.io/fold-run/fold-stdio`), and compose profile — see [docs/stdio.md](docs/stdio.md), and [docs/design-stdio.md](docs/design-stdio.md) for why process supervision lives in a sidecar rather than in the gateway.
+- **The command never comes from the network** — it is fixed at the shim's argv, never taken from a request, a config document, or discovery. A `command` field in the config would hand whoever controls the discovery document an `exec` on the gateway host, reducing `allowedSecretRefs` and `allowedCredentialHosts` to formalities. The child's environment is an explicit allowlist rather than an inheritance, one process serves one session (a stdio connection carries exactly one MCP session, so sharing one would share a JSON-RPC id space), children run in their own process group so a wrapper's grandchildren cannot survive teardown, and a non-loopback bind without `--bearer-env` is refused at startup.
+- **Warm list hits stop re-decoding** — `cachedList` ran `json.Unmarshal` over the full serialized list on every warm hit, per upstream, and the egress namespace rewrite copied every tool and rebuilt every name per request. Both are now memoized against the identity of the cached bytes, which makes the memo self-invalidating and keeps it off for upstreams whose caching is disabled because their credential is caller-derived. A warm hit is **~55 ns and one allocation regardless of list size**.
+- **Policy filtering allocates nothing** — `globMatch` re-split its pattern on `*` for every evaluation, one allocation per item on every `tools/list`. Patterns come from config and never change for the life of an engine, so they compile when the engine is built. Filtering 1,000 tools per principal is now CPU only.
+- **Federation cost is measured** — the added-latency gate uses one upstream with one trivial tool, so nothing in CI observed the work that scales with federation size. `BenchmarkFederatedListTools` covers the merge path directly: a 20 × 50 federation merges 1,000 tools in **25 µs**. Methodology and the full table in [docs/benchmarks.md](docs/benchmarks.md).
+- **A roadmap** — [docs/roadmap.md](docs/roadmap.md) records what fold intends to build and, more usefully, what it declines to build and why.
+- Dockerfiles move to [`deploy/docker/`](deploy/docker); `azure/setup-helm` bumped off deprecated Node 20.
+
 ### v1.5.0 — 2026-08-07
 
 Hardening, and task ownership the whole fleet agrees on.
