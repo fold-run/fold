@@ -383,6 +383,17 @@ Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SD
 
 ## Changelog
 
+### v1.7.0 — 2026-08-08
+
+Consumption governance: what was spent, by whom, and a ceiling on it.
+
+- **Budgets** — `server.budget` and `upstreams[].budget` cap consumption over a calendar period (`hour`/`day`/`month`, UTC-aligned) that **accumulates** until it rolls over. This is the question `rateLimit` cannot answer: a sliding window smooths a burst and forgets it, a budget remembers. Absent by default — a default allowance is a default outage waiting for a busy month. `server.budget` is construction-wired like the rest of that section, so an allowance cannot be widened under a running gateway by editing config.
+- **The unit is upstream invocations, not client requests.** One `tools/list` fans out to every upstream, so counting client requests would price a list the same as a ping. The new `upstreamCalls` audit field and `fold_request_upstream_calls` histogram make that fan-out visible in its own right.
+- **Exhaustion mints `-32044`** and the `budget_exhausted` audit outcome, distinct from `-32040` because the remedies differ: a rate limit clears in seconds, a budget not until the period rolls. The message names the reset instant rather than a retry delay — a client backing off by a monthly reset would sleep for a fortnight.
+- **Budgets are checked where the invocation really happens**, after the session is in hand, so a rate limit, an open circuit, or a failed connect never spends the allowance. Without that, an upstream down for a month would burn tens of thousands of units on calls nobody served.
+- **Metering** — additive audit fields recording what fold observed and nothing it did not: `upstreamCalls`, `itemsServed` (what a list handed *this* caller, after policy filtering), and `usage` carried verbatim from an upstream's result `_meta`. There is no tokenizer in the gateway; fold governs MCP consumption, not model spend, and an installation needing both runs both. The reasoning is on record in [docs/design-consumption.md](docs/design-consumption.md).
+- **Fail-open, but loud** — a budget check that cannot reach shared state degrades to per-instance enforcement rather than to none, and says so via `fold_budget_degraded_total`. Alert on any non-zero rate: it means the fleet is not enforcing one allowance. The gateway also warns at startup when a budget is configured without shared state.
+
 ### v1.6.0 — 2026-08-08
 
 Local MCP servers join the federation, and the list path stops rebuilding what it already holds.
