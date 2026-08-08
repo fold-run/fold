@@ -67,8 +67,9 @@ services:
   # both services (the same value), or use an env_file.
   stdio:
     profiles: ["stdio"]
-    # Published from the first release that carries the shim; until then, or to
-    # run your own runtime base, build from source by uncommenting `build`.
+    # Carries Node, since npx-delivered servers are the common case. To serve a
+    # Python server, or to pin your own runtime base, build from source instead
+    # by uncommenting `build` (see deploy/docker/stdio.Dockerfile).
     image: ghcr.io/fold-run/fold-stdio:latest
     # build:
     #   context: .
