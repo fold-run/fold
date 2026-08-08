@@ -82,13 +82,16 @@ means. The fourth per-minute limiter, `auth.ema.tokenRateLimitPerMinute`, is
 anti-amplification on an unauthenticated endpoint rather than a consumption
 budget, and stays as it is.
 
-Implementation stays on the existing seams: `state.Limiter` gains a period so
-that a fleet with Redis enforces one budget rather than one per instance, and
-the resolved limits ride in the routing snapshot like every other reloadable
-value. Rejections keep the shape each scope already has — HTTP 429 with
-`Retry-After` for the global and per-principal budgets, `-32040` for the
-per-upstream one — and exhaustion is a `rate_limited` audit outcome at every
-scope, because audit remains the single exit door.
+Designed in [design-consumption.md](design-consumption.md), which settles a
+question this entry got wrong. Budgets are **not** `state.Limiter` with a
+longer period: that limiter is a two-bucket *sliding* window, and a sliding
+month has no reset — an exhausted caller is readmitted gradually as the
+trailing month elapses, which nobody would recognize as the budget they
+configured. Budgets need a fixed, calendar-aligned accumulating counter, so
+they arrive as a new `state.Budget` primitive alongside the limiter rather than
+as a parameter on it. The record also settles what counts as one unit (upstream
+invocations, since one `tools/list` fans out to every upstream) and why an
+exhausted budget earns its own error code rather than reusing `-32040`.
 
 ### 2. Consumption metering
 
@@ -101,7 +104,10 @@ upstream reports usage in `_meta` — the pass-through counters it published.
 
 fold reads what upstreams report and never synthesizes it. There is no
 tokenizer in the gateway; counting tokens fold cannot see would be a guess
-sold as a number, and it would put a tokenizer on the hot path.
+sold as a number, and it would put a tokenizer on the hot path. Designed
+together with budgets in [design-consumption.md](design-consumption.md), which
+draws the line the market's framing blurs: fold governs MCP consumption, not
+model spend, and an installation that needs both runs both.
 
 ### 3. Tool-set shaping
 
