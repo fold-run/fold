@@ -1,9 +1,10 @@
 # Design: the tenant object
 
-Status: **phase 1 implemented** (resolution); enforcement, visibility, and the
-cardinality benchmark remain. This records the design for the [roadmap](roadmap.md)'s
-Horizon 2 tenancy item, and settles a question three shipped features have now
-deferred: what a tenant *is* in fold.
+Status: **phases 1–2 implemented** (resolution, and the cardinality question
+settled by measurement); enforcement, visibility, and the record remain. This
+records the design for the [roadmap](roadmap.md)'s Horizon 2 tenancy item, and
+settles a question three shipped features have now deferred: what a tenant *is*
+in fold.
 
 ## Motivation
 
@@ -126,9 +127,12 @@ distinction is deliberate — the server-wide allowance is the operator's own
 ceiling and should not move under a running gateway, while a tenant's is
 customer-facing configuration that changes on a business cadence.
 
-## The cardinality problem
+## The cardinality problem — settled
 
-The one open question, named rather than assumed.
+The one open question this design named rather than assumed. **Answer: (1),
+index the common case** — measured, not argued, and the measurement is in
+[benchmarks.md](benchmarks.md#tenant-resolution-cardinality). What follows is
+the original framing, then what the numbers said.
 
 Per-tenant limiters and budgets are keyed by tenant id, and tenant ids come
 from config, so they are bounded by the document — unlike `principalLimits`,
@@ -154,6 +158,47 @@ Two candidate answers, to be settled by measurement before implementation:
 gets benchmarked at the same federation sizes `BenchmarkFederatedListTools`
 uses, and the answer goes in [benchmarks.md](benchmarks.md).
 
+### What the measurement said
+
+`BenchmarkResolveTenant` measured the scan at 10, 100, 1,000, and 10,000
+declarations. The scan cost ~42 ns per declaration, which is 450 µs for ten
+thousand single-claim tenants — on every authenticated request, against a
+gateway whose whole added p50 is ~200 µs. The prediction was right about where
+it stops being free, and the number was bad enough that (2) would have meant
+telling a SaaS with ten thousand customers to run something else.
+
+The index is simple, so (1) it is — and it covers one shape more than
+candidate (1) named. Groups look unindexable, since a principal holds many of
+them and any may match; the resolution is that the two indexes are keyed from
+opposite sides. The claim index is keyed by *what the tenant requires* and
+probed with the principal's value; the group index is keyed by what the
+principal *holds* and probed with each of their groups. Both are map lookups,
+only the direction differs. So the set holds two indexes plus a scan list for
+compound selectors, and resolution is flat in the number of tenants for every
+shape a large document actually repeats.
+
+Two properties keep this from being a second matcher, which is the risk an
+index of a policy selector runs:
+
+- **The index narrows; policy decides.** Every candidate a lookup produces is
+  still put to `policy.MatchSubjects`, unchanged. The index cannot admit a
+  principal the matcher would reject; the only bug it could introduce is a
+  missed candidate, and `TestIndexedResolutionAgreesWithFullScan` checks
+  resolution against a brute-force scan over a generated cross-product of
+  principals.
+- **Only exactly-representable keys are indexed.** A claim selector is indexed
+  only when its required value is a JSON scalar, because map-key equality has
+  to be the same equality the matcher uses — pointers compare by address in a
+  map and by pointee in `reflect.DeepEqual`, and a wrong key is a missed
+  match. Everything else falls to the scan.
+
+**What stays linear, stated plainly:** compound selectors — issuer *and*
+claims, or groups *and* claims — are matched one by one, at ~38 ns each. A
+document holding thousands of *those* pays the original cost, and the guidance
+is (2) for that residue: keep compound selectors in the tens, and express
+per-customer tenancy as one claim or one group. That is what an IdP asserts
+for a customer anyway.
+
 ## Migration
 
 Additive under the v1 contract. `perPrincipalPerMinute` keeps working and
@@ -167,8 +212,10 @@ per-person buckets keep what they have; those who want both get both.
 1. **Resolution** — `tenants` config, validation including the overlap
    rejection, snapshot placement, and the resolved tenant on the request
    context. No enforcement yet. Run the `/reloadable-state` checklist.
+   **Shipped.**
 2. **The cardinality benchmark** — settle the open question above before
-   anything depends on the answer.
+   anything depends on the answer. **Shipped**: `BenchmarkResolveTenant`, and
+   the index it justified.
 3. **Enforcement** — per-tenant budget and rate limit, reusing the existing
    primitives and charge points.
 4. **Visibility** — the `upstreams` subset, evaluated before policy.

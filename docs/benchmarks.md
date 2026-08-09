@@ -1,9 +1,10 @@
 # Benchmarks
 
-Three instruments, all in this repo, all runnable by anyone. Every performance number fold publishes traces to one of them; if a claim doesn't resolve to a table on this page, it's a bug.
+Four instruments, all in this repo, all runnable by anyone. Every performance number fold publishes traces to one of them; if a claim doesn't resolve to a table on this page, it's a bug.
 
 - **`bench/latency_test.go`** answers *"how much latency does fold add?"* — sequential calls, direct vs proxied, CI-gated on every merge at added p50 < 5 ms.
 - **`tools/perf`** answers *"how many requests per second does one instance sustain, and at what p99?"* — the numbers an enterprise buyer asks for.
+- **`gateway/tenant_bench_test.go`** answers *"how many tenants can one config document hold?"* — tenant resolution runs once per authenticated request and its cost is set by how many tenants you declare, not by how big your federation is.
 - **`gateway/perfbench_test.go`** answers *"what does federation itself cost?"* — the merge, policy filter, namespace rewrite, and cursor work on `tools/list`, measured gateway-side with warm caches and no client in the picture. This is the only instrument whose cost scales with the size of your federation.
 
 ## Methodology
@@ -15,6 +16,8 @@ Three instruments, all in this repo, all runnable by anyone. Every performance n
 **Federation size is a variable, not a constant.** Both instruments above default to one fixture upstream exposing one trivial tool, which isolates proxy overhead but exercises none of the work that scales with federation size. `FOLD_LOAD_UPSTREAMS` and `FOLD_LOAD_TOOLS` set the shape; the `tools/list` numbers below are reported per shape, because a single number for them would be meaningless.
 
 **Federation cost** (`go test ./gateway -run '^$' -bench BenchmarkFederatedListTools -benchmem`): one `tools/list` through the gateway's own merge path with the list caches warm — no network, no client SDK. Isolating it this way matters: an end-to-end profile attributes most of its allocations to schema validation inside the *calling* client's SDK, which is not fold's cost to claim or to fix.
+
+**Tenant resolution** (`go test ./gateway -run '^$' -bench BenchmarkResolveTenant -benchmem`): one principal resolved against a snapshot holding 10 to 10,000 tenant declarations, measured by selector shape because the shapes index differently. Each case resolves a principal matching the last declaration — not pessimism about ordering, since resolution visits every candidate regardless, but it keeps the match out of the noise.
 
 **Hardware** for the numbers below: Apple M4 Pro (14 cores, 48 GB), Go 1.26, macOS, loopback. Raw results: [`launch/loadtest.json`](../launch/loadtest.json), [`launch/loadtest-passthrough.json`](../launch/loadtest-passthrough.json).
 
@@ -53,6 +56,27 @@ What one merged list costs the gateway itself: fan-out, per-principal policy fil
 
 Two properties worth stating, because both were once false: a warm list-cache hit is **~55 ns and one allocation regardless of list size** (the parsed form is memoized, not re-decoded per request), and **policy filtering allocates nothing** — the `_policy` row's allocation count is identical to the row above it, so the cost of filtering 1,000 tools per principal is CPU only.
 
+### Tenant resolution (cardinality)
+
+*Measured 2026-08-09 on `main`. Median of 5 runs, `go test ./gateway -run '^$' -bench BenchmarkResolveTenant -benchmem -count=5`.*
+
+Every authenticated request resolves its principal to at most one tenant, and it cannot stop at the first match — refusing an ambiguous match means seeing every match. So the question [design-tenancy.md](design-tenancy.md#the-cardinality-problem--settled) left open was how many tenants a document can hold before that shows up in the latency gate. The answer, by shape of the tenant's selector:
+
+| tenants declared | one claim = one value | one group | compound (issuer + claim + group) |
+|---|---|---|---|
+| 10 | 106 ns | 39 ns | 387 ns |
+| 100 | 97 ns | 42 ns | 3,756 ns |
+| 1,000 | 96 ns | 41 ns | 43,142 ns |
+| 10,000 | **97 ns** | **41 ns** | **392,680 ns** |
+
+Zero allocations in every cell, at every size.
+
+The two single-dimension shapes are **flat in the number of tenants** — a document with ten thousand of them resolves as fast as one with ten — because each is a map lookup: the claim index is keyed by what the tenant requires and probed with the principal's value, the group index keyed by what the principal holds. Before that index existed, the same 10,000-tenant claim document measured **450 µs per request**, which against a gateway whose whole added p50 is ~200 µs is not a rounding error but the dominant cost of the request.
+
+The third column is what stays linear, at ~39 ns per declaration, and it is stated rather than buried: a selector combining conditions (an issuer *and* a claim, groups *and* claims) is matched one at a time. Keep those in the tens. Per-customer tenancy wants one claim or one group, which is what an IdP asserts for a customer anyway. A realistic mixed document — seven single-claim tenants for every compound one — measures 61 µs at 10,000, all of it the compound eighth.
+
+Two things the table does not show, both by construction: the index **narrows but never decides** — every candidate it produces is still put through the same `policy.MatchSubjects` a scan would use, so it can only ever be an accelerator — and a principal matching no tenant pays the same lookups and resolves to nothing, which is the steady state for a deployment that declares tenants for some callers and not others (58 µs at 10,000 mixed).
+
 ### Throughput (`tools/list`, by federation shape)
 
 `tools/list` throughput is **payload-bound, not gateway-bound** — the numbers move with how many tools are in the response, not with fold's routing work. At 64 connections:
@@ -87,6 +111,9 @@ FOLD_LOAD_MODE=passthrough make loadtest      # single-upstream mode
 
 # Federation cost, gateway-side:
 go test ./gateway -run '^$' -bench BenchmarkFederatedListTools -benchmem
+
+# Tenant resolution, by selector shape and tenant count:
+go test ./gateway -run '^$' -bench BenchmarkResolveTenant -benchmem
 
 # Throughput against a 20 × 50 federation:
 FOLD_LOAD_UPSTREAMS=20 FOLD_LOAD_TOOLS=50 make loadtest

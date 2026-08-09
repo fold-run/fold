@@ -212,10 +212,18 @@ a rate limit, and a line in the audit record makes the thing operators already
 assemble by hand into one declaration — and gives the budgets shipped in
 Horizon 1 the dimension they actually want. Designed in
 [design-tenancy.md](design-tenancy.md), which holds one line above all: a
-tenant groups principals, it does not authenticate them. The open question it
-names rather than assumes is cardinality — matching a principal against N
-tenant definitions is per-request work, and whether that indexes cleanly
-decides how many tenants a document can hold.
+tenant groups principals, it does not authenticate them.
+
+Landing in phases. Resolution ships first — the config, its validation, and
+the resolved tenant on the request context, with no enforcement — followed by
+per-tenant budgets and rate limits, the visibility subset, and the tenant in
+the audit record. The open question the design named rather than assumed was
+cardinality, and it is now **settled by measurement**: matching a principal
+against N definitions was linear and reached 450 µs per request at ten
+thousand tenants, so the single-dimension selector shapes are indexed at
+snapshot time and resolve flat — 10,000 tenants cost the same as 10
+([benchmarks.md](benchmarks.md#tenant-resolution-cardinality)). Compound
+selectors still scan, which is documented rather than hidden.
 
 ### 11. Catalog reads
 
