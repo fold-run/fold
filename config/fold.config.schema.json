@@ -18,7 +18,11 @@
     "routing": { "$ref": "#/definitions/routing" },
     "server": { "$ref": "#/definitions/server" },
     "tracing": { "$ref": "#/definitions/tracing" },
-    "discovery": { "$ref": "#/definitions/discovery" }
+    "discovery": { "$ref": "#/definitions/discovery" },
+    "tenants": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/tenant" }
+    }
   },
   "definitions": {
     "upstream": {
@@ -115,6 +119,18 @@
       "properties": {
         "requestsPerMinute": { "type": "integer", "minimum": 0 },
         "perPrincipalPerMinute": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "tenant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "subjects"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "subjects": { "$ref": "#/definitions/policySubjects" },
+        "budget": { "$ref": "#/definitions/budget" },
+        "rateLimit": { "$ref": "#/definitions/rateLimit" },
+        "upstreams": { "type": "array", "items": { "type": "string" } }
       }
     },
     "budget": {

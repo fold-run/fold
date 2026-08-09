@@ -1,6 +1,7 @@
 # Design: the tenant object
 
-Status: **proposed**. This records the design for the [roadmap](roadmap.md)'s
+Status: **phase 1 implemented** (resolution); enforcement, visibility, and the
+cardinality benchmark remain. This records the design for the [roadmap](roadmap.md)'s
 Horizon 2 tenancy item, and settles a question three shipped features have now
 deferred: what a tenant *is* in fold.
 
@@ -65,12 +66,26 @@ a second matcher, so there is one way to say "these callers" in the document:
 ]
 ```
 
-**A principal resolves to at most one tenant.** Overlapping definitions are a
-config error, rejected at validation rather than resolved by precedence: "the
-first matching tenant wins" is the kind of rule that silently sends a customer
-another customer's allowance when someone reorders a list. Resolution happens
-once per request, alongside principal extraction, and the result rides the
-context like the principal does.
+**A principal resolves to at most one tenant.** Overlap is a config error
+rather than something resolved by precedence: "the first matching tenant wins"
+is the kind of rule that silently sends a customer another customer's
+allowance when someone reorders a list. Resolution happens once per request,
+alongside principal extraction, and the result rides the context like the
+principal does.
+
+*(Implementation note: this section first said overlap was "rejected at
+validation". It cannot be, and the correction matters. Deciding whether two
+selectors overlap means deciding whether **some** principal could satisfy
+both — and for group selectors that is nearly always true, since a principal
+may hold groups from several lists at once. Rejecting statically on that would
+refuse almost every real document. So validation catches what is genuinely
+checkable — duplicate ids, byte-identical selectors, references to upstreams
+that do not exist — and genuine ambiguity is caught at resolution, against a
+real principal, where it is decidable. A principal matching two tenants is
+**refused**, not assigned: serving it would mean picking, and picking is the
+failure this design exists to prevent. It is an internal error rather than a
+minted code, because a client cannot act on it — the operator's configuration
+is what is wrong.)*
 
 **An unmatched principal has no tenant.** It is governed exactly as today —
 global limits, policy, per-upstream budgets. Tenancy is additive, so an

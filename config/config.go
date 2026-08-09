@@ -23,6 +23,11 @@ type Config struct {
 	Server    *ServerSection `json:"server,omitempty"`
 	Tracing   *Tracing       `json:"tracing,omitempty"`
 	Discovery *Discovery     `json:"discovery,omitempty"`
+
+	// Tenants group principals for governance. Reloadable: tenants change
+	// when a customer signs up, and requiring a restart for that would push
+	// operators toward a write control plane fold does not have.
+	Tenants []Tenant `json:"tenants,omitempty"`
 }
 
 // Discovery enables dynamic upstream discovery: fold polls url for a JSON
@@ -287,6 +292,101 @@ func (b *Budget) validate(where string) error {
 		return fmt.Errorf("%s: budget.upstreamCalls must be positive", where)
 	}
 	return nil
+}
+
+// Tenant names a set of principals and the governance that applies to them as
+// a group. It is a label on identity, resolved from claims the IdP already
+// asserts — never presented alongside a token, never a trust anchor. A tenant
+// groups principals; it does not authenticate them. See
+// docs/design-tenancy.md.
+type Tenant struct {
+	ID string `json:"id"`
+
+	// Subjects selects the principals in this tenant, using the same shape
+	// policy rules use. A principal belongs to at most one tenant; matching
+	// more than one is a configuration error, refused at request time rather
+	// than resolved by precedence.
+	Subjects *PolicySubjects `json:"subjects,omitempty"`
+
+	// Budget caps this tenant's consumption over a calendar period — the
+	// dimension a per-upstream or server-wide budget cannot express.
+	Budget *Budget `json:"budget,omitempty"`
+
+	// RateLimit gives the tenant one shared bucket. Distinct from
+	// server.rateLimit.perPrincipalPerMinute, which gives each *person* a
+	// bucket: ten agents on one team get ten allowances there and one here.
+	RateLimit *RateLimit `json:"rateLimit,omitempty"`
+
+	// Upstreams optionally bounds which upstreams this tenant may see at
+	// all, by id. Evaluated before policy, which remains the authority on
+	// what may be invoked. Empty means every upstream.
+	Upstreams []string `json:"upstreams,omitempty"`
+}
+
+// validateTenants checks tenant declarations.
+//
+// Note what it does not do: prove that no principal can match two tenants.
+// That is not statically decidable for the selectors fold supports — two
+// group-based tenants "overlap" whenever some principal could hold a group
+// from each, which is nearly always, so rejecting on it would refuse almost
+// every real document. What is checkable is caught here (duplicate ids,
+// identical selectors, references to upstreams that do not exist); genuine
+// ambiguity is caught at resolution, against a real principal, and refused
+// there. See docs/design-tenancy.md.
+func (c *Config) validateTenants() error {
+	seen := map[string]bool{}
+	fingerprints := map[string]string{}
+	for i := range c.Tenants {
+		t := &c.Tenants[i]
+		if !idRE.MatchString(t.ID) {
+			return fmt.Errorf("tenant %q: id must be lowercase alphanumeric + hyphens", t.ID)
+		}
+		if seen[t.ID] {
+			return fmt.Errorf("tenant %q: duplicate id", t.ID)
+		}
+		seen[t.ID] = true
+
+		// A tenant with no selector would match every principal, which is a
+		// footgun rather than a shorthand: it silently captures callers the
+		// operator never meant to place.
+		if t.Subjects == nil {
+			return fmt.Errorf("tenant %q: subjects is required — a tenant with no selector would capture every caller", t.ID)
+		}
+		// Identical selectors are always ambiguous, so they are worth
+		// refusing statically: it is the copy-paste mistake, and no principal
+		// could ever resolve between them.
+		fp, err := json.Marshal(t.Subjects)
+		if err != nil {
+			return fmt.Errorf("tenant %q: %w", t.ID, err)
+		}
+		if other, dup := fingerprints[string(fp)]; dup {
+			return fmt.Errorf("tenant %q: identical subjects to tenant %q — no principal could resolve between them", t.ID, other)
+		}
+		fingerprints[string(fp)] = t.ID
+
+		if err := t.Budget.validate(fmt.Sprintf("tenant %q", t.ID)); err != nil {
+			return err
+		}
+		if t.RateLimit != nil && t.RateLimit.PerPrincipalPerMinute != 0 {
+			return fmt.Errorf("tenant %q: rateLimit.perPrincipalPerMinute is server-level only; a tenant's bucket is shared by its principals", t.ID)
+		}
+		for _, id := range t.Upstreams {
+			if !c.hasUpstream(id) {
+				return fmt.Errorf("tenant %q: upstreams references unknown upstream %q", t.ID, id)
+			}
+		}
+	}
+	return nil
+}
+
+// hasUpstream reports whether id names a configured upstream.
+func (c *Config) hasUpstream(id string) bool {
+	for i := range c.Upstreams {
+		if c.Upstreams[i].ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Auth configures the gateway's OAuth 2.0 resource server.
@@ -608,6 +708,9 @@ func (c *Config) Validate() error {
 		if err := c.Server.Budget.validate("server"); err != nil {
 			return err
 		}
+	}
+	if err := c.validateTenants(); err != nil {
+		return err
 	}
 	if c.Server != nil && c.Server.Console != nil && len(c.Server.Console.Groups) > 0 {
 		for _, gr := range c.Server.Console.Groups {

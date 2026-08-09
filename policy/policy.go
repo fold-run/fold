@@ -109,6 +109,16 @@ func (e *Engine) Visible(p *auth.Principal, upstreamID, invokeMethod, name strin
 	return e.Decide(p, upstreamID, invokeMethod, name).Allowed
 }
 
+// MatchSubjects reports whether a principal satisfies a subject selector.
+//
+// Exported so tenancy can say "these callers" the same way policy does. There
+// is deliberately one definition of that: a second matcher would drift, and
+// the two would eventually disagree about who a rule covers — which for
+// tenancy would mean assigning someone another tenant's allowance.
+func MatchSubjects(s *config.PolicySubjects, p *auth.Principal) bool {
+	return subjectsMatch(s, p)
+}
+
 func subjectsMatch(s *config.PolicySubjects, p *auth.Principal) bool {
 	if s == nil {
 		return true

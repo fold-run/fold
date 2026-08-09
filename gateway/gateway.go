@@ -139,6 +139,9 @@ type routes struct {
 	byID        map[string]*upstream
 	passthrough bool
 	policy      *policy.Engine
+	// tenants is the resolved tenant set, reloadable like the rest of the
+	// snapshot: tenants change when a customer signs up.
+	tenants tenantSet
 }
 
 // rt returns the current routing snapshot.
@@ -296,6 +299,7 @@ func (g *Gateway) buildRoutes(cfg *config.Config, prev *routes) *routes {
 		byID:        map[string]*upstream{},
 		passthrough: cfg.Passthrough(),
 		policy:      policy.New(cfg.Policy),
+		tenants:     buildTenants(cfg),
 	}
 	for _, ucfg := range cfg.Upstreams {
 		var u *upstream
