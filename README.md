@@ -259,6 +259,22 @@ These are the gateway-side backstop for a partially trusted registry. Whoever co
 
 The URL decides where traffic routes and where upstream credentials attach, so it must use `https` (loopback exempt). Back it with whatever produces the document — on Kubernetes, [`fold-discovery`](docs/discovery-controller.md) does it out of the box: label a Service `fold.run/upstream: "true"` and it joins the federation. Any other producer works too — a service registry, a script writing to object storage. Each gateway instance polls independently; a consistent source keeps a fleet consistent.
 
+### `tenants`
+
+Groups principals for governance. A tenant is a label on identity, resolved from claims the IdP already asserts — it never travels alongside a token and is never a trust anchor. **A tenant groups principals; it does not authenticate them**, and policy remains the authority on what may be invoked. Reloadable, unlike `server.budget`: tenants change when a customer signs up.
+
+| Field | Default | Notes |
+|---|---|---|
+| `id` | — | Lowercase alphanumeric + hyphens. Appears in every audit event the tenant's principals produce. |
+| `subjects` | — | Required. Which principals belong, using the same shape policy rules use (`groups`, `subs`, `issuers`, `claims`). A tenant with no selector would capture every caller, so it is rejected. |
+| `budget` | none | `{ period, upstreamCalls }` for the tenant as a whole — the dimension a per-upstream or server-wide budget cannot express. |
+| `rateLimit` | none | `{ requestsPerMinute }`, one bucket shared by the tenant's principals. Distinct from `server.rateLimit.perPrincipalPerMinute`, which gives each *person* a bucket: ten agents on one team get ten allowances there and one here. |
+| `upstreams` | all | Optional visibility subset by upstream id, evaluated before policy. |
+
+A principal belongs to at most one tenant. Overlap that validation cannot decide statically — two selectors that only collide for some principals — is caught at request time and **refused**, not guessed: assigning a caller by precedence would hand them another tenant's allowance and visibility. Design record: [docs/design-tenancy.md](docs/design-tenancy.md).
+
+*Resolution ships in this release; enforcement of a tenant's budget, rate limit, and visibility subset follows.*
+
 ### `tracing`
 
 ```jsonc

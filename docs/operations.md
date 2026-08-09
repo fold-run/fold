@@ -57,6 +57,7 @@ asynchronous and batched, never adding request latency). Fields:
 | `upstream` | Routed upstream id. |
 | `decision`, `ruleId` | Policy outcome (`allow`/`deny`) and the matching rule. |
 | `outcome` | `ok`, `error`, `denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`. |
+| `tenant` | The tenant the principal resolved to, when `tenants` is configured. Empty means no tenant matched — not an error, just a caller governed by the gateway-wide rules. |
 | `upstreamCalls` | Upstream invocations this request cost — the fan-out. Not always 1. |
 | `itemsServed` | Items a list returned **after** per-principal policy filtering and pagination: the surface this caller was handed, not the federation's total. |
 | `usage` | Counters the upstream published in its result `_meta`, verbatim. Absent means the upstream reported nothing — fold never synthesizes it. |

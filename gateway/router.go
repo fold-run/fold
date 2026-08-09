@@ -113,6 +113,18 @@ func (g *Gateway) route(ctx context.Context, method string, req mcp.Request, evt
 	// One snapshot per request: a concurrent Reload swaps the pointer, and
 	// this request keeps routing against the world it started in.
 	rt := g.rt()
+	// Resolve the tenant once per request, alongside the principal. An
+	// ambiguous match is refused rather than guessed: picking would hand some
+	// caller another tenant's allowance and visibility.
+	t, terr := rt.resolveTenant(auth.PrincipalFromContext(ctx))
+	if terr != nil {
+		g.log.Error("ambiguous tenant configuration", "err", terr.Message)
+		return nil, terr
+	}
+	if t != nil {
+		evt.Tenant = t.id()
+	}
+	ctx = withTenant(ctx, t)
 	switch method {
 	case "tools/list":
 		return g.listTools(ctx, rt, req, evt)
