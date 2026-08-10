@@ -35,7 +35,16 @@ wait_for() { # url, what — any HTTP response counts as up
 }
 
 echo "--- fetching conformance repo @ ${CONFORMANCE_COMMIT:0:12}"
-if [[ ! -d "$work/conformance" ]]; then
+# The clone is cached in a temp directory, which the OS is free to reap:
+# macOS deletes untouched files under /var/folders, and a partial sweep can
+# leave a conformance/ directory whose .git has lost HEAD, config, and refs.
+# Testing for the directory calls that a cache hit and hands git a shell of a
+# repo ("fatal: not a git repository"), which fails every local run from then
+# on until someone deletes the directory by hand. Ask git whether it is a
+# repository instead, and re-clone when it says no. CI never sees this (a
+# fresh RUNNER_TEMP each run), which is exactly why it has to be caught here.
+if ! git -C "$work/conformance" rev-parse --git-dir >/dev/null 2>&1; then
+  rm -rf "$work/conformance"
   git clone --quiet "$CONFORMANCE_REPO" "$work/conformance"
 fi
 git -C "$work/conformance" fetch --quiet origin "$CONFORMANCE_COMMIT"
