@@ -49,7 +49,15 @@ Never batch commit+push+tag on a single approval.
    - **`deploy/helm/fold/Chart.yaml` → `version`** (the chart's own
      version), bumped on any change under `deploy/helm/` — including the
      `appVersion` line above, since it changes rendered output. Patch-level
-     unless the chart's interface changed.
+     unless the chart's interface changed. This is the OCI tag the chart
+     publishes under, and a published tag is immutable: reusing one means two
+     different charts wearing the same name.
+
+   The release workflow's `chart` job enforces the first of these — it refuses
+   to publish when `appVersion` does not name the tag — so forgetting the bump
+   now fails the release rather than shipping a chart that installs the wrong
+   gateway. Do not treat that gate as the reminder: it fires after the tag is
+   pushed, which is the expensive place to find out.
 
    Then re-render and confirm what a user would get:
 
@@ -78,8 +86,14 @@ Never batch commit+push+tag on a single approval.
    is expected, not an error.)
 
 8. **Watch the release workflow** the same way (`gh run list` /
-   `gh run watch`) and report the goreleaser result, including the
-   artifacts published.
+   `gh run watch`) and report the result of all three jobs — `binaries`
+   (goreleaser: archives, SBOMs, checksums, provenance), `image` (the three
+   ghcr images), and `chart` (`oci://ghcr.io/fold-run/charts/fold` at the
+   chart's own version) — including the artifacts published.
+
+   A chart-only publish for an already-released tag does not need a new
+   release: run the workflow via `workflow_dispatch` with `chart_tag`, which
+   checks out that tag and publishes the chart exactly as it shipped.
 
 9. **Refresh the pinned conformance receipt.** The README's "Conformant,
    provably" paragraph links a specific green `conformance` job by run and
