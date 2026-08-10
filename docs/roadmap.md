@@ -218,9 +218,10 @@ Landing in phases. Shipped so far: resolution (the config, its validation, and
 the resolved tenant on the request context), and enforcement — a tenant's
 budget charged where the server and per-upstream ones are, and one rate-limit
 bucket shared by every principal in the tenant, which is what
-`perPrincipalPerMinute` cannot express. Remaining: the visibility subset
-(`tenants[].upstreams`, accepted today but not yet a boundary — see README
-"Not implemented"), the tenant as a metric label, and the docs pass. The open
+`perPrincipalPerMinute` cannot express; and the visibility subset, which
+bounds what a tenant sees by filtering the fan-out — an upstream outside it is
+never asked — and refuses named invocations before the policy engine sees
+them. Remaining: the tenant as a metric label, and the docs pass. The open
 question the design named rather than assumed was
 cardinality, and it is now **settled by measurement**: matching a principal
 against N definitions was linear and reached 450 µs per request at ten

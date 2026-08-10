@@ -206,6 +206,45 @@ func (t *tenant) sees(upstreamID string) bool {
 	return t.upstreams[upstreamID]
 }
 
+// visibleUpstreams narrows a fan-out to what this request's tenant may reach.
+//
+// It returns ups itself — the same slice, no copy — for the overwhelmingly
+// common cases of no tenant and a tenant with no subset, so the visibility
+// cut costs nothing until an operator asks for it. A tenant with a subset
+// pays one allocation per fan-out, which is already the cheapest thing a list
+// request does.
+//
+// Filtering the fan-out rather than the merged result is deliberate: an
+// upstream the tenant cannot see is never asked, so it costs no request, no
+// budget, and no partial-failure entry when it happens to be down. Policy
+// filters afterwards, per principal, on what is left.
+func visibleUpstreams(ctx context.Context, ups []*upstream) []*upstream {
+	t := tenantFrom(ctx)
+	if t == nil || len(t.upstreams) == 0 {
+		return ups
+	}
+	out := make([]*upstream, 0, len(ups))
+	for _, u := range ups {
+		if t.upstreams[u.cfg.ID] {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// errOutsideSubset renders a named invocation refused because the upstream is
+// outside the caller's tenant subset. It reuses the policy code rather than
+// minting a fifth: the subset is a coarser cut of the same decision, the
+// remedy is the same (an operator has to widen it), and a client that
+// understands one understands the other.
+func errOutsideSubset(t *tenant, method, name, upstreamID string) *jsonrpc.Error {
+	return &jsonrpc.Error{
+		Code: codeDenied,
+		Message: fmt.Sprintf("denied %s %q: upstream %q is outside tenant %q's subset",
+			method, name, upstreamID, t.id()),
+	}
+}
+
 // id returns the tenant's id, or "" for an unmatched principal.
 func (t *tenant) id() string {
 	if t == nil {

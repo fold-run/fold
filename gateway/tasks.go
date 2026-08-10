@@ -272,6 +272,13 @@ func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMess
 		if rec.owner != "" && rec.owner != caller {
 			return nil, &jsonrpc.Error{Code: codeTaskNotFound, Message: fmt.Sprintf("no upstream owns task %q", taskID)}
 		}
+		// A task held by an upstream outside the caller's tenant subset is
+		// answered exactly like an unknown id — the same posture this path
+		// already takes for another principal's task, and for the same
+		// reason: the refusal must not reveal existence.
+		if !tenantFrom(ctx).sees(rec.upstreamID) {
+			return nil, &jsonrpc.Error{Code: codeTaskNotFound, Message: fmt.Sprintf("no upstream owns task %q", taskID)}
+		}
 		if u := rt.byID[rec.upstreamID]; u != nil {
 			g.taskOwner.put(ctx, taskID, rec) // refresh on use
 			return u.callTask(ctx, method, raw)
@@ -295,12 +302,15 @@ func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMess
 // that recognizes the task, or nil.
 func (g *Gateway) locateTaskOwner(ctx context.Context, rt *routes, taskID string) *upstream {
 	probe, _ := json.Marshal(map[string]string{"taskId": taskID})
-	results, _ := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
+	// Probe only what the caller's tenant may reach: a task id guessed from
+	// another tenant's stream must not locate its owner here.
+	ups := visibleUpstreams(ctx, rt.upstreams)
+	results, _ := fanOut(ctx, ups, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
 		return u.callTask(ctx, methodTasksGet, probe)
 	})
 	for i, r := range results {
 		if r != nil {
-			return rt.upstreams[i]
+			return ups[i]
 		}
 	}
 	return nil
@@ -315,10 +325,11 @@ func (g *Gateway) locateTaskOwner(ctx context.Context, rt *routes, taskID string
 // cursors as the typed lists (see paginate).
 func (g *Gateway) listTasks(ctx context.Context, rt *routes, caller string, raw json.RawMessage) (json.RawMessage, error) {
 	empty, _ := json.Marshal(map[string]any{})
-	results, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
+	ups := visibleUpstreams(ctx, rt.upstreams)
+	results, failed := fanOut(ctx, ups, func(ctx context.Context, u *upstream) (json.RawMessage, error) {
 		return u.callTask(ctx, methodTasksList, empty)
 	})
-	meta, err := partialFailureMeta(failed, len(rt.upstreams))
+	meta, err := partialFailureMeta(failed, len(ups))
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +355,7 @@ func (g *Gateway) listTasks(ctx context.Context, rt *routes, caller string, raw 
 		}
 		for _, t := range page.Tasks {
 			id := extractTaskID(t)
-			all = append(all, listed{task: t, id: id, upstream: rt.upstreams[i].cfg.ID})
+			all = append(all, listed{task: t, id: id, upstream: ups[i].cfg.ID})
 			if id != "" {
 				ids = append(ids, id)
 			}
