@@ -12,8 +12,8 @@ type: application
 # TODO: when this chart starts publishing to an OCI registry
 # (oci://ghcr.io/fold-run/charts), bump `version` on every chart change as
 # part of the release flow. While repo-only, it tracks notable chart changes.
-version: 0.1.1
-appVersion: "v1.7.0"
+version: 0.1.2
+appVersion: "v1.8.0"
 home: https://github.com/fold-run/fold
 sources:
   - https://github.com/fold-run/fold
