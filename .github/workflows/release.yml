@@ -3,6 +3,16 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Chart-only publish for an existing tag: the chart versions independently
+  # of the gateway, so a chart fix (or a backfill for a release that shipped
+  # before this job existed) must not require a new gateway release to reach
+  # the registry. Binaries and images stay tag-triggered — they are immutable
+  # per release and have no reason to be republished.
+  workflow_dispatch:
+    inputs:
+      chart_tag:
+        description: "Release tag whose chart to publish (e.g. v1.8.0)"
+        required: true
 
 permissions:
   contents: write
@@ -10,6 +20,7 @@ permissions:
 
 jobs:
   binaries:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -43,7 +54,61 @@ jobs:
             dist/*.tar.gz
             dist/checksums.txt
 
+  # The chart publishes to the same registry as the images, versioned on its
+  # own `version` field rather than the gateway's: a chart fix that ships no
+  # new gateway is a chart release, and pinning the two together would force
+  # one to lie. `appVersion` is what ties a chart to a gateway build, and the
+  # release flow bumps it (see .claude/skills/fold-release).
+  chart:
+    runs-on: ubuntu-latest
+    env:
+      # The tag being published: the pushed tag, or the one named on a
+      # chart-only dispatch.
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.chart_tag || github.ref_name }}
+    steps:
+      # Check out the tag rather than the default branch, so a dispatch
+      # publishes the chart as that release shipped it, not as main has it now.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.chart_tag || github.ref_name }}
+
+      - uses: azure/setup-helm@v5
+
+      # Publishing a chart that renders wrong is worse than not publishing:
+      # a `helm install` from an OCI registry has no repo checkout to inspect
+      # first. Lint and render every ci/ value set before anything is pushed.
+      - name: lint and render
+        run: make helm-check
+
+      # The chart deploys the gateway image by default (values.yaml ships
+      # `image.tag: ""`, which falls back to appVersion), so a chart whose
+      # appVersion does not name this tag would publish an install that
+      # silently runs a different version than the release it shipped with.
+      - name: appVersion must match the tag
+        run: |
+          app=$(helm show chart deploy/helm/fold | awk '/^appVersion:/ {print $2}' | tr -d '"')
+          if [[ "$app" != "$TAG" ]]; then
+            echo "chart appVersion is $app but the release is $TAG" >&2
+            echo "bump deploy/helm/fold/Chart.yaml in the release commit" >&2
+            exit 1
+          fi
+          echo "appVersion $app matches $TAG"
+
+      - name: log in to ghcr
+        run: |
+          helm registry login ghcr.io \
+            --username "${{ github.actor }}" \
+            --password "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: package and push
+        run: |
+          helm package deploy/helm/fold --destination dist
+          # The chart's own version is the OCI tag; `helm push` derives the
+          # repository name from the chart, so the target is the namespace.
+          helm push dist/fold-*.tgz oci://ghcr.io/fold-run/charts
+
   image:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

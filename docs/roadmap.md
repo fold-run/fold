@@ -142,12 +142,22 @@ into the chart next to the existing `servicemonitor.yaml`, with
 [operations.md](operations.md) pointing at them. Today an operator gets a
 `/metrics` endpoint, a template to scrape it with, and interpretation nowhere.
 
-### 6. Publish the Helm chart to an OCI registry
+### 6. Publish the Helm chart to an OCI registry — **shipped**
 
-The chart is complete — deployment, service, ingress, HPA, PDB,
-an opt-in `ServiceMonitor`, a config-validating init container, and a `make
-helm-check` gate — but installs only from a repo path. Publishing it closes the
+The chart was complete — deployment, service, ingress, HPA, PDB, an opt-in
+`ServiceMonitor`, a config-validating init container, and a `make helm-check`
+gate — but installed only from a repo path. It now publishes to
+`oci://ghcr.io/fold-run/charts/fold` on every release tag, which closed the
 only literal `TODO` in the tree.
+
+Two things the entry did not anticipate. The release job **gates** rather than
+just packages: it lints and renders every `ci/` value set, and refuses to
+publish a chart whose `appVersion` does not name the tag being released —
+because a chart deploys the gateway image by default, so a mismatched pair
+would ship an install that silently runs a different version than the release
+it accompanied. And publishing is also reachable by `workflow_dispatch` for a
+named tag: the chart versions independently of the gateway, so a chart-only
+fix must not need a gateway release to reach the registry.
 
 ## Horizon 2 — themes
 

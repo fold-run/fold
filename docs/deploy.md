@@ -62,12 +62,22 @@ monitoring instead.
 
 ## Kubernetes (Helm)
 
-The chart lives in [`deploy/helm/fold`](../deploy/helm/fold) (repo-only for
-now — install from a checkout):
+The chart publishes to `oci://ghcr.io/fold-run/charts/fold` with every
+release, and also lives in [`deploy/helm/fold`](../deploy/helm/fold):
 
 ```bash
+helm install fold oci://ghcr.io/fold-run/charts/fold \
+  -n fold --create-namespace -f my-values.yaml
+
+# or from a checkout, unchanged:
 helm install fold deploy/helm/fold -n fold --create-namespace -f my-values.yaml
 ```
+
+Two version numbers, deliberately separate: the chart's own `version` is what
+`--version` pins, and `appVersion` is the gateway build it deploys by default
+— a chart fix that ships no new gateway is still a chart release. The release
+workflow refuses to publish a chart whose `appVersion` does not name the tag
+being released, so the pair cannot drift apart in the registry.
 
 ```yaml
 # my-values.yaml

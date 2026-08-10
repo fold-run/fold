@@ -9,10 +9,12 @@ type: application
 # values.yaml ships `image.tag: ""`, so the deployment falls back to it. The
 # release flow bumps it (see .claude/skills/fold-release) — a stale value here
 # is what users actually install, not a label.
-# TODO: when this chart starts publishing to an OCI registry
-# (oci://ghcr.io/fold-run/charts), bump `version` on every chart change as
-# part of the release flow. While repo-only, it tracks notable chart changes.
-version: 0.1.2
+# `version` is the chart's own version and the OCI tag it publishes under
+# (oci://ghcr.io/fold-run/charts/fold) — bump it on every change under
+# deploy/helm/, since a published tag is immutable and a reused one is a
+# different chart wearing the same name. It moves independently of appVersion:
+# a chart fix that ships no new gateway is still a chart release.
+version: 0.1.3
 appVersion: "v1.8.0"
 home: https://github.com/fold-run/fold
 sources:
