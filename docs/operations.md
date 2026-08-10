@@ -102,6 +102,41 @@ document rejected`/`malformed` once per bad document. The
 Active health probes (`healthCheck.intervalMs`) log only transitions:
 `health probe ejected endpoint` and `health probe restored endpoint`.
 
+## Answering questions about a tenant
+
+With `tenants` declared, a customer becomes a dimension you can query rather
+than a filter you apply afterwards.
+
+**"What did team A consume this month?"** —
+`sum(increase(fold_tenant_upstream_calls_total{tenant="acme"}[30d]))`. The unit
+is upstream invocations, the same one `tenants[].budget` is charged in, so this
+number and the allowance are directly comparable. One `tools/list` fans out to
+every upstream the tenant can see, which is why a list costs more than a call.
+
+**"Is a customer being refused?"** —
+`rate(fold_tenant_requests_total{tenant="acme",outcome!="ok"}[5m])`, and the
+`outcome` label says which kind: `denied` is policy or the visibility subset,
+`rate_limited` is the tenant's bucket (or a wider one), `budget_exhausted` is
+the allowance. The three have different owners — a policy rule, a limit, and a
+finance conversation — so alert on them separately.
+
+**"Which tenant is loudest?"** —
+`topk(5, sum by (tenant) (rate(fold_tenant_upstream_calls_total[5m])))`.
+Untenanted traffic is deliberately absent from these series (it would otherwise
+appear as a `tenant=""` line); it is counted in `fold_requests_total` like
+everything else.
+
+**In the audit stream**, every event a tenant's principals produce carries
+`tenant`, including denials and rate-limit rejections, so the same questions
+are answerable in the SIEM without reconciling against config.
+
+**When an allowance runs out**, callers get `-32044` naming the tenant and the
+reset instant, and the event carries `budget_exhausted`. Widening the allowance
+is a reload, not a restart: `tenants[]` is snapshot state, and a tenant whose
+budget block is unchanged keeps its accumulated count across the swap. Watch
+`fold_budget_degraded_total{scope="tenant"}` — non-zero means shared state was
+unreachable and each instance is enforcing its own copy of that allowance.
+
 ## Tracing
 
 W3C trace context propagates to upstream calls unconditionally. With the
