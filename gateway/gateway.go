@@ -233,6 +233,11 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 				scopes = append(scopes, "upstream:"+cfg.Upstreams[i].ID)
 			}
 		}
+		for i := range cfg.Tenants {
+			if cfg.Tenants[i].Budget.Allowance() > 0 {
+				scopes = append(scopes, "tenant:"+cfg.Tenants[i].ID)
+			}
+		}
 		if len(scopes) > 0 {
 			g.log.Warn("budget configured without shared state — each instance enforces its own allowance",
 				"scopes", scopes, "hint", "set server.redisUrl or REDIS_URL")
@@ -293,13 +298,17 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 // upstreams whose configuration is unchanged are carried over live — their
 // sessions, caches, and breaker state survive the reload.
 func (g *Gateway) buildRoutes(cfg *config.Config, prev *routes) *routes {
+	var prevTenants tenantSet
+	if prev != nil {
+		prevTenants = prev.tenants
+	}
 	rt := &routes{
 		cfg:         cfg,
 		byNamespace: map[string]*upstream{},
 		byID:        map[string]*upstream{},
 		passthrough: cfg.Passthrough(),
 		policy:      policy.New(cfg.Policy),
-		tenants:     buildTenants(cfg),
+		tenants:     buildTenants(cfg, g.state, prevTenants),
 	}
 	for _, ucfg := range cfg.Upstreams {
 		var u *upstream
@@ -1172,20 +1181,39 @@ func (g *Gateway) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// rateLimitMiddleware enforces the request budgets: the global bucket, then
-// — for authenticated callers — a per-principal bucket, so one tenant's
-// flood cannot consume the shared budget and 429 every other tenant. Runs
+// rateLimitMiddleware enforces the request buckets, widest first: the global
+// one, then — for authenticated callers — the caller's tenant, then the
+// per-principal bucket. The tenant bucket is what "team A cannot flood team B"
+// actually means: perPrincipalPerMinute gives each *person* an allowance, so
+// ten agents on one team hold ten of them, while a tenant shares one. Runs
 // after auth, so the principal is verified. 429 + Retry-After.
+//
+// The tenant is resolved here as well as at routing, rather than handed from
+// one layer to the other: the two layers read their principal from different
+// places (the HTTP request here, the MCP request object there), and coupling
+// them through a context value would make this depend on how the SDK carries
+// a request's context into a handler. Resolution is a map lookup and flat in
+// the number of tenants (docs/benchmarks.md), which is what makes paying for
+// it twice a non-question.
 func (g *Gateway) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ok, retry := g.globalLimit.Allow(r.Context()); !ok {
-			g.rejectRateLimited(w, retry, nil)
+			g.rejectRateLimited(w, retry, nil, "")
 			return
 		}
-		if g.perPrincipalRPM > 0 {
-			if p := principalFromRequest(r); p != nil {
+		p := principalFromRequest(r)
+		if p != nil {
+			// An ambiguous tenant is not limited here: the request is refused
+			// at routing, where that refusal has one home and one message.
+			if t, err := g.rt().resolveTenant(p); err == nil && t != nil && t.limiter != nil {
+				if ok, retry := t.limiter.Allow(r.Context()); !ok {
+					g.rejectRateLimited(w, retry, p, t.id())
+					return
+				}
+			}
+			if g.perPrincipalRPM > 0 {
 				if ok, retry := g.principalLimiter(p).Allow(r.Context()); !ok {
-					g.rejectRateLimited(w, retry, p)
+					g.rejectRateLimited(w, retry, p, "")
 					return
 				}
 			}
@@ -1195,11 +1223,11 @@ func (g *Gateway) rateLimitMiddleware(next http.Handler) http.Handler {
 }
 
 // rejectRateLimited answers 429 with Retry-After and records the rejection.
-func (g *Gateway) rejectRateLimited(w http.ResponseWriter, retry time.Duration, p *auth.Principal) {
+func (g *Gateway) rejectRateLimited(w http.ResponseWriter, retry time.Duration, p *auth.Principal, tenantID string) {
 	w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 	g.metrics.reject("rate_limited")
-	evt := audit.Event{Method: "http", Outcome: audit.OutcomeRateLimited}
+	evt := audit.Event{Method: "http", Outcome: audit.OutcomeRateLimited, Tenant: tenantID}
 	if p != nil {
 		evt.Principal, evt.Issuer = p.Subject, p.Issuer
 	}

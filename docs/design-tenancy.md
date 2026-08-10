@@ -1,7 +1,8 @@
 # Design: the tenant object
 
-Status: **phases 1–2 implemented** (resolution, and the cardinality question
-settled by measurement); enforcement, visibility, and the record remain. This
+Status: **phases 1–3 implemented** (resolution, the cardinality question
+settled by measurement, and enforcement of the tenant's budget and rate
+limit); the visibility subset, the record, and the docs remain. This
 records the design for the [roadmap](roadmap.md)'s Horizon 2 tenancy item, and
 settles a question three shipped features have now deferred: what a tenant *is*
 in fold.
@@ -217,7 +218,22 @@ per-person buckets keep what they have; those who want both get both.
    anything depends on the answer. **Shipped**: `BenchmarkResolveTenant`, and
    the index it justified.
 3. **Enforcement** — per-tenant budget and rate limit, reusing the existing
-   primitives and charge points.
+   primitives and charge points. **Shipped.** The budget is charged where the
+   server and per-upstream ones are, narrowest allowance first (upstream →
+   tenant → server), so a refusal never spends a wider allowance and only
+   invocations that reach an upstream are counted. The bucket is enforced
+   with its siblings in the HTTP layer — a 429 with `Retry-After`, widest
+   bucket first (global → tenant → per-principal) — because a flood should
+   be refused before it costs any routing work.
+
+   One thing this phase had to settle that the design did not name: a tenant
+   is rebuilt on every reload, including reloads with nothing to do with
+   tenancy, and under the in-memory provider the counter *is* the object. So
+   a tenant's budget and bucket are carried across a reload whenever that
+   dimension's configuration is unchanged — otherwise adding an upstream
+   would hand every customer a fresh month, and reloads are meant to be
+   routine. Changing an allowance does start a new counter, which is what an
+   upstream's budget already does.
 4. **Visibility** — the `upstreams` subset, evaluated before policy.
 5. **The record** — `tenant` in audit events and as a metric label, plus the
    console's federation view.
