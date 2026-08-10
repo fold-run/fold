@@ -93,10 +93,11 @@ fold fans list requests out across all upstreams concurrently, merges and namesp
 POST /mcp
  → host validation      DNS-rebinding protection (Host/Origin allowlist)
  → authenticate         Bearer → issuer allowlist → JWKS → audience → Principal
- → rate limit           global window → 429 + Retry-After
- → route                federated fan-out (lists) or namespaced routing
+ → rate limit           global → tenant → per-principal windows → 429 + Retry-After
+ → route                federated fan-out (lists) or namespaced routing, tenant resolved
+ → visibility           tenant upstream subset (a fan-out never reaches what it excludes)
  → authorize            deny-by-default policy per invocation
- → per-upstream guards  rate limit, circuit breaker, request timeout
+ → per-upstream guards  rate limit, circuit breaker, request timeout, budgets
  → proxy                credentials attached, held SDK session per upstream
  → egress               per-principal list filtering, namespace rewriting
  → audit                one event per request, including denials (single exit door)
@@ -228,11 +229,11 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 |---|---|---|
 | `mcpPath` | `/mcp` | Path the gateway serves MCP on. |
 | `allowedHosts` | localhost set | DNS-rebinding protection: allowed Host/Origin hostnames. Set to your public hostname(s) in production, or `["*"]` only behind a trusted proxy. |
-| `rateLimit` | none | Global `{ requestsPerMinute }` across all upstreams, plus optional `perPrincipalPerMinute` capping each authenticated principal on its own bucket (one tenant's flood cannot 429 the others). |
+| `rateLimit` | none | Global `{ requestsPerMinute }` across all upstreams, plus optional `perPrincipalPerMinute` capping each authenticated principal on its own bucket, so one caller's flood cannot 429 the others. For a bucket shared by a *team* rather than one per person, see [`tenants`](#tenants). |
 | `budget` | none | `{ period, upstreamCalls }` — a consumption allowance across every upstream, accumulating until the calendar period rolls over. Like the rest of this section it is construction-wired: a reload rejects a change to it, so an allowance cannot be widened under a running gateway. |
 | `maxBodyBytes` | 1 MiB | Request body cap; larger bodies are answered `413` (chunked bodies are cut off at the cap). |
 | `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
-| `console` | disabled | `{ "enabled": true }` serves the read-only fold console at `/console`: an observability dashboard (federation health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts) plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. With auth enabled, the console's state API requires the same Bearer token as `/mcp`; add `"groups": ["platform-ops"]` to further restrict viewing to principals carrying one of those groups (403 otherwise, audited) — the fix for multi-tenant deployments where any valid token holder is too wide an audience. Add `"oauth": { "clientId": "fold-console" }` and the console signs users in with Authorization Code + PKCE against a trusted issuer (register `{origin}/console/` as the redirect URI at the IdP; `issuer` picks among multiple trusted issuers, `scopes` adds authorization scopes) instead of a pasted token. |
+| `console` | disabled | `{ "enabled": true }` serves the read-only fold console at `/console`: an observability dashboard (federation health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts) plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. With auth enabled, the console's state API requires the same Bearer token as `/mcp`; add `"groups": ["platform-ops"]` to further restrict viewing to principals carrying one of those groups (403 otherwise, audited) — the fix for deployments where any valid token holder is too wide an audience. (A viewer who resolves to a tenant sees that tenant's federation rather than the whole one; see [`tenants`](#tenants).) Add `"oauth": { "clientId": "fold-console" }` and the console signs users in with Authorization Code + PKCE against a trusted issuer (register `{origin}/console/` as the redirect URI at the IdP; `issuer` picks among multiple trusted issuers, `scopes` adds authorization scopes) instead of a pasted token. |
 
 ### `routing`
 
@@ -263,17 +264,31 @@ The URL decides where traffic routes and where upstream credentials attach, so i
 
 Groups principals for governance. A tenant is a label on identity, resolved from claims the IdP already asserts — it never travels alongside a token and is never a trust anchor. **A tenant groups principals; it does not authenticate them**, and policy remains the authority on what may be invoked. Reloadable, unlike `server.budget`: tenants change when a customer signs up.
 
+```jsonc
+"tenants": [
+  {
+    "id": "acme",
+    "subjects": { "claims": { "org_id": "acme-prod" } },  // same shape policy rules use
+    "budget": { "period": "month", "upstreamCalls": 500000 },
+    "rateLimit": { "requestsPerMinute": 2000 },           // one bucket for the whole tenant
+    "upstreams": ["billing", "crm"]                        // optional: all upstreams if omitted
+  }
+]
+```
+
 | Field | Default | Notes |
 |---|---|---|
-| `id` | — | Lowercase alphanumeric + hyphens. Appears in every audit event the tenant's principals produce. |
+| `id` | — | Lowercase alphanumeric + hyphens. Appears in every audit event the tenant's principals produce, and as the `tenant` label on `fold_tenant_*` metrics. |
 | `subjects` | — | Required. Which principals belong, using the same shape policy rules use (`groups`, `subs`, `issuers`, `claims`). A tenant with no selector would capture every caller, so it is rejected. |
-| `budget` | none | `{ period, upstreamCalls }` for the tenant as a whole — the dimension a per-upstream or server-wide budget cannot express. |
-| `rateLimit` | none | `{ requestsPerMinute }`, one bucket shared by the tenant's principals. Distinct from `server.rateLimit.perPrincipalPerMinute`, which gives each *person* a bucket: ten agents on one team get ten allowances there and one here. |
+| `budget` | none | `{ period, upstreamCalls }` for the tenant as a whole — the dimension a per-upstream or server-wide budget cannot express. Charged in upstream invocations like every other budget, only for calls that reach an upstream; exhaustion mints `-32044` naming the tenant. |
+| `rateLimit` | none | `{ requestsPerMinute }`, one bucket shared by the tenant's principals; over it, `429` with `Retry-After`. Distinct from `server.rateLimit.perPrincipalPerMinute`, which gives each *person* a bucket: ten agents on one team get ten allowances there and one here. |
 | `upstreams` | all | Optional visibility subset by upstream id, evaluated before policy. |
 
-A principal belongs to at most one tenant. Overlap that validation cannot decide statically — two selectors that only collide for some principals — is caught at request time and **refused**, not guessed: assigning a caller by precedence would hand them another tenant's allowance and visibility. Design record: [docs/design-tenancy.md](docs/design-tenancy.md).
+**How the four pieces behave.** The budget and the server's are charged narrowest-first (upstream → tenant → server), so a refusal never spends a wider allowance. The rate limit is enforced with its siblings before routing, widest-first (global → tenant → per-principal). The visibility subset filters the *fan-out*: an upstream outside it is never asked, so it costs no request, no budget, and no partial-failure entry when it is down — and a named invocation against it is refused before the policy engine sees it, with `-32042` (`tasks/*` answer "no upstream owns that id" instead, because there a refusal must not reveal existence). A viewer's console shows their tenant's federation, not the operator's.
 
-*Resolution ships in this release; enforcement of a tenant's budget, rate limit, and visibility subset follows.*
+A principal belongs to at most one tenant. Overlap that validation cannot decide statically — two selectors that only collide for some principals — is caught at request time and **refused**, not guessed: assigning a caller by precedence would hand them another tenant's allowance and visibility. An unmatched principal has no tenant and is governed exactly as before tenancy existed, so an existing deployment behaves identically until it declares one.
+
+Resolution is a map lookup for the two selector shapes a large document repeats — one claim equalling one value, or one group — so a document with ten thousand tenants resolves as fast as one with ten ([benchmarks](docs/benchmarks.md#tenant-resolution-cardinality)); compound selectors still scan, so keep those in the tens. Design record: [docs/design-tenancy.md](docs/design-tenancy.md).
 
 ### `tracing`
 
@@ -302,7 +317,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 
 ## Observability
 
-- `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_upstream_endpoint_healthy{upstream,endpoint}` (multi-endpoint upstreams: 1 in rotation, 0 ejected), `fold_http_rejections_total{reason}`, `fold_discovery_syncs_total{outcome}`, `fold_build_info{version}`, plus standard Go process/runtime collectors.
+- `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_upstream_endpoint_healthy{upstream,endpoint}` (multi-endpoint upstreams: 1 in rotation, 0 ejected), `fold_http_rejections_total{reason}`, `fold_discovery_syncs_total{outcome}`, `fold_build_info{version}`, plus standard Go process/runtime collectors. With `tenants` configured, two more carry the tenant dimension: `fold_tenant_requests_total{tenant,outcome}` and `fold_tenant_upstream_calls_total{tenant}` — the second counts the unit a tenant budget is charged in, so an allowance can be watched being spent. They are separate series rather than a `tenant` label on the metrics above, because label sets are frozen by the [compatibility contract](#api-stability).
 - **Distributed tracing** — W3C Trace Context (`traceparent`/`tracestate`) headers on incoming requests are always propagated to the upstream calls they cause, so the gateway hop joins the caller's trace. With the `tracing` section configured, fold also emits its own OpenTelemetry spans (server span per request, client span per upstream call, pipeline outcomes as attributes) over OTLP/HTTP — the gateway hop appears *in* the trace instead of being invisible, and upstream calls parent under fold's client span while keeping the caller's trace id.
 - **Latency, measurably** — the `bench` CI job gates every merge on added p50 latency < 5 ms through the proxy path (loose for shared runners). Typical local numbers (Apple Silicon, in-process upstream): **~0.20 ms added p50**, gateway p99 ≈ 0.57 ms. Reproduce: `make bench`.
 - **Throughput, measurably** — `make loadtest` sweeps one instance under 8/64/256 concurrent SDK client sessions, direct vs through-fold: **~9,300 req/s `tools/call` at 64 connections (p99 ≤ 19 ms), 13,400 req/s at 256 (p99 ≤ 61 ms), zero errors** (Apple M4 Pro, loopback). Methodology, full tables, and the honest caveats: [docs/benchmarks.md](docs/benchmarks.md).
@@ -328,7 +343,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/roadmap.md](docs/roadmap.md) — direction: what fold intends to build next, and what it deliberately declines.
 - [docs/design-stdio.md](docs/design-stdio.md) — design record: why stdio upstreams arrive as a sidecar shim rather than subprocess supervision in the gateway.
 - [docs/design-consumption.md](docs/design-consumption.md) — design record: quotas, budgets, and metering — what a gateway on the MCP path can honestly govern, and what it must refuse to guess.
-- [docs/design-tenancy.md](docs/design-tenancy.md) — design record (proposed): the tenant object — a named set of principals and the governance that applies to them, and why it never becomes a trust anchor.
+- [docs/design-tenancy.md](docs/design-tenancy.md) — design record: the tenant object — a named set of principals and the governance that applies to them, why it never becomes a trust anchor, and the two corrections implementation forced on the design.
 
 ## Deploying
 

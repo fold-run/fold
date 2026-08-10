@@ -1,8 +1,8 @@
 # Design: the tenant object
 
-Status: **phases 1–5 implemented** (resolution, the cardinality question
-settled by measurement, enforcement of the tenant's budget and rate limit,
-the visibility subset, and the record); the docs pass remains. This
+Status: **implemented** — all six phases. Resolution, the cardinality question
+settled by measurement, enforcement of the tenant's budget and rate limit, the
+visibility subset, the record, and the docs. This
 records the design for the [roadmap](roadmap.md)'s Horizon 2 tenancy item, and
 settles a question three shipped features have now deferred: what a tenant *is*
 in fold.
@@ -278,7 +278,14 @@ per-person buckets keep what they have; those who want both get both.
    topology its own traffic is refused.
 6. **Docs** — README config section, `operations.md`, `defaults.md`,
    `security-model.md` (rewriting "Tenant isolation under load", which
-   currently describes the emergent version).
+   currently describes the emergent version). **Shipped.** The
+   security-model section is now "Tenant isolation" and describes the object
+   rather than the assembly; `operations.md` gains the queries that answer
+   "what did this customer consume" and "is this customer being refused";
+   `defaults.md` records why there is no default tenant, why an absent
+   subset means every upstream, and why an absent budget means unlimited;
+   and the example config carries a tenant, so the shape is in the file
+   operators copy from.
 
 ## Explicitly out of scope
 
