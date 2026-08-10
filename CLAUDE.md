@@ -23,6 +23,10 @@ make conformance                             # official MCP conformance suite th
 # which the latency gate's 1-upstream fixture does not exercise:
 go test ./gateway -run '^$' -bench BenchmarkFederatedListTools -benchmem
 FOLD_LOAD_UPSTREAMS=20 FOLD_LOAD_TOOLS=50 make loadtest
+
+# Tenant resolution cost, whose work scales with the number of tenant
+# declarations rather than with the federation:
+go test ./gateway -run '^$' -bench BenchmarkResolveTenant -benchmem
 ```
 
 CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, `go mod tidy -diff`, vet, build, `go test -race`, golangci-lint, govulncheck, the added-latency benchmark (added p50 < 5 ms through the proxy path), and the conformance suite (40/40 checks, pinned to a commit in `scripts/conformance.sh` — bump deliberately).

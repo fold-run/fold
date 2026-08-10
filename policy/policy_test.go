@@ -151,6 +151,16 @@ func TestClaimsMatching(t *testing.T) {
 	if allow(&auth.Principal{Subject: "a", Claims: map[string]any{"dept": []any{"sales"}, "level": float64(3)}}) {
 		t.Error("array claim without the value should deny")
 	}
+	// Claim comparison is type-exact: a token asserting the string "3" does
+	// not satisfy a rule requiring the number 3. Worth pinning, because the
+	// comparison has a scalar fast path in front of reflect.DeepEqual and a
+	// lenient one would quietly widen every claim-gated rule in the document.
+	if allow(&auth.Principal{Subject: "a", Claims: map[string]any{"dept": "eng", "level": "3"}}) {
+		t.Error("string \"3\" should not satisfy a rule requiring the number 3")
+	}
+	if allow(&auth.Principal{Subject: "a", Claims: map[string]any{"dept": true, "level": float64(3)}}) {
+		t.Error("boolean true should not satisfy a rule requiring the string \"eng\"")
+	}
 	// No claims at all (e.g. a hand-built principal) denies.
 	if allow(&auth.Principal{Subject: "a"}) {
 		t.Error("principal without claims should deny")

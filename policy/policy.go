@@ -170,16 +170,38 @@ func claimsMatch(required map[string]any, claims map[string]any) bool {
 			return false
 		}
 		if arr, isArr := got.([]any); isArr {
-			if !slices.ContainsFunc(arr, func(v any) bool { return reflect.DeepEqual(v, want) }) {
+			if !slices.ContainsFunc(arr, func(v any) bool { return claimEqual(v, want) }) {
 				return false
 			}
 			continue
 		}
-		if !reflect.DeepEqual(got, want) {
+		if !claimEqual(got, want) {
 			return false
 		}
 	}
 	return true
+}
+
+// claimEqual is reflect.DeepEqual specialized for the shapes claims actually
+// take. Both sides come from JSON, so nearly every comparison is two strings —
+// and DeepEqual reaches for reflection to decide that, once per required claim
+// per rule, on a path that runs for every item of every list. The switch is
+// exact rather than lenient: for two values of the same scalar type DeepEqual
+// is ==, and a type mismatch is false either way, so this changes cost and not
+// meaning. Anything else falls through to DeepEqual unchanged.
+func claimEqual(got, want any) bool {
+	switch w := want.(type) {
+	case string:
+		g, ok := got.(string)
+		return ok && g == w
+	case float64:
+		g, ok := got.(float64)
+		return ok && g == w
+	case bool:
+		g, ok := got.(bool)
+		return ok && g == w
+	}
+	return reflect.DeepEqual(got, want)
 }
 
 // glob is a name pattern with its wildcard split already done. Patterns
