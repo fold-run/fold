@@ -3,22 +3,32 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
 	"github.com/fold-run/fold/auth"
 	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/state"
 	"github.com/fold-run/fold/policy"
 )
 
 // A tenant is one resolved tenant declaration, built once per routing
-// snapshot. Phase 1 of docs/design-tenancy.md resolves tenants and carries
-// them on the request; the limits below are enforced in a later phase.
+// snapshot. Phases 1–3 of docs/design-tenancy.md: a principal resolves to a
+// tenant, and the tenant's allowance and bucket govern it. The visibility
+// subset is carried but not yet enforced.
 type tenant struct {
 	cfg config.Tenant
 	// upstreams is the visibility subset as a set, empty meaning "all".
 	upstreams map[string]bool
+	// budget is the tenant's accumulating allowance, charged in upstream
+	// invocations like every other budget. Unlimited when unconfigured.
+	budget state.Budget
+	// limiter is one bucket for the whole tenant — where
+	// server.rateLimit.perPrincipalPerMinute gives one bucket per person, so
+	// ten agents on a team hold ten allowances there and share one here.
+	limiter state.Limiter
 }
 
 // tenantSet is the snapshot's resolved tenants, partitioned for lookup.
@@ -48,6 +58,11 @@ type tenantSet struct {
 	// (issuer plus claims, groups plus claims), selectors naming individual
 	// subjects, and claim values that are not scalars. Matched one by one.
 	scan []*tenant
+	// byID is not a resolution path — resolution matches selectors — but the
+	// reload path's: it finds the previous snapshot's tenant of the same id,
+	// whose budget and bucket are carried over when their configuration is
+	// unchanged.
+	byID map[string]*tenant
 	// total counts every partition.
 	total int
 }
@@ -55,8 +70,9 @@ type tenantSet struct {
 // count returns how many tenants the snapshot declares.
 func (ts tenantSet) count() int { return ts.total }
 
-// buildTenants resolves tenant declarations for a snapshot.
-func buildTenants(cfg *config.Config) tenantSet {
+// buildTenants resolves tenant declarations for a snapshot, carrying over the
+// governance state of prev's tenants where their configuration is unchanged.
+func buildTenants(cfg *config.Config, provider state.Provider, prev tenantSet) tenantSet {
 	var ts tenantSet
 	for i := range cfg.Tenants {
 		tc := cfg.Tenants[i]
@@ -67,10 +83,49 @@ func buildTenants(cfg *config.Config) tenantSet {
 				t.upstreams[id] = true
 			}
 		}
+		t.wire(provider, prev.byID[tc.ID])
+		if ts.byID == nil {
+			ts.byID = make(map[string]*tenant, len(cfg.Tenants))
+		}
+		ts.byID[tc.ID] = t
 		ts.total++
 		ts.index(t)
 	}
 	return ts
+}
+
+// wire gives a tenant its budget and bucket, reusing prev's where that
+// dimension's configuration has not changed.
+//
+// The reuse is not an optimization. A tenant is rebuilt on *every* reload,
+// including reloads that have nothing to do with tenancy, and under the
+// in-memory provider the counter is the object — so building a fresh one each
+// time would reset a month's allowance whenever an operator added an upstream.
+// Reload is meant to be routine; an allowance that forgets on each one is not
+// an allowance. Each dimension is compared separately, so editing the rate
+// limit does not disturb the budget.
+//
+// Changing an allowance does start a new counter, matching what an upstream's
+// budget does: with shared state the count lives in Redis under the scope key
+// and survives regardless, and without it a changed allowance restarting the
+// window is the same behavior the rate limiter has always had.
+func (t *tenant) wire(provider state.Provider, prev *tenant) {
+	scope := "tenant:" + t.cfg.ID
+	if prev != nil && reflect.DeepEqual(prev.cfg.Budget, t.cfg.Budget) {
+		t.budget = prev.budget
+	} else {
+		t.budget = provider.Budget(scope,
+			state.Period(t.cfg.Budget.ResolvedPeriod()), t.cfg.Budget.Allowance())
+	}
+	if prev != nil && reflect.DeepEqual(prev.cfg.RateLimit, t.cfg.RateLimit) {
+		t.limiter = prev.limiter
+		return
+	}
+	rpm := 0
+	if rl := t.cfg.RateLimit; rl != nil {
+		rpm = rl.RequestsPerMinute
+	}
+	t.limiter = provider.Limiter(scope, rpm)
 }
 
 // index files one tenant under whichever index its selector allows, falling

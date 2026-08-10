@@ -6,6 +6,7 @@ import (
 
 	"github.com/fold-run/fold/auth"
 	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/state"
 )
 
 // Phase 2 of docs/design-tenancy.md: the cardinality measurement.
@@ -55,7 +56,7 @@ func benchTenants(shape string, n int) tenantSet {
 		}
 		cfg.Tenants = append(cfg.Tenants, config.Tenant{ID: fmt.Sprintf("t-%05d", i), Subjects: subs})
 	}
-	return buildTenants(cfg)
+	return buildTenants(cfg, state.NewMemory(), tenantSet{})
 }
 
 // benchPrincipal carries a claim set of realistic width — a resolver that

@@ -378,17 +378,27 @@ func (u *upstream) connectTo(ctx context.Context, endpoint string, opts *mcp.Cli
 	}, nil)
 }
 
-// chargeBudgets consumes one upstream invocation from the per-upstream and
-// server allowances, returning a wire error when either is exhausted.
+// chargeBudgets consumes one upstream invocation from the per-upstream,
+// per-tenant, and server allowances, returning a wire error when any is
+// exhausted.
 //
-// The per-upstream budget is charged first so its rejection names the upstream
-// the caller actually asked for; the server budget is the wider net. An
-// exhausted per-upstream budget does not consume the server one — being
-// refused by one allowance must not spend another.
+// Charged narrowest first: the per-upstream budget names the upstream the
+// caller actually asked for, the tenant's covers that customer across every
+// upstream, and the server's is the widest net. An allowance that refuses does
+// not spend the wider ones — being refused by one must not spend another.
 func (u *upstream) chargeBudgets(ctx context.Context) *jsonrpc.Error {
 	if r := u.budget.Add(ctx, 1); !r.Allowed {
 		u.noteDegraded(r, "upstream")
 		return budgetError(fmt.Sprintf("upstream %q", u.cfg.ID), r)
+	}
+	// The tenant rides the request context, so it is whatever this caller
+	// resolved to — nil for an untenanted caller, which is governed exactly
+	// as before tenancy existed.
+	if t := tenantFrom(ctx); t != nil && t.budget != nil {
+		if r := t.budget.Add(ctx, 1); !r.Allowed {
+			u.noteDegraded(r, "tenant")
+			return budgetError(fmt.Sprintf("tenant %q", t.id()), r)
+		}
 	}
 	if u.globalBudget != nil {
 		if r := u.globalBudget.Add(ctx, 1); !r.Allowed {
