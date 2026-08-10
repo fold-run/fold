@@ -61,6 +61,19 @@ type consoleState struct {
 	StaticUpstreams     int `json:"staticUpstreams"`
 	DiscoveredUpstreams int `json:"discoveredUpstreams"`
 
+	// Tenant is the tenant the viewer resolved to, empty for a viewer in
+	// none. When it has a visibility subset, everything above that counts
+	// upstreams — and the list below — is that tenant's view of the
+	// federation rather than the whole one, so the console cannot show a
+	// customer the topology of upstreams their own traffic is refused.
+	Tenant string `json:"tenant,omitempty"`
+	// TenantRequestsPerMinute and TenantUpstreamCalls report the governance
+	// the viewer's tenant carries, so a customer-facing console can answer
+	// "what am I allowed" without an operator relaying it.
+	TenantRequestsPerMinute int    `json:"tenantRequestsPerMinute,omitempty"`
+	TenantUpstreamCalls     int64  `json:"tenantUpstreamCalls,omitempty"`
+	TenantBudgetPeriod      string `json:"tenantBudgetPeriod,omitempty"`
+
 	Upstreams []upstreamHealth        `json:"upstreams"`
 	Discovery *consoleDiscoveryStatus `json:"discovery,omitempty"`
 }
@@ -146,6 +159,44 @@ func (g *Gateway) handleConsoleState(w http.ResponseWriter, r *http.Request) {
 		st.Upstreams[i].AuthStrategy = "none"
 		if u.cfg.Auth != nil && u.cfg.Auth.Strategy != "" {
 			st.Upstreams[i].AuthStrategy = u.cfg.Auth.Strategy
+		}
+	}
+
+	// The federation view is the viewer's, not the operator's. The console
+	// has no privileged access to anything else — its MCP test console is an
+	// ordinary client against /mcp, so it already sees only what the caller's
+	// tenant may reach — and a topology listing that ignored the subset would
+	// be the one place a tenant could read another's upstream URLs and owner
+	// metadata. Annotation happens first, above, so the filter cannot skew
+	// the index alignment it depends on.
+	//
+	// Resolution errors are ignored: an ambiguous tenant is refused on the
+	// MCP path, and the console's answer to "which tenant are you" for a
+	// caller who matches two is to claim none.
+	if tn, _ := rt.resolveTenant(principalFromRequest(r)); tn != nil {
+		st.Tenant = tn.id()
+		if rl := tn.cfg.RateLimit; rl != nil {
+			st.TenantRequestsPerMinute = rl.RequestsPerMinute
+		}
+		if b := tn.cfg.Budget; b != nil {
+			st.TenantUpstreamCalls, st.TenantBudgetPeriod = b.Allowance(), b.ResolvedPeriod()
+		}
+		if len(tn.upstreams) > 0 {
+			visible := make([]upstreamHealth, 0, len(tn.upstreams))
+			static, disc := 0, 0
+			for i, u := range rt.upstreams {
+				if !tn.sees(u.cfg.ID) {
+					continue
+				}
+				visible = append(visible, st.Upstreams[i])
+				if discovered[u.cfg.ID] {
+					disc++
+				} else {
+					static++
+				}
+			}
+			st.Upstreams = visible
+			st.StaticUpstreams, st.DiscoveredUpstreams = static, disc
 		}
 	}
 

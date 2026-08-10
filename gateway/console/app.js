@@ -219,6 +219,16 @@ async function refreshState() {
     card("audit", (st.auditSinks || []).join(" + ") || "none"),
     card("routing", "sep " + st.namespaceSeparator + " · " + (st.pageSize ? "page size " + st.pageSize : "no pagination")),
   );
+  // A viewer in a tenant is seeing that tenant's federation, not the whole
+  // one — say so, rather than leaving a short upstream list looking like an
+  // outage. The governance line is what this viewer is allowed, not the
+  // gateway-wide ceiling above it.
+  if (st.tenant) {
+    const limits = [];
+    if (st.tenantRequestsPerMinute) limits.push(st.tenantRequestsPerMinute + "/min");
+    if (st.tenantUpstreamCalls) limits.push(st.tenantUpstreamCalls + " calls/" + st.tenantBudgetPeriod);
+    summary.append(card("tenant", st.tenant + (limits.length ? " · " + limits.join(" · ") : "")));
+  }
   if (st.tracingEnabled) summary.append(card("tracing", "OTLP"));
   if (st.viewerGroups && st.viewerGroups.length) summary.append(card("viewers", st.viewerGroups.join(", ")));
   if (st.passthrough) summary.append(card("mode", "passthrough"));

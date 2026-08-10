@@ -158,7 +158,12 @@ two kinds of surface, each with a deliberate trust story:
   (upstream URLs, owners, labels, endpoint rotation, each upstream's
   source — static vs discovered — and its credential-strategy *name*, plus
   deployment facts: shared-state backend on/off, audit sink types, tracing
-  and EMA enablement) — the console exists to show it. Strategy names and
+  and EMA enablement) — the console exists to show it. One boundary does
+  narrow it: a viewer whose principal resolves to a tenant carrying an
+  `upstreams` subset sees that subset's topology and nothing else, counts
+  included. The subset is a visibility boundary on the MCP path, and a
+  dashboard that ignored it would be the one place a tenant could read
+  another's upstream URLs. Strategy names and
   sink types are configuration shape, not credential material; the Redis
   URL is never included, since it can embed credentials. Raw connect
   errors are the exception: they can name secret
