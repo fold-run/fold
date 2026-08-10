@@ -5,11 +5,15 @@ description: >-
   number of upstream MCP servers, adding auth, policy, caching, rate
   limiting, and audit.
 type: application
+# `appVersion` is the released gateway version this chart deploys by default:
+# values.yaml ships `image.tag: ""`, so the deployment falls back to it. The
+# release flow bumps it (see .claude/skills/fold-release) — a stale value here
+# is what users actually install, not a label.
 # TODO: when this chart starts publishing to an OCI registry
 # (oci://ghcr.io/fold-run/charts), bump `version` on every chart change as
 # part of the release flow. While repo-only, it tracks notable chart changes.
-version: 0.1.0
-appVersion: "v0.4.0"
+version: 0.1.1
+appVersion: "v1.7.0"
 home: https://github.com/fold-run/fold
 sources:
   - https://github.com/fold-run/fold

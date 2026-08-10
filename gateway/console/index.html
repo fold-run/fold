@@ -9,15 +9,20 @@
 </head>
 <body>
   <header>
-    <div class="brand">
-      <svg class="mark" width="22" height="22" viewBox="0 0 28 28" aria-hidden="true">
-        <rect x="1" y="1" width="26" height="26" fill="#131415" stroke="#242628" stroke-width="1.5"/>
-        <path d="M 27 13 V 1 H 15 Z" fill="#00E599"/>
-        <path d="M 15 1 L 27 13" stroke="#00cc88" stroke-width="1.2"/>
+    <h1 class="brand">
+      <svg class="wordmark" viewBox="0 0 44.3 19.1" fill="none" stroke="currentColor"
+           stroke-width="3" role="img" aria-label="fold"><title>fold</title>
+        <path d="M4.2 19 V6.3 A4.8 4.8 0 0 1 9 1.5"/>
+        <path d="M0 8.4 H8.6"/>
+        <circle cx="18" cy="13" r="4.6"/>
+        <path d="M28 0 V19"/>
+        <circle cx="38.2" cy="13" r="4.6"/>
+        <path d="M42.8 0 V19"/>
       </svg>
-      <h1>fold console</h1>
+      <span class="wm-rule" aria-hidden="true"></span>
+      <span class="wm-desc">Console</span>
       <span id="version" class="muted"></span>
-    </div>
+    </h1>
     <div class="auth">
       <button id="signin" type="button" hidden>Sign in</button>
       <input id="token" type="password" placeholder="Bearer token (if auth is required)" autocomplete="off" spellcheck="false">
@@ -50,7 +55,7 @@
       <p class="muted">Calls go through the gateway's own MCP endpoint — policy,
       rate limits, and audit apply exactly as they do for any other client.</p>
       <div class="row">
-        <button id="connect" type="button">Connect &amp; list</button>
+        <button id="connect" type="button" class="primary">Connect &amp; list</button>
         <span id="mcpstatus" class="muted"></span>
       </div>
       <div class="row seg" role="group" aria-label="What to invoke">
@@ -64,7 +69,7 @@
       <p id="itemdesc" class="muted"></p>
       <textarea id="args" rows="6" placeholder='{"argument": "value"}' spellcheck="false" disabled></textarea>
       <div class="row">
-        <button id="call" type="button" disabled>Call tool</button>
+        <button id="call" type="button" class="primary" disabled>Call tool</button>
       </div>
       <h3>Result</h3>
       <pre id="result" class="pane"></pre>
@@ -76,10 +81,14 @@
   <footer>
     <div class="foot">
       <span class="legal">
-        <svg width="18" height="18" viewBox="0 0 28 28" aria-hidden="true">
-          <rect x="1" y="1" width="26" height="26" fill="#131415" stroke="#242628" stroke-width="1.5"/>
-          <path d="M 27 13 V 1 H 15 Z" fill="#00E599"/>
-          <path d="M 15 1 L 27 13" stroke="#00cc88" stroke-width="1.2"/>
+        <svg class="wordmark" viewBox="0 0 44.3 19.1" fill="none" stroke="currentColor"
+             stroke-width="3" aria-hidden="true" focusable="false">
+          <path d="M4.2 19 V6.3 A4.8 4.8 0 0 1 9 1.5"/>
+          <path d="M0 8.4 H8.6"/>
+          <circle cx="18" cy="13" r="4.6"/>
+          <path d="M28 0 V19"/>
+          <circle cx="38.2" cy="13" r="4.6"/>
+          <path d="M42.8 0 V19"/>
         </svg>
         © fold.run · the enterprise MCP gateway
       </span>
