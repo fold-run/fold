@@ -221,8 +221,11 @@ bucket shared by every principal in the tenant, which is what
 `perPrincipalPerMinute` cannot express; and the visibility subset, which
 bounds what a tenant sees by filtering the fan-out — an upstream outside it is
 never asked — and refuses named invocations before the policy engine sees
-them. Remaining: the tenant as a metric label, and the docs pass. The open
-question the design named rather than assumed was
+them; and the record — the tenant in every audit event, two tenant-scoped
+metric series (a label on the existing ones would have broken the frozen label
+sets, so the dimension arrives as new names), and a console federation view
+that is the viewer's rather than the operator's. Remaining: the docs pass. The
+open question the design named rather than assumed was
 cardinality, and it is now **settled by measurement**: matching a principal
 against N definitions was linear and reached 450 µs per request at ten
 thousand tenants, so the single-dimension selector shapes are indexed at

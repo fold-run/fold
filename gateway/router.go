@@ -76,6 +76,10 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 			if evt.UpstreamCalls > 0 {
 				g.metrics.observeFanOut(evt.UpstreamCalls)
 			}
+			// Read from the event rather than the context: the tenant is
+			// recorded once, on the same value audit is about to carry, so
+			// the two records cannot disagree about who this was.
+			g.metrics.observeTenant(evt.Tenant, string(evt.Outcome), evt.UpstreamCalls)
 			g.audit.Emit(evt)
 			endServer(span, &evt, err)
 		}

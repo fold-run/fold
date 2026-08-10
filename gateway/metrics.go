@@ -25,6 +25,19 @@ type metricsSet struct {
 	discovery   *prometheus.CounterVec   // discovery syncs by outcome
 	budgetDegr  *prometheus.CounterVec   // budget decisions made without shared state
 	fanOut      prometheus.Histogram     // upstream invocations per downstream request
+
+	// Tenant-scoped series. These are separate metrics rather than a tenant
+	// label on the two above, and the reason is the v1 contract: metric names
+	// *and label sets* are frozen (README, "API stability"), so adding a
+	// label to fold_requests_total would break every dashboard and recording
+	// rule built on it. New names are additive, which is what the contract
+	// permits — see docs/design-tenancy.md, "the record".
+	//
+	// Their cardinality is the number of declared tenants, which comes from
+	// the config document and is therefore the operator's own choice, exactly
+	// like the upstream label. They carry no per-principal dimension.
+	tenantReq   *prometheus.CounterVec // requests by tenant and outcome
+	tenantCalls *prometheus.CounterVec // upstream invocations attributed to a tenant
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -67,10 +80,18 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_budget_degraded_total",
 			Help: "Budget decisions made per-instance because shared state was unreachable, by scope. Non-zero means the fleet is not enforcing one allowance — alert on it.",
 		}, []string{"scope"}),
+		tenantReq: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_tenant_requests_total",
+			Help: "MCP requests by tenant and outcome. Only requests whose principal resolved to a tenant are counted; everything else is in fold_requests_total, which counts all of them.",
+		}, []string{"tenant", "outcome"}),
+		tenantCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_tenant_upstream_calls_total",
+			Help: "Upstream invocations attributed to a tenant — the same unit a tenant budget is charged in, so this is what a budget is spent on, live.",
+		}, []string{"tenant"}),
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
-		m.budgetDegr, m.fanOut,
+		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -147,6 +168,24 @@ func (m *metricsSet) reject(reason string) {
 // observeFanOut records what one downstream request cost in upstream calls.
 func (m *metricsSet) observeFanOut(n int) {
 	m.fanOut.Observe(float64(n))
+}
+
+// observeTenant records one request against its tenant: the outcome, and what
+// it cost in upstream invocations — the unit the tenant's budget is charged
+// in, so an operator can watch an allowance being spent without waiting for
+// the audit stream to be aggregated somewhere else.
+//
+// An untenanted request records nothing rather than recording an empty label:
+// a "" series would look like a tenant, and the request is already counted in
+// fold_requests_total.
+func (m *metricsSet) observeTenant(tenant, outcome string, upstreamCalls int) {
+	if tenant == "" {
+		return
+	}
+	m.tenantReq.WithLabelValues(tenant, outcome).Inc()
+	if upstreamCalls > 0 {
+		m.tenantCalls.WithLabelValues(tenant).Add(float64(upstreamCalls))
+	}
 }
 
 // observeBudgetDegraded counts a budget decision taken without shared state.
