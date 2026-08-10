@@ -1,8 +1,8 @@
 # Design: the tenant object
 
-Status: **phases 1–3 implemented** (resolution, the cardinality question
-settled by measurement, and enforcement of the tenant's budget and rate
-limit); the visibility subset, the record, and the docs remain. This
+Status: **phases 1–4 implemented** (resolution, the cardinality question
+settled by measurement, enforcement of the tenant's budget and rate limit,
+and the visibility subset); the record and the docs remain. This
 records the design for the [roadmap](roadmap.md)'s Horizon 2 tenancy item, and
 settles a question three shipped features have now deferred: what a tenant *is*
 in fold.
@@ -235,6 +235,26 @@ per-person buckets keep what they have; those who want both get both.
    routine. Changing an allowance does start a new counter, which is what an
    upstream's budget already does.
 4. **Visibility** — the `upstreams` subset, evaluated before policy.
+   **Shipped**, and one word of the plan turned out to matter: the subset
+   filters the *fan-out*, not the merged result. An upstream the tenant
+   cannot see is never asked, so it costs no request, no budget, and no
+   partial-failure entry when it happens to be down — and the property is
+   tested by counting hits at the fixture rather than by reading the
+   response. The same cut applies wherever a request selects an upstream:
+   the four list methods, named invocations (before the policy engine, so
+   nothing outside the subset ever reaches a rule), `resources/read` on both
+   the affinity and probe paths, `resources/subscribe`, `completion/complete`,
+   `logging/setLevel`, and the task methods.
+
+   Each surface keeps the refusal posture it already had, which matters more
+   than a single uniform answer. Tools, prompts, completion, and resources
+   answer `-32042` — the subset is a coarser cut of the same decision, so it
+   reuses the policy code rather than minting a fifth. Tasks answer
+   "no upstream owns that id", exactly as they already do for another
+   principal's task, because on that surface the refusal must not reveal
+   existence. The URI-ownership index is shared across principals, so both
+   resource paths check the subset before using it: a URI another tenant
+   listed must not resolve by affinity.
 5. **The record** — `tenant` in audit events and as a metric label, plus the
    console's federation view.
 6. **Docs** — README config section, `operations.md`, `defaults.md`,

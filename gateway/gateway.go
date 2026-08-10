@@ -726,22 +726,27 @@ func (g *Gateway) ownerForURI(ctx context.Context, rt *routes, uri string) (*ups
 	if rt.passthrough {
 		return rt.upstreams[0], nil
 	}
+	// An owner outside the caller's tenant subset is no owner as far as this
+	// request is concerned: the affinity index is shared across principals,
+	// so without this check a URI another tenant listed would resolve here.
+	tn := tenantFrom(ctx)
 	if id, ok := g.resourceOwner.Load(uri); ok {
-		if u := rt.byID[id]; u != nil {
+		if u := rt.byID[id]; u != nil && tn.sees(id) {
 			return u, nil
 		}
 	}
 	// Refresh the index via a list fan-out, then retry.
-	lists, _ := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
+	ups := visibleUpstreams(ctx, rt.upstreams)
+	lists, _ := fanOut(ctx, ups, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
 		return u.listResources(ctx)
 	})
-	for i, u := range rt.upstreams {
+	for i, u := range ups {
 		for _, r := range lists[i] {
 			g.resourceOwner.Store(r.URI, u.cfg.ID, 0)
 		}
 	}
 	if id, ok := g.resourceOwner.Load(uri); ok {
-		if u := rt.byID[id]; u != nil {
+		if u := rt.byID[id]; u != nil && tn.sees(id) {
 			return u, nil
 		}
 	}
