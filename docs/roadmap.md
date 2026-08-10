@@ -214,10 +214,14 @@ Horizon 1 the dimension they actually want. Designed in
 [design-tenancy.md](design-tenancy.md), which holds one line above all: a
 tenant groups principals, it does not authenticate them.
 
-Landing in phases. Resolution ships first — the config, its validation, and
-the resolved tenant on the request context, with no enforcement — followed by
-per-tenant budgets and rate limits, the visibility subset, and the tenant in
-the audit record. The open question the design named rather than assumed was
+Landing in phases. Shipped so far: resolution (the config, its validation, and
+the resolved tenant on the request context), and enforcement — a tenant's
+budget charged where the server and per-upstream ones are, and one rate-limit
+bucket shared by every principal in the tenant, which is what
+`perPrincipalPerMinute` cannot express. Remaining: the visibility subset
+(`tenants[].upstreams`, accepted today but not yet a boundary — see README
+"Not implemented"), the tenant as a metric label, and the docs pass. The open
+question the design named rather than assumed was
 cardinality, and it is now **settled by measurement**: matching a principal
 against N definitions was linear and reached 450 µs per request at ten
 thousand tenants, so the single-dimension selector shapes are indexed at

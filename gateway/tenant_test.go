@@ -7,6 +7,7 @@ import (
 
 	"github.com/fold-run/fold/auth"
 	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/state"
 	"github.com/fold-run/fold/policy"
 )
 
@@ -16,7 +17,7 @@ import (
 
 func tenantRoutes(t *testing.T, tenants ...config.Tenant) *routes {
 	t.Helper()
-	return &routes{tenants: buildTenants(&config.Config{Tenants: tenants})}
+	return &routes{tenants: buildTenants(&config.Config{Tenants: tenants}, state.NewMemory(), tenantSet{})}
 }
 
 func principal(sub, issuer string, groups []string, claims map[string]any) *auth.Principal {
