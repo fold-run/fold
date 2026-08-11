@@ -41,6 +41,24 @@ becomes a ConfigMap) or `existingConfigMap` (your own ConfigMap with the
 document under the key `fold.config.json` — then `probes.hostHeader` is also
 required).
 
+## Observability
+
+```yaml
+metrics:
+  serviceMonitor: { enabled: true, labels: { release: prometheus } }
+  prometheusRule: { enabled: true, labels: { release: prometheus } }
+  dashboard:      { enabled: true }
+```
+
+The first two need the prometheus-operator CRDs (the chart fails the render
+with a clear message rather than installing something inert if they are
+missing). `dashboard` renders a ConfigMap labelled `grafana_dashboard: "1"`
+for the Grafana sidecar; without the sidecar, import
+[`dashboards/fold-overview.json`](dashboards/fold-overview.json) directly.
+Thresholds for the alerts live under `metrics.prometheusRule` — the latency
+one has no universal value, since the measurement includes your upstreams'
+own time. See [docs/operations.md](../../../docs/operations.md#dashboards-alerts-and-slos).
+
 ## Secrets
 
 fold's config document never holds secret material; auth strategies name

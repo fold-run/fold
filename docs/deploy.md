@@ -95,6 +95,12 @@ envFrom:
       name: fold-upstream-secrets   # holds GH_TOOLS_API_KEY
 ```
 
+Observability ships with the chart: `metrics.serviceMonitor.enabled` for
+scraping, `metrics.prometheusRule.enabled` for the alert rules, and
+`metrics.dashboard.enabled` to hand the Grafana sidecar the packaged
+dashboard. What they mean, and the SLOs behind them, are in
+[operations.md](operations.md#dashboards-alerts-and-slos).
+
 How the pieces map:
 
 - **Config** — either inline under `config:` (the chart renders it into a

@@ -1,0 +1,143 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+{{- fail "metrics.prometheusRule.enabled requires the prometheus-operator CRDs (monitoring.coreos.com/v1) to be installed" }}
+{{- end }}
+{{- $labels := .Values.metrics.prometheusRule.additionalLabels }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "fold.fullname" . }}
+  labels:
+    {{- include "fold.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    # Things that mean fold is failing to serve.
+    - name: fold.availability
+      rules:
+        # The SLO's error budget, burning fast. Denied, rate_limited, and
+        # budget_exhausted are excluded deliberately: those are the gateway
+        # refusing on purpose, and paging on correct governance teaches
+        # everyone to ignore the page.
+        - alert: FoldErrorRateHigh
+          expr: |
+            sum(rate(fold_requests_total{outcome=~"error|upstream_down"}[5m]))
+              / clamp_min(sum(rate(fold_requests_total[5m])), 0.001)
+              > {{ .Values.metrics.prometheusRule.errorRatioThreshold }}
+          for: 10m
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: fold is failing {{ "{{" }} $value | humanizePercentage {{ "}}" }} of requests
+            description: >-
+              Failures here are fold's own: an upstream unreachable or an internal error.
+              Refusals (denied, rate_limited, budget_exhausted) are excluded — check the
+              audit stream for those. Start with the circuit-breaker panel.
+
+        - alert: FoldRequestLatencyHigh
+          expr: |
+            histogram_quantile(0.99, sum by (le) (rate(fold_request_duration_seconds_bucket[5m])))
+              > {{ .Values.metrics.prometheusRule.latencyP99Seconds }}
+          for: 10m
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: fold p99 request latency is {{ "{{" }} $value | humanizeDuration {{ "}}" }}
+            description: >-
+              End-to-end latency, which includes the upstream's own time — this threshold is a
+              deployment choice, not a fold constant, so tune metrics.prometheusRule.latencyP99Seconds
+              to your slowest legitimate tool. Compare against fold_upstream_request_duration_seconds
+              before suspecting the gateway.
+
+    # Things that mean an upstream is failing, which fold is surviving.
+    - name: fold.upstreams
+      rules:
+        - alert: FoldUpstreamCircuitOpen
+          expr: fold_upstream_breaker_state == 2
+          for: 5m
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: circuit open for upstream {{ "{{" }} $labels.upstream {{ "}}" }}
+            description: >-
+              fold has stopped sending requests to this upstream and is answering -32041 for it.
+              The federation still serves everything else; lists degrade with a partialFailure
+              marker rather than failing.
+
+        - alert: FoldUpstreamEndpointEjected
+          expr: fold_upstream_endpoint_healthy == 0
+          for: 15m
+          labels:
+            severity: info
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: endpoint {{ "{{" }} $labels.endpoint {{ "}}" }} of {{ "{{" }} $labels.upstream {{ "}}" }} is out of rotation
+            description: >-
+              One replica is ejected; the others carry the traffic. Sustained ejection means the
+              replica never recovered, not that traffic is failing.
+
+    # Things that mean governance is not being enforced the way it reads.
+    - name: fold.governance
+      rules:
+        # The one to alert on unconditionally: a budget decided without shared
+        # state means a fleet of N instances is enforcing N separate copies of
+        # one allowance.
+        - alert: FoldBudgetDegraded
+          expr: increase(fold_budget_degraded_total[10m]) > 0
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: budget for scope {{ "{{" }} $labels.scope {{ "}}" }} decided without shared state
+            description: >-
+              Redis was unreachable, so this instance fell back to its own counter. Budgets fail
+              open by design — service continues — but the fleet is no longer enforcing one
+              allowance. Check Redis before the period rolls.
+
+        - alert: FoldDiscoverySyncFailing
+          expr: increase(fold_discovery_syncs_total{outcome=~"rejected|error"}[15m]) > 0
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: discovery sync {{ "{{" }} $labels.outcome {{ "}}" }}
+            description: >-
+              The last good upstream set is still serving (fail-safe), but the document is not
+              being applied. `rejected` means it failed validation or collided with a static
+              upstream — an id collision freezes discovery until it is resolved, so it is worth
+              treating as urgent even though nothing is down.
+
+        - alert: FoldTenantBudgetExhausted
+          expr: increase(fold_tenant_requests_total{outcome="budget_exhausted"}[15m]) > 0
+          labels:
+            severity: info
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: tenant {{ "{{" }} $labels.tenant {{ "}}" }} has spent its budget
+            description: >-
+              This customer is being refused with -32044 until the period rolls. Nothing is
+              broken; someone should decide whether to widen the allowance, which is a reload
+              rather than a restart.
+
+        # Rebinding protection and auth failures are quiet in a healthy
+        # deployment. A spike is a misconfigured client or someone probing.
+        - alert: FoldIngressRejectionSpike
+          expr: |
+            sum by (reason) (rate(fold_http_rejections_total{reason=~"forbidden_host|forbidden_origin|unauthenticated"}[5m]))
+              > {{ .Values.metrics.prometheusRule.rejectionRateThreshold }}
+          for: 10m
+          labels:
+            severity: info
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: fold is rejecting {{ "{{" }} $value | printf "%.2f" {{ "}}" }}/s at the edge ({{ "{{" }} $labels.reason {{ "}}" }})
+            description: >-
+              These are refused before the MCP layer. A new client with the wrong Host header
+              looks identical to a probe from outside — check which, then either fix
+              server.allowedHosts or leave it refusing.
+{{- end }}
