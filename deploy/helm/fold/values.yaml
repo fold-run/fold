@@ -142,6 +142,41 @@ metrics:
     # Extra labels for Prometheus discovery, e.g. release: prometheus
     labels: {}
 
+  # Packaged alert rules (deploy/helm/fold/templates/prometheusrule.yaml).
+  # fold's metric names are frozen by its v1 compatibility contract, which is
+  # what makes shipping rules against them safe across upgrades.
+  prometheusRule:
+    # Requires the prometheus-operator CRDs.
+    enabled: false
+    # Extra labels for Prometheus rule discovery, e.g. release: prometheus
+    labels: {}
+    # Labels added to every alert (not to the rule object), e.g. team: platform
+    additionalLabels: {}
+    # Fraction of requests fold itself failed (error + upstream_down) that
+    # trips FoldErrorRateHigh. Refusals are excluded from the numerator.
+    errorRatioThreshold: 0.01
+    # p99 end-to-end seconds tripping FoldRequestLatencyHigh. This is a
+    # deployment choice, not a fold constant: the measurement includes the
+    # upstream's own time, so set it from your slowest legitimate tool.
+    latencyP99Seconds: 2
+    # Per-second edge rejections (bad Host/Origin, unauthenticated) tripping
+    # FoldIngressRejectionSpike.
+    rejectionRateThreshold: 1
+
+  # The Grafana dashboard, delivered as a ConfigMap for the Grafana sidecar.
+  # The JSON itself is deploy/helm/fold/dashboards/fold-overview.json — import
+  # it directly if you do not run the sidecar.
+  dashboard:
+    enabled: false
+    # The label the sidecar watches. kube-prometheus-stack uses
+    # grafana_dashboard: "1".
+    label: grafana_dashboard
+    labelValue: "1"
+    # Optional extra labels on the ConfigMap.
+    labels: {}
+    # Sets the grafana_folder annotation when non-empty.
+    folderAnnotation: ""
+
 resources:
   requests:
     cpu: 100m

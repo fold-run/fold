@@ -133,14 +133,25 @@ explicitly non-API under the compatibility contract. The `audit.sinks[].type`
 enum widens in `config/config.go` with the JSON Schema kept in lockstep by
 test, as usual.
 
-### 5. Packaged observability
+### 5. Packaged observability — **shipped**
 
-The metrics are good and their names are frozen by the v1 contract, which
-makes dashboards safe to publish — so publish them. A Grafana dashboard, a
-`PrometheusRule` set, and documented SLOs, shipped under `deploy/` and wired
-into the chart next to the existing `servicemonitor.yaml`, with
-[operations.md](operations.md) pointing at them. Today an operator gets a
-`/metrics` endpoint, a template to scrape it with, and interpretation nowhere.
+The metrics were good and their names are frozen by the v1 contract, which
+makes dashboards safe to publish — so they are published: a Grafana dashboard
+(16 panels across service level, latency, upstreams, governance, and ingress),
+a `PrometheusRule` set of eight alerts, and documented SLOs, all in the chart
+beside the existing `servicemonitor.yaml`, with
+[operations.md](operations.md#dashboards-alerts-and-slos) explaining what they
+mean. An operator used to get a `/metrics` endpoint, a template to scrape it
+with, and interpretation nowhere.
+
+Two things the entry did not say. The availability SLO counts only the
+outcomes fold *failed* — `denied`, `rate_limited`, and `budget_exhausted` are
+excluded, because an SLO that counts correct refusals pages someone for
+tightening a policy and teaches the team to ignore the alert. And the pack is
+tested against the code in both directions: every metric a panel or rule names
+must exist, and every metric fold exports must appear somewhere in the pack.
+A renamed metric fails the build instead of yielding a panel that draws
+nothing and an alert that can never fire.
 
 ### 6. Publish the Helm chart to an OCI registry — **shipped**
 

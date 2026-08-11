@@ -44,6 +44,78 @@ Plus the standard Go process/runtime collectors. Alerting starters:
 `fold_upstream_breaker_state == 2` sustained, any `fold_http_rejections_total`
 rate spike, and — with discovery — any `rejected`/`error` sync outcomes.
 
+## Dashboards, alerts, and SLOs
+
+The metric names above are frozen by fold's [v1 compatibility
+contract](../README.md#api-stability), which is what makes shipping queries
+against them safe: a dashboard published today keeps working across upgrades.
+Three things ship in the chart:
+
+| What | Where | Enable |
+|---|---|---|
+| Grafana dashboard | [`deploy/helm/fold/dashboards/fold-overview.json`](../deploy/helm/fold/dashboards/fold-overview.json) | `metrics.dashboard.enabled=true` (ConfigMap for the Grafana sidecar), or import the JSON by hand |
+| Alert rules | [`templates/prometheusrule.yaml`](../deploy/helm/fold/templates/prometheusrule.yaml) | `metrics.prometheusRule.enabled=true` (needs the prometheus-operator CRDs) |
+| Scrape config | `templates/servicemonitor.yaml` | `metrics.serviceMonitor.enabled=true` |
+
+A `gateway/observability_pack_test.go` keeps the pack and the code in
+lockstep, both directions: every `fold_*` name a panel or rule references must
+exist, and every metric fold exports must appear somewhere in the pack. A
+renamed metric fails the build rather than producing a panel that draws
+nothing and an alert that can never fire — the two failure modes that look
+exactly like "healthy".
+
+### The SLOs
+
+**Availability — 99.9% of requests are ones fold did not fail.**
+
+```promql
+1 - (
+  sum(increase(fold_requests_total{outcome=~"error|upstream_down"}[28d]))
+  / clamp_min(sum(increase(fold_requests_total[28d])), 1)
+)
+```
+
+The numerator is deliberately narrow. `denied`, `rate_limited`, and
+`budget_exhausted` are **excluded**: those are the gateway doing its job, and
+an SLO that counts them punishes an operator for tightening a policy and pages
+someone when a customer hits the ceiling they were sold. Look for those in the
+audit stream and the per-tenant series, where they are signal rather than
+noise. `upstream_down` *is* counted — fold owns the federation's reachability
+even when the fault is an upstream's.
+
+**Latency — a deployment choice, not a fold constant.**
+
+`fold_request_duration_seconds` is end to end, so it includes whatever the
+upstream took. There is no honest universal threshold: a gateway fronting a
+2 ms echo and one fronting a 30 s report generator should not share a number.
+Set `metrics.prometheusRule.latencyP99Seconds` from your slowest legitimate
+tool.
+
+What fold *does* promise about its own cost is measured in CI, not in
+production: added p50 under 5 ms through the proxy path, typically ~0.2 ms
+([benchmarks](benchmarks.md)). The dashboard's "gateway overhead" panel
+approximates it live by subtracting the upstream duration p95 from the request
+duration p95 — useful as a shape, but quantiles do not subtract and a
+federated list fans out to many upstream calls, so it over-reads on list-heavy
+traffic. Treat a rising line as a question, not a measurement.
+
+### What the alerts assume
+
+| Alert | Fires on | Why it is not noise |
+|---|---|---|
+| `FoldErrorRateHigh` | error + upstream_down ratio over threshold, 10m | Refusals excluded, so it means fold is failing, not governing |
+| `FoldRequestLatencyHigh` | p99 over a configured bound, 10m | Threshold is yours; unset it rather than tolerate a flapping page |
+| `FoldUpstreamCircuitOpen` | breaker at 2 for 5m | The federation still serves everything else — urgent, not an outage |
+| `FoldUpstreamEndpointEjected` | endpoint out of rotation 15m | Traffic is fine; a replica never came back |
+| `FoldBudgetDegraded` | any degraded decision in 10m | The fleet is enforcing N copies of one allowance |
+| `FoldDiscoverySyncFailing` | rejected/error sync in 15m | Last good set still serving, but nothing new applies — an id collision freezes discovery until resolved |
+| `FoldTenantBudgetExhausted` | a tenant refused on budget in 15m | Nobody is broken; someone owes a customer a decision |
+| `FoldIngressRejectionSpike` | bad Host/Origin or unauthenticated over threshold, 10m | Misconfigured client or someone probing — worth knowing which |
+
+Severities are `warning` and `info` only. Nothing here pages by default:
+fold's genuinely paging condition is "no upstream is reachable", which
+`/health` answers with a 503 and your existing probe already watches.
+
 ## Audit events
 
 One JSON event per terminal response — including 401s, 403-equivalents, and
