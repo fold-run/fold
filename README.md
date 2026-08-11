@@ -218,10 +218,32 @@ Attribute-based rules match on verified token claims: `"subjects": { "claims": {
 ### `audit`
 
 ```jsonc
-{ "sinks": [ { "type": "stdout" }, { "type": "webhook", "url": "https://siem.example.com/ingest", "headers": { "x-api-key": "..." } } ] }
+{
+  "sinks": [
+    { "type": "stdout" },
+    { "type": "file", "path": "/var/log/fold/audit.jsonl", "maxSizeMb": 100, "maxFiles": 5 },
+    {
+      "type": "webhook",
+      "url": "https://siem.example.com/ingest",
+      "headers": { "x-api-key": "..." },
+      "retry": { "maxAttempts": 4, "initialBackoffMs": 500, "maxBackoffMs": 30000 },
+      "deadLetterPath": "/var/log/fold/audit-dead.jsonl"
+    }
+  ]
+}
 ```
 
-One JSON event per terminal response — including 401s, 403-equivalents, and 429s — with principal, upstream, authz decision + rule id, outcome, and latency. Webhook delivery is asynchronous and batched so audit never adds request latency.
+One JSON event per terminal response — including 401s, 403-equivalents, and 429s — with principal, upstream, tenant, authz decision + rule id, outcome, and latency. Delivery is asynchronous and batched, so audit never adds request latency.
+
+| Sink | Fields | Notes |
+|---|---|---|
+| `stdout` | — | One JSON line per event. |
+| `file` | `path`, `maxSizeMb` (100), `maxFiles` (5) | One JSON line per event, rotated by size. Rotation renames in place (`audit.jsonl` → `.1` → `.2`), so a tail or log shipper watching the live name survives it, and the file count is bounded — a gateway that fills its disk with its own audit trail has found a novel way to stop serving. |
+| `webhook` | `url`, `headers`, `retry`, `deadLetterPath` | Batched POSTs. Redirects are refused outright: the request carries the sink's token and records naming principals and tools. |
+
+**Delivery is retried, and what it cannot deliver is kept.** A failing POST is retried with exponential backoff and equal jitter — `maxAttempts` 4, `initialBackoffMs` 500, `maxBackoffMs` 30000 by default, so a receiver restarting costs nothing. Retry is on without configuration, because the alternative is losing exactly the events someone will later go looking for. A `4xx` other than `429` is not retried: a receiver that rejects the payload will reject it identically four times. When attempts run out, events are appended to `deadLetterPath` for replay; without one they are counted and gone.
+
+**Losses are visible.** `fold_audit_events_total{sink,outcome}` counts `delivered`, `retried`, `dead_lettered`, and `dropped` — the audit trail cannot report its own gaps, so this is where a gap shows up. The packaged alert `FoldAuditEventsLost` fires on either kind of loss ([observability](docs/operations.md#dashboards-alerts-and-slos)).
 
 ### `server`
 

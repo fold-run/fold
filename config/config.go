@@ -491,9 +491,59 @@ type Audit struct {
 
 // AuditSink is one audit destination.
 type AuditSink struct {
-	Type    string            `json:"type"` // "stdout" | "webhook"
+	Type    string            `json:"type"` // "stdout" | "webhook" | "file"
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// Path is the file a "file" sink appends to, one JSON event per line.
+	Path string `json:"path,omitempty"`
+	// MaxSizeMb rotates the file once it exceeds this size (default 100).
+	// Rotation renames in place — audit.jsonl → audit.jsonl.1 → .2 — so a
+	// tail follows the live name.
+	MaxSizeMb int `json:"maxSizeMb,omitempty"`
+	// MaxFiles bounds how many rotated files are kept, oldest deleted first
+	// (default 5). A gateway that fills a disk with its own audit trail has
+	// found a novel way to stop serving.
+	MaxFiles int `json:"maxFiles,omitempty"`
+
+	// Retry governs delivery for sinks that can fail transiently — today the
+	// webhook. Absent means the defaults, not "no retry": a receiver
+	// restarting is the ordinary case, and losing the events it was down for
+	// is the thing audit cannot afford.
+	Retry *AuditRetry `json:"retry,omitempty"`
+
+	// DeadLetterPath is where events go when delivery is finally given up
+	// on, one JSON event per line. Absent, exhausted events are counted and
+	// logged but not kept — set it wherever the audit trail is load-bearing.
+	DeadLetterPath string `json:"deadLetterPath,omitempty"`
+}
+
+// AuditRetry tunes redelivery for a failing sink.
+type AuditRetry struct {
+	// MaxAttempts includes the first try (default 4, minimum 1).
+	MaxAttempts int `json:"maxAttempts,omitempty"`
+	// InitialBackoffMs is the first delay, doubling per attempt with jitter
+	// (default 500).
+	InitialBackoffMs int `json:"initialBackoffMs,omitempty"`
+	// MaxBackoffMs caps the delay (default 30000).
+	MaxBackoffMs int `json:"maxBackoffMs,omitempty"`
+}
+
+// validate checks a retry block and fills nothing in — the defaults live
+// where the sink is built, so an absent block and an explicit one that
+// matches the defaults behave identically.
+func (r *AuditRetry) validate() error {
+	if r == nil {
+		return nil
+	}
+	if r.MaxAttempts < 0 || r.InitialBackoffMs < 0 || r.MaxBackoffMs < 0 {
+		return fmt.Errorf("audit: retry values must not be negative")
+	}
+	if r.MaxBackoffMs > 0 && r.InitialBackoffMs > r.MaxBackoffMs {
+		return fmt.Errorf("audit: retry.initialBackoffMs (%d) exceeds maxBackoffMs (%d)",
+			r.InitialBackoffMs, r.MaxBackoffMs)
+	}
+	return nil
 }
 
 // Routing tunes name federation.
@@ -911,8 +961,18 @@ func (c *Config) Validate() error {
 				if s.URL == "" {
 					return fmt.Errorf("audit: webhook sink requires a url")
 				}
+			case "file":
+				if s.Path == "" {
+					return fmt.Errorf("audit: file sink requires a path")
+				}
 			default:
 				return fmt.Errorf("audit: unknown sink type %q", s.Type)
+			}
+			if s.MaxSizeMb < 0 || s.MaxFiles < 0 {
+				return fmt.Errorf("audit: maxSizeMb and maxFiles must not be negative")
+			}
+			if err := s.Retry.validate(); err != nil {
+				return err
 			}
 		}
 	}
