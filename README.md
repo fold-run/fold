@@ -449,6 +449,19 @@ Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SD
 
 ## Changelog
 
+### v1.10.0 — 2026-08-11
+
+The console is rewritten, and the field that takes your Bearer token starts working.
+
+No Go code changed in this release. Everything below is the embedded console, which is vendored from [fold-run/fold-console](https://github.com/fold-run/fold-console) at a pinned commit — now `v2.0.0`.
+
+- **The token field never applied what you typed.** On any gateway with `auth.required`, pasting a Bearer token into the console authenticated nothing: the field discarded its own keystrokes and every subsequent read went out unauthenticated, so the dashboard sat on `Unauthorized` with no way forward short of disabling auth. It has been broken since the assets were extracted at v1.9.0, and it is the reason to take this release rather than wait. Nothing static caught it — the page rendered, the types checked, and the field is hidden entirely on a gateway with auth off, which is how every local test run is configured. An end-to-end suite found it on its first execution.
+- **A drawing of the federation**, at `/console/#/upstreams?view=map`. One gateway node fanning out to every upstream, with each route carrying that upstream's actual state: Live where the breaker is closed, Down where the connect failed, and the neutral ramp for half-open, which is neither. It exists because two things about a federation cannot be put in a table — the fan itself, which is the whole proposition, and the governed boundary every route crosses. Generated from `/api/federation` rather than authored, which makes it the first fold diagram that is not hand-drawn.
+- **The page is a routed application rather than one scrolling document.** Overview, upstreams, an upstream in full, a searchable catalog, and the test console, with filters, sort and selection in the URL — so "the upstream that is down" is a link rather than a description. Deep links route on the fragment because this gateway serves the assets from an embedded `http.FileServer` with no SPA fallback, and that is not something the console can fix from its own repo.
+- **The embedded assets are 41 KiB smaller than at v1.9.0**, at 252,505 bytes, despite gaining a framework and a fifth view. The `-400` and `-600` font subsets had been byte-identical since v1.2: both were the variable font, so nothing in the console had ever actually rendered bold while every binary carried each face twice. Instancing them at their declared weights returned 71 KiB, more than the framework cost.
+- **The wordmark is the current one.** The console had been serving the stroked geometric lockup that fold.run's 2026-08-10 identity revision replaced. `console/fonts/OFL.txt` now also names Black Ops One, whose outlines the mark derives from: outlines are a derivative of the Font Software even where no font binary ships.
+- **`scripts/sync-console.sh` vendors from upstream's `dist/`,** not `console/`, and its error names the case when a pin predates that move. A bump whose pin and path disagree fails the sync loudly rather than vendoring stale bytes.
+
 ### v1.9.0 — 2026-08-11
 
 The console's source leaves the repo; its API gets a name of its own.
