@@ -888,13 +888,121 @@
       ]
     },
     {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Context reduction",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 12,
+        "h": 6
+      },
+      "description": "What fraction of the upstreams' catalogue each caller actually receives, after per-principal policy filtering. This is fold's structural answer to context bloat, with no model in the loop \u2014 a low number is the feature working, not a fault.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percentunit",
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (method) (rate(fold_list_items_total{stage=\"served\"}[5m])) / clamp_min(sum by (method) (rate(fold_list_items_total{stage=\"offered\"}[5m])), 0.001)",
+          "legendFormat": "{{method}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Items capped",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 39,
+        "w": 12,
+        "h": 6
+      },
+      "description": "Items dropped by a policy rule's maxItems rather than by a missing grant. Non-zero means a cap is biting: callers are being handed a truncated catalogue (the response says so in _meta), which is either the bound doing its job or a policy that needs narrowing instead.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (method) (rate(fold_list_items_total{stage=\"capped\"}[5m]))",
+          "legendFormat": "{{method}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 18,
       "type": "row",
       "title": "Ingress and configuration",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 45,
         "w": 24,
         "h": 1
       },
@@ -910,7 +1018,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 46,
         "w": 8,
         "h": 6
       },
@@ -964,7 +1072,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 40,
+        "y": 46,
         "w": 8,
         "h": 6
       },
@@ -1017,7 +1125,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 40,
+        "y": 46,
         "w": 8,
         "h": 6
       },

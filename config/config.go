@@ -458,6 +458,18 @@ type PolicyRule struct {
 	ID       string          `json:"id"`
 	Subjects *PolicySubjects `json:"subjects,omitempty"` // omit → any principal
 	Allow    []PolicyAllow   `json:"allow"`
+
+	// MaxItems caps how many list items this rule may make visible in one
+	// response — a guardrail against handing an agent a thousand tools, which
+	// is context an operator pays for on every turn.
+	//
+	// It is a bound, not a curation: fold drops whatever falls past the cap in
+	// merge order, because it has no notion of which tools matter and
+	// inventing one would be the semantic tool selection this project
+	// declines. A truncated list says so, in the result _meta, the audit
+	// event, and a metric — a cap that hid capability silently would be worse
+	// than no cap. Absent or 0 means no limit.
+	MaxItems int `json:"maxItems,omitempty"`
 }
 
 // PolicySubjects matches principals by group membership and/or subject,
@@ -884,6 +896,9 @@ func (c *Config) Validate() error {
 			}
 			if len(r.Allow) == 0 {
 				return fmt.Errorf("policy rule %q: allow must not be empty", r.ID)
+			}
+			if r.MaxItems < 0 {
+				return fmt.Errorf("policy rule %q: maxItems must not be negative", r.ID)
 			}
 			for _, a := range r.Allow {
 				if a.Server != "" && a.Server != "*" && !seenID[a.Server] {
