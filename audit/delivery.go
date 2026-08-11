@@ -83,6 +83,18 @@ func (p retryPolicy) backoff(attempt int) time.Duration {
 	return time.Duration(half + rand.Int64N(half+1))
 }
 
+// elapsedBudget converts an attempt count into the wall-clock bound the OTLP
+// exporter retries within, so `maxAttempts` means roughly the same thing there
+// as it does for the webhook sink: the sum of the backoffs those attempts
+// would have waited, plus a request's worth of slack.
+func (p retryPolicy) elapsedBudget() time.Duration {
+	var total time.Duration
+	for attempt := 1; attempt < p.maxAttempts; attempt++ {
+		total += p.backoff(attempt)
+	}
+	return total + 10*time.Second
+}
+
 // deadLetter appends abandoned events to a file, so "we gave up" leaves
 // something an operator can replay rather than a gap.
 type deadLetter struct {

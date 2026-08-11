@@ -121,7 +121,7 @@ The work is making that legible and bounded — a pre- and post-filter tool
 count metric so operators can see the reduction, and an optional per-rule cap.
 Nothing new lands on the hot path; the filtering already runs.
 
-### 4. Audit reach — **partly shipped**
+### 4. Audit reach — **shipped**
 
 Audit is the single exit door, which makes it the integration point for every
 SIEM — but it shipped as stdout or a webhook with no retry, so a receiver
@@ -135,8 +135,15 @@ than inferred. Jitter is not decoration: every instance in a fleet watches the
 same receiver and fails at the same instant, so unjittered retries turn a
 stumble into a synchronised stampede.
 
-Remaining: the `otlp-logs` sink, which is separated because it brings a new
-dependency (the OTel logs SDK) rather than because it is hard.
+The `otlp-logs` sink followed, built on the OTel SDK's own pipeline rather
+than on a hand-written encoder. That was a deliberate reversal: the first plan
+was to emit OTLP JSON directly and avoid a v0.x dependency, which reads as
+prudent until you notice where hand-rolled OTLP goes wrong — proto3 JSON
+renders 64-bit fields as strings, severity is a numeric enum with a specified
+text mapping, attribute values are tagged unions. Those are details the
+exporter already gets right. fold keeps the accounting instead: the exporter is
+wrapped so every export is counted and failed batches are dead-lettered, which
+is what keeps this sink's failures as visible as the others'.
 
 These are built-in types, not an extension point: `audit.Sink` stays
 explicitly non-API under the compatibility contract. The `audit.sinks[].type`

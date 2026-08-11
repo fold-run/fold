@@ -132,9 +132,26 @@ func New(cfg *config.Audit, opts ...Option) *Logger {
 					dl = nil
 				}
 			}
-			w := newWebhookSink(s.URL, s.Headers, resolveRetry(s.Retry), dl, report)
+			w := newHTTPSink(s.URL, s.Headers, jsonBatch, resolveRetry(s.Retry), dl, report)
 			l.sinks = append(l.sinks, w)
 			l.closers = append(l.closers, w)
+		case "otlp-logs":
+			var dl *deadLetter
+			if s.DeadLetterPath != "" {
+				var err error
+				if dl, err = newDeadLetter(s.DeadLetterPath, report); err != nil {
+					l.startupErrs = append(l.startupErrs, err)
+					dl = nil
+				}
+			}
+			o, err := otlpLogsSink(s, dl, report)
+			if err != nil {
+				l.startupErrs = append(l.startupErrs, err)
+				_ = dl.Close()
+				continue
+			}
+			l.sinks = append(l.sinks, o)
+			l.closers = append(l.closers, o)
 		case "file":
 			rf, err := newRotatingFile(s.Path, s.MaxSizeMb, s.MaxFiles)
 			if err != nil {
@@ -195,11 +212,19 @@ func (s *stdoutSink) Emit(e Event) {
 	_, _ = fmt.Fprintln(os.Stdout, string(data))
 }
 
-// webhookSink POSTs batches of events, delivered asynchronously so audit
-// cannot add latency to the request path.
-type webhookSink struct {
+// encoder turns a batch of events into a request body. The two HTTP sinks
+// differ only in this and in their URL, which is why they share everything
+// else: two copies of retry and dead-letter logic would drift into two
+// different delivery guarantees, and nobody would notice until the day the
+// records mattered.
+type encoder func([]Event) ([]byte, error)
+
+// httpSink POSTs batches of events, delivered asynchronously so audit cannot
+// add latency to the request path.
+type httpSink struct {
 	url     string
 	headers map[string]string
+	encode  encoder
 	client  *http.Client
 	ch      chan Event
 	retry   retryPolicy
@@ -208,10 +233,11 @@ type webhookSink struct {
 	done    chan struct{}
 }
 
-func newWebhookSink(url string, headers map[string]string, retry retryPolicy, dead *deadLetter, report func(string, int)) *webhookSink {
-	s := &webhookSink{
+func newHTTPSink(url string, headers map[string]string, enc encoder, retry retryPolicy, dead *deadLetter, report func(string, int)) *httpSink {
+	s := &httpSink{
 		url:     url,
 		headers: headers,
+		encode:  enc,
 		retry:   retry,
 		dead:    dead,
 		report:  report,
@@ -235,7 +261,7 @@ func newWebhookSink(url string, headers map[string]string, retry retryPolicy, de
 	return s
 }
 
-func (s *webhookSink) Emit(e Event) {
+func (s *httpSink) Emit(e Event) {
 	select {
 	case s.ch <- e:
 	default:
@@ -249,12 +275,12 @@ func (s *webhookSink) Emit(e Event) {
 // Close stops the delivery worker and releases the dead-letter file. In-flight
 // retries are abandoned: shutdown does not wait out a backoff against a
 // receiver that is already known to be failing.
-func (s *webhookSink) Close() error {
+func (s *httpSink) Close() error {
 	close(s.done)
 	return s.dead.Close()
 }
 
-func (s *webhookSink) run() {
+func (s *httpSink) run() {
 	for {
 		var e Event
 		select {
@@ -283,8 +309,8 @@ func (s *webhookSink) run() {
 // draining the buffer, so a receiver that is down applies backpressure into
 // the buffer and then into counted drops, rather than into an unbounded pile
 // of goroutines each holding a batch.
-func (s *webhookSink) deliver(batch []Event) {
-	data, err := json.Marshal(batch)
+func (s *httpSink) deliver(batch []Event) {
+	data, err := s.encode(batch)
 	if err != nil {
 		s.report(OutcomeDropped, len(batch))
 		return
@@ -312,6 +338,10 @@ func (s *webhookSink) deliver(batch []Event) {
 	s.report(OutcomeDropped, len(batch))
 }
 
+// jsonBatch is the webhook body: the events as a JSON array, which is what
+// every receiver built against fold's documented audit shape expects.
+func jsonBatch(batch []Event) ([]byte, error) { return json.Marshal(batch) }
+
 // postError distinguishes "try again" from "this will never work". A 400 from
 // a receiver that dislikes the payload will be disliked identically four
 // times; retrying it only delays the dead letter.
@@ -320,7 +350,7 @@ type postError struct {
 	retryable bool
 }
 
-func (s *webhookSink) post(data []byte) *postError {
+func (s *httpSink) post(data []byte) *postError {
 	req, err := http.NewRequest(http.MethodPost, s.url, bytes.NewReader(data))
 	if err != nil {
 		return &postError{err: err, retryable: false}
