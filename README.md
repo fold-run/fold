@@ -8,7 +8,7 @@
 
 fold sits in front of any number of upstream MCP servers — in any language, on any SDK, from any team or vendor — providing federation, enterprise auth, policy, caching, rate limiting, and audit. It is built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk), so the wire protocol (streamable HTTP, both request/response and SSE) is the SDK's own implementation on both the client-facing and upstream-facing sides.
 
-**Conformant, provably.** The official [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) suite runs against fold fronting the reference everything-server on every merge — **40/40 checks**, including sampling, elicitation, logging, progress, and resource subscriptions bridged through the gateway. The receipt is one click away: the [`conformance` job from the v1.9.0 release run](https://github.com/fold-run/fold/actions/runs/31498966523/job/93803686320), and [every green run on `main`](https://github.com/fold-run/fold/actions/workflows/ci.yml?query=branch%3Amain+is%3Asuccess). A [weekly job](.github/workflows/drift.yml) re-runs the suite against the *latest* unpinned SDK and opens a tracking issue the moment anything drifts. Reproduce it yourself with `./scripts/conformance.sh` — the same command CI runs.
+**Conformant, provably.** The official [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) suite runs against fold fronting the reference everything-server on every merge — **40/40 checks**, including sampling, elicitation, logging, progress, and resource subscriptions bridged through the gateway. The receipt is one click away: the [`conformance` job from the v1.10.1 release run](https://github.com/fold-run/fold/actions/runs/31537959786/job/93933513047), and [every green run on `main`](https://github.com/fold-run/fold/actions/workflows/ci.yml?query=branch%3Amain+is%3Asuccess). A [weekly job](.github/workflows/drift.yml) re-runs the suite against the *latest* unpinned SDK and opens a tracking issue the moment anything drifts. Reproduce it yourself with `./scripts/conformance.sh` — the same command CI runs.
 
 ## Use cases
 
@@ -449,6 +449,26 @@ Known gaps, documented deliberately:
 Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SDK dependency it waits on, the second as a standing non-goal — alongside the rest of what fold does and does not intend to build.
 
 ## Changelog
+
+### v1.10.1 — 2026-08-11
+
+A gateway installed from the module proxy knows its own version.
+
+- **`go run github.com/fold-run/fold/cmd/fold@latest` reported `dev`.** goreleaser stamps the version with `-ldflags`, and the module proxy path cannot — so the install this README leads with produced a binary whose `/api/federation`, `/health`, startup log and MCP `clientInfo` all claimed to be a development build. Not cosmetic: the console gates its own surfaces on that string and treats an unparseable one as current, so every operator on that path silently lost version-skew detection and got unversioned documentation links. Go already records the resolved module version in the binary, so the gateway now reads it when nothing stamped one. A release keeps its stamp, and a build from a working tree still says `dev` — that one is a developer's, and it is honest about being one.
+- **The stamp target moved to `gateway.ldflagsVersion`.** `-X` only writes a string variable whose initialiser is a constant, and `version` now has to be computed, so leaving the flag pointed at it would have silently reverted every release to `dev`. `.goreleaser.yaml`, the Dockerfile, and the release runbook move together; a unit test covers each build route rather than only the one this machine happens to produce.
+
+### v1.10.0 — 2026-08-11
+
+The console is rewritten, and the field that takes your Bearer token starts working.
+
+No Go code changed in this release. Everything below is the embedded console, which is vendored from [fold-run/fold-console](https://github.com/fold-run/fold-console) at a pinned commit — now `v2.0.0`.
+
+- **The token field never applied what you typed.** On any gateway with `auth.required`, pasting a Bearer token into the console authenticated nothing: the field discarded its own keystrokes and every subsequent read went out unauthenticated, so the dashboard sat on `Unauthorized` with no way forward short of disabling auth. It has been broken since the assets were extracted at v1.9.0, and it is the reason to take this release rather than wait. Nothing static caught it — the page rendered, the types checked, and the field is hidden entirely on a gateway with auth off, which is how every local test run is configured. An end-to-end suite found it on its first execution.
+- **A drawing of the federation**, at `/console/#/upstreams?view=map`. One gateway node fanning out to every upstream, with each route carrying that upstream's actual state: Live where the breaker is closed, Down where the connect failed, and the neutral ramp for half-open, which is neither. It exists because two things about a federation cannot be put in a table — the fan itself, which is the whole proposition, and the governed boundary every route crosses. Generated from `/api/federation` rather than authored, which makes it the first fold diagram that is not hand-drawn.
+- **The page is a routed application rather than one scrolling document.** Overview, upstreams, an upstream in full, a searchable catalog, and the test console, with filters, sort and selection in the URL — so "the upstream that is down" is a link rather than a description. Deep links route on the fragment because this gateway serves the assets from an embedded `http.FileServer` with no SPA fallback, and that is not something the console can fix from its own repo.
+- **The embedded assets are 41 KiB smaller than at v1.9.0**, at 252,505 bytes, despite gaining a framework and a fifth view. The `-400` and `-600` font subsets had been byte-identical since v1.2: both were the variable font, so nothing in the console had ever actually rendered bold while every binary carried each face twice. Instancing them at their declared weights returned 71 KiB, more than the framework cost.
+- **The wordmark is the current one.** The console had been serving the stroked geometric lockup that fold.run's 2026-08-10 identity revision replaced. `console/fonts/OFL.txt` now also names Black Ops One, whose outlines the mark derives from: outlines are a derivative of the Font Software even where no font binary ships.
+- **`scripts/sync-console.sh` vendors from upstream's `dist/`,** not `console/`, and its error names the case when a pin predates that move. A bump whose pin and path disagree fails the sync loudly rather than vendoring stale bytes.
 
 ### v1.9.0 — 2026-08-11
 
