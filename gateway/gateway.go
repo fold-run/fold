@@ -106,10 +106,8 @@ type Gateway struct {
 	taskOwner *taskOwners
 
 	// health caches and single-flights the upstream health fan-out shared by
-	// /health and the console state API; healthzWarn logs the deprecated
-	// /healthz path's first use, once.
-	health      healthCache
-	healthzWarn sync.Once
+	// /health and /api/federation.
+	health healthCache
 
 	// callCtx tracks the context of each in-flight named invocation per
 	// downstream session. Server-initiated traffic from an upstream
@@ -1041,7 +1039,6 @@ func (g *Gateway) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(g.cfg.MCPPath(), mcpChain)
 	mux.HandleFunc("/health", g.handleHealth)
-	mux.HandleFunc("/healthz", g.handleDeprecatedHealthz)
 	// With a separate telemetry listener configured, /metrics leaves the
 	// public mux entirely rather than being served in both places: the point
 	// of moving it is that the browser-reachable origin stops exposing the
@@ -1049,21 +1046,26 @@ func (g *Gateway) buildHandler() http.Handler {
 	if g.metricsAddr() == "" {
 		mux.Handle("/metrics", g.metrics.handler())
 	}
-	if g.cfg.ConsoleEnabled() {
-		// The state API is data, so it authenticates like /mcp; the static
-		// assets are the same bytes for everyone and stay open. It also
-		// shares /mcp's rate budgets (global + per-principal): each state
+	if g.cfg.IntrospectionEnabled() {
+		// The federation snapshot is data, so it authenticates like /mcp. It
+		// also shares /mcp's rate budgets (global + per-principal): each
 		// request pings every upstream, so an unbudgeted poll loop would be
-		// a load amplifier against all backends.
-		state := g.rateLimitMiddleware(http.HandlerFunc(g.handleConsoleState))
-		if g.cfg.Server != nil && g.cfg.Server.Console != nil && len(g.cfg.Server.Console.Groups) > 0 {
-			state = g.consoleViewerGate(state)
+		// a load amplifier against all backends. The auth hint is
+		// deliberately open — a client needs it before it has a token.
+		state := g.rateLimitMiddleware(http.HandlerFunc(g.handleFederationState))
+		if len(g.cfg.IntrospectionGroups()) > 0 {
+			state = g.introspectionViewerGate(state)
 		}
 		if g.verifier != nil {
 			state = g.authMiddleware(state)
 		}
-		mux.Handle("/console/api/state", state)
-		mux.HandleFunc("/console/api/auth", g.handleConsoleAuthHint)
+		mux.Handle("/api/federation", state)
+		mux.HandleFunc("/api/auth-hint", g.handleAuthHint)
+	}
+	if g.cfg.ConsoleEnabled() {
+		// The page only. Static assets are the same bytes for everyone and
+		// stay open; the data they render comes from /api/federation, which
+		// config validation guarantees is served whenever this is.
 		mux.Handle("/console/", consoleAssetHandler(consoleCSP(g.cfg)))
 		mux.Handle("/console", http.RedirectHandler("/console/", http.StatusMovedPermanently))
 	}
@@ -1371,13 +1373,13 @@ func (r *statusRecorder) Flush() {
 }
 
 // upstreamHealth is one upstream's health snapshot, shared by /health and
-// the console state API. Sensitive fields (URL, owner, labels, detailed
+// /api/federation. Sensitive fields (URL, owner, labels, detailed
 // error) are populated only when the caller is trusted: for /health that
 // means auth disabled — a public deployment's /health stays minimal so an
 // unauthenticated caller cannot enumerate the federation or learn secret
 // env-var names from connect errors; the console serves topology to any
 // authenticated principal but reduces raw connect errors to a category
-// (see handleConsoleState).
+// (see handleFederationState).
 type upstreamHealth struct {
 	ID        string            `json:"id"`
 	Namespace string            `json:"namespace,omitempty"`
@@ -1394,8 +1396,8 @@ type upstreamHealth struct {
 	Endpoints []endpointStatus `json:"endpoints,omitempty"`
 
 	// Source ("static" | "discovered") and AuthStrategy (the strategy
-	// *name*, never its material) are console-only annotations, set by
-	// handleConsoleState after collection; /health leaves them empty so
+	// *name*, never its material) are /api/federation annotations, set by
+	// handleFederationState after collection; /health leaves them empty so
 	// its response shape is unchanged.
 	Source       string `json:"source,omitempty"`
 	AuthStrategy string `json:"authStrategy,omitempty"`
@@ -1502,22 +1504,6 @@ func (g *Gateway) upstreamHealthFor(ctx context.Context, rt *routes) (statuses [
 		c.rt, c.at = rt, time.Now()
 	}
 	return append([]upstreamHealth(nil), c.statuses...), c.healthy
-}
-
-// handleDeprecatedHealthz answers the pre-v1.5 health path, which `/health`
-// replaced. It serves the same bytes rather than redirecting: kubelet
-// probes and most load-balancer health checks do not follow redirects, so a
-// 301 would read as a failure on exactly the deployments the alias exists
-// to protect. RFC 8594 headers mark it on the wire, and the first hit logs
-// once so an operator can find whatever is still pointed at it before the
-// path goes away in a major.
-func (g *Gateway) handleDeprecatedHealthz(w http.ResponseWriter, r *http.Request) {
-	g.healthzWarn.Do(func() {
-		g.log.Warn("/healthz is deprecated and will be removed in the next major version; probe /health instead")
-	})
-	w.Header().Set("Deprecation", "true")
-	w.Header().Set("Link", `</health>; rel="successor-version"`)
-	g.handleHealth(w, r)
 }
 
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {

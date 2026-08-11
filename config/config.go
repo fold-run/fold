@@ -608,28 +608,50 @@ type ServerSection struct {
 	// change to it.
 	MetricsAddr string `json:"metricsAddr,omitempty"`
 
-	// Console enables the read-only fold console at /console: an embedded
+	// Introspection serves the gateway's read-only HTTP APIs: /api/federation
+	// (the federation snapshot — upstream health, policy shape, audit sinks,
+	// discovery status, the viewer's tenant governance) and /api/auth-hint
+	// (the unauthenticated sign-in hint). Separate from `console` because the
+	// API and the page are separate surfaces: an operator may want the data
+	// without serving a browser page at all, and the API stopped being the
+	// console's private detail when the console became separately versioned.
+	// Off by default. See docs/design-console.md.
+	//
+	// Construction-wired like the rest of this section: Reload rejects a
+	// change to it.
+	Introspection *Introspection `json:"introspection,omitempty"`
+
+	// Console enables the read-only fold console page at /console: an
 	// observability dashboard plus an MCP test console that talks to the
 	// gateway's own /mcp endpoint (fully governed — policy, rate limits,
-	// and audit apply to console traffic like any other client's). Off by
-	// default. See docs/design-console.md.
+	// and audit apply to console traffic like any other client's). The page
+	// renders what /api/federation reports, so it requires
+	// introspection.enabled. Off by default. See docs/design-console.md.
 	Console *Console `json:"console,omitempty"`
 }
 
-// Console configures the read-only console. Like the rest of the server
+// Introspection configures the read-only HTTP APIs. Like the rest of the
+// server section it is construction-wired: changing it requires a restart,
+// not a hot reload.
+type Introspection struct {
+	Enabled bool `json:"enabled"`
+
+	// Groups restricts who may read /api/federation: when set, an
+	// authenticated principal must carry at least one of these groups
+	// (per its issuer's groupsClaim) or the API answers an audited 403.
+	// Requires auth.mode "required". Absent → any valid principal may
+	// read. Console static assets are never gated — they carry no data.
+	// Group names are only unique within an issuer (the same caveat as
+	// policy rules), so keep the list meaningful across every trusted
+	// issuer.
+	Groups []string `json:"groups,omitempty"`
+}
+
+// Console configures the read-only console page. Like the rest of the server
 // section it is construction-wired: changing it requires a restart, not a
 // hot reload.
 type Console struct {
 	Enabled bool `json:"enabled"`
-
-	// Groups restricts who may read the console state API: when set, an
-	// authenticated principal must carry at least one of these groups
-	// (per its issuer's groupsClaim) or the state API answers 403.
-	// Requires auth.mode "required". Absent → any valid principal may
-	// view. Static assets are never gated — they carry no data. Group
-	// names are only unique within an issuer (the same caveat as policy
-	// rules), so keep the list meaningful across every trusted issuer.
-	Groups []string `json:"groups,omitempty"`
 
 	// OAuth lets the console sign users in with Authorization Code +
 	// PKCE instead of a pasted token. Requires auth.mode "required".
@@ -793,6 +815,25 @@ func (c *Config) Validate() error {
 			return fmt.Errorf(`server: metricsAddr must be host:port (":9090", "127.0.0.1:9090"): %w`, err)
 		}
 	}
+	if c.Server != nil && c.Server.MCPPath != "" {
+		// The gateway registers these on the same mux. A collision is not a
+		// degraded config: http.ServeMux panics on a duplicate pattern, so
+		// the process would die at startup with no useful message. Caught
+		// here it fails `fold --validate` and the chart's config-validating
+		// init container instead of a rollout.
+		reserved := []string{
+			"/health", "/metrics", "/console", "/console/",
+			"/api/federation", "/api/auth-hint", "/oauth/token",
+		}
+		for _, p := range reserved {
+			if c.Server.MCPPath == p {
+				return fmt.Errorf("server: mcpPath %q is reserved by the gateway", p)
+			}
+		}
+		if strings.HasPrefix(c.Server.MCPPath, "/.well-known/") {
+			return fmt.Errorf("server: mcpPath %q is reserved by the gateway", c.Server.MCPPath)
+		}
+	}
 	if c.Server != nil {
 		if err := c.Server.Budget.validate("server"); err != nil {
 			return err
@@ -801,23 +842,35 @@ func (c *Config) Validate() error {
 	if err := c.validateTenants(); err != nil {
 		return err
 	}
-	if c.Server != nil && c.Server.Console != nil && len(c.Server.Console.Groups) > 0 {
-		for _, gr := range c.Server.Console.Groups {
+	if c.Server != nil && c.Server.Introspection != nil && len(c.Server.Introspection.Groups) > 0 {
+		for _, gr := range c.Server.Introspection.Groups {
 			if gr == "" {
-				return fmt.Errorf("server: console.groups entries must not be empty")
+				return fmt.Errorf("server: introspection.groups entries must not be empty")
 			}
 		}
 		// A viewer allowlist matches against verified group claims; without
-		// mandatory auth there is no principal to match, and the state API
-		// would be reachable by anyone anyway.
+		// mandatory auth there is no principal to match, and the API would
+		// be reachable by anyone anyway.
 		if !c.AuthRequired() {
-			return fmt.Errorf(`server: console.groups requires auth.mode %q`, "required")
+			return fmt.Errorf(`server: introspection.groups requires auth.mode %q`, "required")
 		}
+	}
+	if c.ConsoleEnabled() && !c.IntrospectionEnabled() {
+		// The page renders what /api/federation reports and has no other
+		// data source, so serving it alone is a configuration that cannot
+		// work rather than a degraded one.
+		return fmt.Errorf("server: console.enabled requires introspection.enabled — the console page reads /api/federation")
 	}
 	if c.Server != nil && c.Server.Console != nil && c.Server.Console.OAuth != nil {
 		oa := c.Server.Console.OAuth
 		if oa.ClientID == "" {
 			return fmt.Errorf("server: console.oauth requires clientId")
+		}
+		// The PKCE redirect URI is {origin}/console/, so sign-in against a
+		// gateway serving no console page is a flow that cannot complete —
+		// advertised over an API that would hand out the client id anyway.
+		if !c.ConsoleEnabled() {
+			return fmt.Errorf("server: console.oauth requires console.enabled — there is no page to return to")
 		}
 		// Sign-in mints tokens the gateway must then accept, so the flow
 		// only means something with mandatory auth and a trusted direct
@@ -1106,7 +1159,22 @@ func (c *Config) AuthRequired() bool {
 	return c.Auth != nil && c.Auth.Mode == "required"
 }
 
-// ConsoleEnabled reports whether the read-only console is served.
+// IntrospectionEnabled reports whether the read-only APIs (/api/federation,
+// /api/auth-hint) are served.
+func (c *Config) IntrospectionEnabled() bool {
+	return c.Server != nil && c.Server.Introspection != nil && c.Server.Introspection.Enabled
+}
+
+// IntrospectionGroups returns the viewer allowlist for /api/federation.
+// Empty means any valid principal may read it.
+func (c *Config) IntrospectionGroups() []string {
+	if c.Server == nil || c.Server.Introspection == nil {
+		return nil
+	}
+	return c.Server.Introspection.Groups
+}
+
+// ConsoleEnabled reports whether the read-only console page is served.
 func (c *Config) ConsoleEnabled() bool {
 	return c.Server != nil && c.Server.Console != nil && c.Server.Console.Enabled
 }

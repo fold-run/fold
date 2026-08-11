@@ -178,16 +178,16 @@ func TestConsoleFederationViewIsTenantScoped(t *testing.T) {
 		RateLimit: &config.RateLimit{RequestsPerMinute: 120},
 		Budget:    &config.Budget{Period: "month", UpstreamCalls: 5000},
 	}}
-	cfg.Server = &config.ServerSection{Console: &config.Console{Enabled: true}}
+	cfg.Server = &config.ServerSection{Introspection: &config.Introspection{Enabled: true}, Console: &config.Console{Enabled: true}}
 	ts, _ := startGateway(t, cfg)
 
-	state := func(org string) consoleState {
+	state := func(org string) federationState {
 		t.Helper()
 		token := iss.mintClaims(t, jwt.MapClaims{
 			"sub": "viewer-" + org, "aud": "https://gw.example.com", "org_id": org,
 			"exp": time.Now().Add(time.Hour).Unix(),
 		})
-		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/console/api/state", nil)
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/federation", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -195,9 +195,9 @@ func TestConsoleFederationViewIsTenantScoped(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("console state: %d", resp.StatusCode)
+			t.Fatalf("federation state: %d", resp.StatusCode)
 		}
-		var st consoleState
+		var st federationState
 		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
 			t.Fatal(err)
 		}

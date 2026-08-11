@@ -1,0 +1,105 @@
+name: console-sync
+
+# Weekly check that gateway/console is current with fold-run/fold-console.
+#
+# Unlike drift.yml — which opens an ISSUE, because the fix for SDK or spec
+# movement is a judgement call about what fold should do — this opens a PR,
+# because the fix for console movement IS the diff.
+#
+# IMPORTANT: a PR opened here arrives with NO CI checks. GitHub does not create
+# workflow runs for pushes or PRs made with GITHUB_TOKEN (the anti-recursion
+# rule), so ci.yml never fires on this branch — an absent check set must not be
+# read as a passing one. The verification therefore runs inline below, and the
+# PR body tells the reviewer to push a commit to trigger the full suite before
+# merging.
+#
+# It never auto-merges. The console runs same-origin with a page holding a
+# live Bearer token in memory, so a pin bump is a supply-chain change and gets
+# a human plus the security-auditor pass.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC, an hour after drift
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: resolve the newest console commit
+        id: upstream
+        run: |
+          if ! grep -q 'CONSOLE_COMMIT:-[0-9a-f]\{40\}' scripts/sync-console.sh; then
+            echo "console assets are not yet extracted — nothing to sync"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          repo=$(sed -n 's/^CONSOLE_REPO="\${CONSOLE_REPO:-\(.*\)}"$/\1/p' scripts/sync-console.sh)
+          head=$(git ls-remote "$repo" refs/heads/main | cut -f1)
+          # The pin's whole value is that it is a 40-hex content hash, and this
+          # value comes off the network into three shell interpolations in a
+          # job holding contents: write. Git will not advertise a non-hex object
+          # id, so this is belt-and-braces — but it is one line.
+          case "$head" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "fold-console main did not resolve to a 40-hex commit: '$head'" >&2; exit 1 ;;
+          esac
+          echo "commit=$head" >> "$GITHUB_OUTPUT"
+          echo "short=${head:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: re-vendor at that commit
+        if: steps.upstream.outputs.skip != 'true'
+        run: |
+          CONSOLE_COMMIT="${{ steps.upstream.outputs.commit }}" ./scripts/sync-console.sh
+          # The pin in the script is what CI verifies against, so it moves too.
+          sed -i "s/CONSOLE_COMMIT:-[0-9a-f]\{40\}/CONSOLE_COMMIT:-${{ steps.upstream.outputs.commit }}/" \
+            scripts/sync-console.sh
+
+      # These run HERE because ci.yml will not fire on the PR this job opens.
+      # The manifest test is the one that matters most: it fails if the new
+      # commit adds a file to the embedded set, which is the shape a
+      # supply-chain injection would take.
+      - name: verify the new assets
+        if: steps.upstream.outputs.skip != 'true'
+        run: |
+          grep -q 'CONSOLE_REPO:-https://github.com/fold-run/fold-console.git' scripts/sync-console.sh
+          go build ./...
+          go test ./gateway -run 'Console|Introspection'
+
+      - name: open or update the bump PR
+        if: steps.upstream.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet; then
+            echo "gateway/console is already at ${{ steps.upstream.outputs.short }}"
+            exit 0
+          fi
+          branch="console-sync/${{ steps.upstream.outputs.short }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add gateway/console gateway/console_source.go scripts/sync-console.sh
+          git commit -m "console: sync to fold-console@${{ steps.upstream.outputs.short }}"
+          git push --force-with-lease origin "$branch"
+          if ! gh pr view "$branch" >/dev/null 2>&1; then
+            gh pr create --head "$branch" \
+              --title "console: sync to fold-console@${{ steps.upstream.outputs.short }}" \
+              --body "Automated by \`.github/workflows/console-sync.yml\`.
+
+          Re-vendors \`gateway/console\` from fold-run/fold-console at \`${{ steps.upstream.outputs.commit }}\`.
+
+          **This PR has no CI checks, and that is expected.** GitHub does not run workflows for branches pushed with \`GITHUB_TOKEN\`, so an empty check list here means *not run*, never *passed*. The sync job ran the manifest and API-path tests inline before opening this; push any commit to this branch to trigger the full suite before merging.
+
+          **Review this as a supply-chain change, not a docs bump.** These assets execute in an operator's browser, same-origin with a page that holds a live Bearer token in memory. Read the upstream diff, not just this one. Do not enable auto-merge."
+          fi

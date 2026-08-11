@@ -260,7 +260,8 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `maxBodyBytes` | 1 MiB | Request body cap; larger bodies are answered `413` (chunked bodies are cut off at the cap). |
 | `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
 | `metricsAddr` | unset | Moves `/metrics` (and `/health`) to their own listener, e.g. `":9090"`. Absent, they stay on the main port behind `allowedHosts` — which is why a scraper arriving as a pod IP or a service name gets `403` and reads as "target down". A separate listener is the arrangement to prefer whenever something other than the gateway's own host scrapes it: it is not an origin a browser can be steered to, so it needs no Host allowlist, while the public port stops exposing upstream ids, namespaces, tenant ids, and endpoint URLs to a rebinding attempt. **Bind it to an internal interface** — network scope is what protects it. Construction-wired; the Helm chart sets it for you via `metrics.listener.enabled`. |
-| `console` | disabled | `{ "enabled": true }` serves the read-only fold console at `/console`: an observability dashboard (federation health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts) plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. With auth enabled, the console's state API requires the same Bearer token as `/mcp`; add `"groups": ["platform-ops"]` to further restrict viewing to principals carrying one of those groups (403 otherwise, audited) — the fix for deployments where any valid token holder is too wide an audience. (A viewer who resolves to a tenant sees that tenant's federation rather than the whole one; see [`tenants`](#tenants).) Add `"oauth": { "clientId": "fold-console" }` and the console signs users in with Authorization Code + PKCE against a trusted issuer (register `{origin}/console/` as the redirect URI at the IdP; `issuer` picks among multiple trusted issuers, `scopes` adds authorization scopes) instead of a pasted token. |
+| `introspection` | disabled | `{ "enabled": true }` serves the read-only APIs: `GET /api/federation` (the federation snapshot — health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts, and the viewer's tenant governance) and `GET /api/auth-hint` (the unauthenticated sign-in hint). With auth enabled, `/api/federation` requires the same Bearer token as `/mcp` and shares its rate budgets; add `"groups": ["platform-ops"]` to further restrict reading to principals carrying one of those groups (403 otherwise, audited) — the fix for deployments where any valid token holder is too wide an audience. (A viewer who resolves to a tenant sees that tenant's federation rather than the whole one; see [`tenants`](#tenants).) |
+| `console` | disabled | `{ "enabled": true }` serves the read-only fold console page at `/console`: an observability dashboard plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. The dashboard renders what `/api/federation` reports, so it requires `introspection.enabled`. Add `"oauth": { "clientId": "fold-console" }` and the console signs users in with Authorization Code + PKCE against a trusted issuer (register `{origin}/console/` as the redirect URI at the IdP; `issuer` picks among multiple trusted issuers, `scopes` adds authorization scopes) instead of a pasted token. The page's assets are maintained in [fold-run/fold-console](https://github.com/fold-run/fold-console) and vendored here at a pinned commit. |
 
 ### `routing`
 
@@ -353,10 +354,12 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 
 ## Operational endpoints
 
-- `GET /health` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, owner, and — for multi-endpoint upstreams — the balancer's per-endpoint rotation state. `503` when no upstream is reachable. (`/healthz` is a deprecated alias serving the same response; see [API stability](#api-stability).) The fan-out is shared: concurrent callers ride one collection and the result is reused for a second, so probing this unauthenticated endpoint in a loop cannot multiply into upstream traffic. A reload or discovery sync invalidates it immediately.
+- `GET /health` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, owner, and — for multi-endpoint upstreams — the balancer's per-endpoint rotation state. `503` when no upstream is reachable. (`/healthz`, the pre-v1.5 path, was removed in v1.9 — see [API stability](#api-stability).) The fan-out is shared: concurrent callers ride one collection and the result is reused for a second, so probing this unauthenticated endpoint in a loop cannot multiply into upstream traffic. A reload or discovery sync invalidates it immediately.
 - `GET /metrics` — Prometheus metrics (see Observability).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata (when auth is enabled).
-- `GET /console/` — the read-only fold console (when `server.console.enabled`): an observability dashboard plus an MCP test console. The test console is a plain MCP client against the gateway's own `/mcp`, so policy, rate limits, and audit apply to it like any other client — there is no privileged path.
+- `GET /api/federation` — the federation snapshot (when `server.introspection.enabled`): upstream health and topology, policy shape, audit sinks, discovery status, and the viewer's tenant governance. Authenticates like `/mcp` and shares its rate budgets. Was `/console/api/state` through v1.8.
+- `GET /api/auth-hint` — the deliberately unauthenticated sign-in hint (when `server.introspection.enabled`): issuer, client id, scopes, resource. Public SPA configuration only. Was `/console/api/auth` through v1.8.
+- `GET /console/` — the read-only fold console page (when `server.console.enabled`): an observability dashboard over `/api/federation` plus an MCP test console. The test console is a plain MCP client against the gateway's own `/mcp`, so policy, rate limits, and audit apply to it like any other client — there is no privileged path.
 
 ## Guides
 
@@ -426,12 +429,14 @@ This is the v1 compatibility contract, in force as of v1.0.0.
 
 - **The config document** — field names, meanings, defaults, and validation semantics. The machine-readable contract is [`config/fold.config.schema.json`](config/fold.config.schema.json) (`fold --schema`), kept in lockstep with the code by test. Defaults are part of the freeze — every one was reviewed as a deliberate decision before v1.0 ([`docs/defaults.md`](docs/defaults.md)).
 - **The `fold` CLI** — flags, exit codes, and `FOLD_CONFIG` semantics.
-- **The wire surface** — gateway-minted JSON-RPC error codes, HTTP endpoints (`/mcp`, `/health`, `/metrics`, `/.well-known/*`, `/oauth/token`), metric names and label sets, and the audit event JSON shape. `/healthz` was the health path through v1.4 and remains a working alias, **deprecated as of v1.5.0** — it answers identically, carries `Deprecation: true`, and is removed no sooner than the next major. Point probes at `/health`.
+- **The wire surface** — gateway-minted JSON-RPC error codes, HTTP endpoints (`/mcp`, `/health`, `/metrics`, `/api/federation`, `/api/auth-hint`, `/.well-known/*`, `/oauth/token`), metric names and label sets, and the audit event JSON shape. The `/api/federation` **response shape** is frozen with the rest: fields may be added within a major, none removed or renamed — it has an out-of-tree consumer that can skew against the gateway, which is what makes it a contract rather than an internal detail. `/healthz` was the health path through v1.4, a deprecated alias from v1.5.0, and **removed in v1.9.0**; point probes at `/health`.
 - **Go, for embedders** — the `gateway` package (`New`, `Option`, `WithLogger`, `Gateway.Handler/Reload/Close`, `Version`), the `config` package's document structs and `Load`/`Parse`/`Validate`/`Schema`, plus the contract types the gateway hands outward: `auth.Principal` with `WithPrincipal`/`PrincipalFromContext`, and `audit.Event`/`Outcome`. See the [package example](https://pkg.go.dev/github.com/fold-run/fold/gateway).
 
 **Wiring, not API** (may change in any release): the constructors the gateway threads through its packages — `auth.Verifier`/`EMA`/`UpstreamCredentials`, `policy.Engine`, `audit.Logger`/`Sink`. They are exported so the gateway can reach them across package boundaries, not as an extension surface. `internal/` packages are never API.
 
 **Upgrades and deprecation.** fold follows semver: within a major version, upgrades are drop-in — new config fields and capabilities arrive in minors, nothing frozen changes. Anything slated for removal is deprecated in a minor release (documented here and in the changelog, with the replacement) and removed no sooner than the next major. Security fixes land on the latest minor as patch releases (see [SECURITY.md](SECURITY.md)).
+
+**This contract applies from v1.9.0 forward.** v1.9.0 itself makes breaking changes to config field names and endpoint paths without a deprecation window — the one release that does. fold had no users to protect at that point, and taking the break there rather than after launch was the honest trade; the alternative was a major-version bump whose module-path change would have silently pinned every published `go run …@latest` to v1.8.0 forever. See the v1.9.0 changelog entry for the migration.
 
 ## Not implemented
 
@@ -443,6 +448,28 @@ Known gaps, documented deliberately:
 Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SDK dependency it waits on, the second as a standing non-goal — alongside the rest of what fold does and does not intend to build.
 
 ## Changelog
+
+### v1.9.0 — unreleased
+
+The console's source leaves the repo; its API gets a name of its own.
+
+**Breaking.** This release renames config fields and endpoint paths with no aliases — the only release that does, and the reason is on record under [API stability](#api-stability). Migration:
+
+| Was (≤ v1.8) | Now (v1.9) |
+| --- | --- |
+| `GET /console/api/state` | `GET /api/federation` |
+| `GET /console/api/auth` | `GET /api/auth-hint` |
+| `GET /healthz` | `GET /health` (the alias is removed; a probe left on the old path now 404s) |
+| `server.console.groups` | `server.introspection.groups` |
+| `server.console.enabled` alone | `server.console.enabled` **plus** `server.introspection.enabled` |
+| `fold_http_rejections_total{reason="console_viewer"}` | `…{reason="introspection_viewer"}` — a dashboard or alert selecting the old value stops matching **silently**, with no error anywhere |
+| audit denial `error: "principal not in console viewer allowlist"` | `"principal not in introspection viewer allowlist"` — update any SIEM rule matching that string |
+
+- **The console's assets move to [fold-run/fold-console](https://github.com/fold-run/fold-console).** A hand-written browser app was living in a Go repo whose review discipline is built for a proxy path, released on that proxy's cadence. The source now has its own repo, its own contributors, and its own cadence; `gateway/console/` is vendored output pinned to a commit, verified by CI, and still embedded — so what a fold binary serves is exactly what it served before. The assets stay checked in rather than fetched at build time because the Go module proxy is fold's distribution channel: `go run github.com/fold-run/fold/cmd/fold@latest` must build from the proxy zip alone, which runs no generators and carries no submodules.
+- **`server.introspection`** — the read APIs are no longer the console's private detail. `/api/federation` reports configuration truth that `/metrics` structurally cannot: the effective policy default and rule count, audit sink types, whether shared state and tracing are on, discovery's last sync, and the viewer's tenant governance. It is separately configurable because an operator scripting against the federation snapshot should not have to serve a browser page to get it. `introspection.groups` is the viewer allowlist, unchanged in meaning and moved to where it belongs — it gates the API, and the API now has more than one consumer. The response shape joins the frozen wire surface.
+- **`server.mcpPath` is validated against the gateway's own paths.** Serving MCP at `/api/federation` or `/health` used to register a duplicate mux pattern and panic the process at startup with no useful message; it now fails `fold --validate` and the chart's config-validating init container instead.
+- **The embedded fonts ship with their licence.** The four woff2 subtypes have been in every binary since v1.2 with no OFL text anywhere in the tree; OFL 1.1 requires the licence accompany the Font Software, so the omission travelled with each release. `console/fonts/OFL.txt` now ships with them, and the embed-manifest test keeps it there.
+- **`/healthz` is removed from the gateway.** It was the health path through v1.4 and a deprecated alias since v1.5.0. Leaving it while declining to cut a major would have meant an alias with no removal date at all. `fold-discovery` **keeps** its alias for now: there, the path does not 404 when removed but falls through to the document handler, so a stale probe would quietly start scraping the upstreams document and reporting 200 — retiring it safely needs an explicit 404 rather than a deletion.
 
 ### v1.8.0 — 2026-08-10
 

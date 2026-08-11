@@ -124,6 +124,37 @@ func TestMetricsLeavesThePublicMux(t *testing.T) {
 	}
 }
 
+// The telemetry listener carries /metrics and nothing else. It is deliberately
+// unauthenticated and does no host validation — that is safe precisely because
+// it is not a browser-reachable origin and is meant to be bound to an internal
+// interface. /api/federation is the opposite: authenticated, host-checked, and
+// carrying upstream URLs, owners, and tenant governance. Mounting it here
+// "for convenience" would hand the whole federation to anything that can
+// reach the metrics port. Nothing stops that today except this test.
+func TestIntrospectionStaysOffTheMetricsListener(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	addr := freeAddr(t)
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Server: &config.ServerSection{
+			MetricsAddr:   addr,
+			Introspection: &config.Introspection{Enabled: true},
+			Console:       &config.Console{Enabled: true},
+		},
+	})
+
+	for _, path := range []string{"/api/federation", "/api/auth-hint", "/console/"} {
+		code, _ := get(t, "http://"+addr+path, "")
+		if code != http.StatusNotFound {
+			t.Errorf("%s on the telemetry listener = %d, want 404 — that listener is unauthenticated and unvalidated", path, code)
+		}
+	}
+	// And they are still served where they belong.
+	if code, _ := get(t, ts.URL+"/api/federation", ""); code != http.StatusOK {
+		t.Errorf("/api/federation on the public mux = %d, want 200", code)
+	}
+}
+
 // Close releases the port: a gateway that leaks its telemetry listener makes
 // every embedder's test suite flaky, and hides the leak until the second bind.
 func TestMetricsListenerClosesWithTheGateway(t *testing.T) {

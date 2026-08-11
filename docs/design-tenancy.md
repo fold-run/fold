@@ -18,7 +18,7 @@ four unrelated mechanisms:
 | Which tools a team sees | `policy.rules[].subjects.groups` and `allow[]` |
 | A team's blast radius | `server.rateLimit.perPrincipalPerMinute` |
 | A team's allowance | `upstreams[].budget` — but keyed per upstream, not per team |
-| Who may view the console | `server.console.groups` |
+| Who may read the federation snapshot | `server.introspection.groups` |
 | Which team owns an upstream | `upstreams[].owner` — metadata, not a boundary |
 
 Each is correct on its own. Together they mean the word "tenant" appears

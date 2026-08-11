@@ -210,14 +210,21 @@ outside.
 
 ## The console has no privileged path
 
-The optional read-only console (`server.console.enabled`, default off) adds
-two kinds of surface, each with a deliberate trust story:
+Two optional surfaces, configured separately and off by default: the read-only
+APIs (`server.introspection.enabled`) and the console page that renders them
+(`server.console.enabled`). Splitting them changes no trust boundary — the page
+was always an ordinary client of the API — but it makes the boundary visible in
+the config, and it means an operator can serve the data without serving a
+browser page. Each has a deliberate trust story:
 
 - **Static assets** (`/console/`) are the same bytes for every caller and
   carry no data, so they serve unauthenticated. A strict CSP
   (`default-src 'self'`) pins every fetch the page makes to the gateway's
-  own origin.
-- **The state API** (`/console/api/state`) is data, so it authenticates
+  own origin. Their source is maintained out of tree in `fold-run/fold-console`
+  and vendored at a pinned commit that CI verifies, so what ships is a reviewed
+  artifact rather than whatever upstream happens to hold — an embed manifest
+  test additionally bounds the file set that can enter the binary.
+- **The federation API** (`/api/federation`) is data, so it authenticates
   exactly like `/mcp` — with `auth.mode: "required"` it demands a valid
   Bearer token through the same verifier — and it shares `/mcp`'s global
   and per-principal rate budgets. It never carries secret material:
@@ -239,7 +246,7 @@ two kinds of surface, each with a deliberate trust story:
   env vars or internal hosts, so when auth is on they are reduced to a
   category and the full text stays in gateway logs. If "any valid
   principal" is too wide for a multi-tenant deployment, set
-  `server.console.groups`: the state API then answers 403 to any
+  `server.introspection.groups`: the state API then answers 403 to any
   principal not carrying an allowlisted group, and every such denial
   exits through the audit sink like any other authorization decision.
   The allowlist requires `auth.mode: "required"` (validation enforces
@@ -258,7 +265,7 @@ two kinds of surface, each with a deliberate trust story:
   verifier is the proof, held in `sessionStorage` only for the redirect
   round-trip and removed on return (it is not a credential by itself; the
   access token never touches storage). The unauthenticated
-  `/console/api/auth` hint carries only public SPA configuration — a
+  `/api/auth-hint` hint carries only public SPA configuration — a
   client id ships in every browser app, the issuer is already advertised
   in the RFC 9728 metadata. The asset CSP admits exactly the configured
   issuer's origin in `connect-src` for the metadata fetch and code
