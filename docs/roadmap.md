@@ -109,17 +109,31 @@ together with budgets in [design-consumption.md](design-consumption.md), which
 draws the line the market's framing blurs: fold governs MCP consumption, not
 model spend, and an installation that needs both runs both.
 
-### 3. Tool-set shaping
+### 3. Tool-set shaping — **shipped**
 
 The market frames oversized tool lists as "context bloat" and answers it with
-semantic tool selection. fold already solves it structurally and does not
+semantic tool selection. fold already solved it structurally and did not
 advertise it: per-principal policy filtering means a caller's `tools/list` is
-already the subset they are authorized for, computed at egress with no model
-in the loop.
+the subset they are authorized for, computed at egress with no model in the
+loop.
 
-The work is making that legible and bounded — a pre- and post-filter tool
-count metric so operators can see the reduction, and an optional per-rule cap.
-Nothing new lands on the hot path; the filtering already runs.
+It is now legible and bounded. `fold_list_items_total{method,stage}` counts
+what upstreams offered, what the caller was served, and what a cap removed —
+the reduction as a ratio, which is the only form in which it means anything.
+`policy.rules[].maxItems` bounds a rule's contribution to a list.
+
+The cap is deliberately a bound rather than a curation. fold drops whatever
+falls past it in merge order, because choosing *which* tools to keep would be
+the semantic selection this roadmap declines, and pretending otherwise would
+put a ranking model on the egress path. Truncation is therefore announced
+three ways — result `_meta`, the audit event, and the metric — since a cap
+that quietly removed capability would be worse than no cap at all. And it
+bounds visibility only: a name withheld from a list is still callable if
+policy allows it, because a list bound is not an authorization boundary and
+must not become a second, weaker policy engine.
+
+Nothing new landed on the hot path: the filter consults the decision the
+per-principal filtering already made.
 
 ### 4. Audit reach — **shipped**
 

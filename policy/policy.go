@@ -17,6 +17,12 @@ import (
 type Decision struct {
 	Allowed bool
 	RuleID  string // matching rule id, if any
+
+	// MaxItems is the matching rule's list cap, 0 for none. It rides on the
+	// decision because the caller filtering a list already has the decision in
+	// hand: asking the engine a second question per item, to learn a bound
+	// that never changes, would be work on the path this project measures.
+	MaxItems int
 }
 
 // Engine evaluates policy rules.
@@ -35,6 +41,7 @@ type compiledRule struct {
 	id       string
 	subjects *config.PolicySubjects
 	allow    []compiledAllow
+	maxItems int
 }
 
 type compiledAllow struct {
@@ -60,6 +67,7 @@ func New(cfg *config.Policy) *Engine {
 			id:       r.ID,
 			subjects: r.Subjects,
 			allow:    make([]compiledAllow, 0, len(r.Allow)),
+			maxItems: r.MaxItems,
 		}
 		for _, a := range r.Allow {
 			ca := compiledAllow{server: a.Server, methods: a.Methods}
@@ -97,7 +105,7 @@ func (e *Engine) Decide(p *auth.Principal, upstreamID, method, name string) Deci
 			if len(a.names) > 0 && !globAny(a.names, name) {
 				continue
 			}
-			return Decision{Allowed: true, RuleID: r.id}
+			return Decision{Allowed: true, RuleID: r.id, MaxItems: r.maxItems}
 		}
 	}
 	return Decision{Allowed: e.defaultAllow}

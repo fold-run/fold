@@ -65,6 +65,12 @@ type Event struct {
 	// per-principal policy filtering — the size of the surface this caller
 	// was actually handed, which is what lands in a model's context.
 	ItemsServed int `json:"itemsServed,omitempty"`
+
+	// ItemsCapped counts list items a policy rule's maxItems dropped —
+	// distinct from items policy made invisible, because the remedies differ:
+	// one is a grant the caller does not have, the other a bound the operator
+	// set. The result's _meta says the same thing to the client.
+	ItemsCapped int `json:"itemsCapped,omitempty"`
 	// Usage carries counters an upstream published in its result `_meta`,
 	// verbatim. fold never synthesizes these; an absent field means the
 	// upstream reported nothing, not that nothing was consumed.

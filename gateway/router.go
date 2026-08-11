@@ -227,17 +227,19 @@ func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, ev
 		return nil, err
 	}
 	out := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Meta: meta}
+	filter := newListFilter(principal, rt.policy, "tools/call")
 	for i, u := range ups {
 		// Visibility is decided on the bare name, the item emitted is the
 		// namespaced one; the two lists are index-aligned.
 		public := u.namespacedTools(lists[i])
 		for j, t := range lists[i] {
-			if !rt.policy.Visible(principal, u.cfg.ID, "tools/call", t.Name) {
+			if !filter.visible(u.cfg.ID, t.Name) {
 				continue
 			}
 			out.Tools = append(out.Tools, public[j])
 		}
 	}
+	filter.finish(g, evt, &out.Meta)
 	cursor := ""
 	if p, ok := req.GetParams().(*mcp.ListToolsParams); ok && p != nil {
 		cursor = p.Cursor
@@ -303,15 +305,17 @@ func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, 
 		return nil, err
 	}
 	out := &mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}, Meta: meta}
+	filter := newListFilter(principal, rt.policy, "prompts/get")
 	for i, u := range ups {
 		public := u.namespacedPrompts(lists[i]) // index-aligned — see listTools
 		for j, p := range lists[i] {
-			if !rt.policy.Visible(principal, u.cfg.ID, "prompts/get", p.Name) {
+			if !filter.visible(u.cfg.ID, p.Name) {
 				continue
 			}
 			out.Prompts = append(out.Prompts, public[j])
 		}
 	}
+	filter.finish(g, evt, &out.Meta)
 	cursor := ""
 	if p, ok := req.GetParams().(*mcp.ListPromptsParams); ok && p != nil {
 		cursor = p.Cursor
@@ -367,13 +371,14 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 	}
 	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourcesResult{Resources: []*mcp.Resource{}, Meta: meta}
+	filter := newListFilter(principal, rt.policy, "resources/read")
 	for i, u := range ups {
 		for _, r := range lists[i] {
 			// Resource URIs are opaque identifiers clients persist; fold
 			// never rewrites them. Ownership is remembered instead — record
 			// it even for filtered resources so reads still route correctly.
 			g.resourceOwner.Store(r.URI, u.cfg.ID, 0)
-			if !rt.policy.Visible(principal, u.cfg.ID, "resources/read", r.URI) {
+			if !filter.visible(u.cfg.ID, r.URI) {
 				continue
 			}
 			// Shared with every other caller of this list (see cachedList):
@@ -381,6 +386,7 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 			out.Resources = append(out.Resources, r)
 		}
 	}
+	filter.finish(g, evt, &out.Meta)
 	cursor := ""
 	if p, ok := req.GetParams().(*mcp.ListResourcesParams); ok && p != nil {
 		cursor = p.Cursor
@@ -406,15 +412,17 @@ func (g *Gateway) listResourceTemplates(ctx context.Context, rt *routes, req mcp
 	}
 	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}, Meta: meta}
+	filter := newListFilter(principal, rt.policy, "resources/read")
 	for i, u := range ups {
 		for _, tpl := range lists[i] {
-			if !rt.policy.Visible(principal, u.cfg.ID, "resources/read", tpl.URITemplate) {
+			if !filter.visible(u.cfg.ID, tpl.URITemplate) {
 				continue
 			}
 			// Shared, never mutated — see listResources.
 			out.ResourceTemplates = append(out.ResourceTemplates, tpl)
 		}
 	}
+	filter.finish(g, evt, &out.Meta)
 	cursor := ""
 	if p, ok := req.GetParams().(*mcp.ListResourceTemplatesParams); ok && p != nil {
 		cursor = p.Cursor

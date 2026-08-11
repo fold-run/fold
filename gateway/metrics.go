@@ -43,6 +43,10 @@ type metricsSet struct {
 	// dead-lettered event is the audit trail being incomplete, which is the
 	// one failure the trail cannot report about itself.
 	auditEvents *prometheus.CounterVec
+
+	// listItems makes the filtering visible: fold has always shrunk a
+	// caller's list to what they may invoke, and nothing said by how much.
+	listItems *prometheus.CounterVec
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -89,6 +93,10 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_tenant_requests_total",
 			Help: "MCP requests by tenant and outcome. Only requests whose principal resolved to a tenant are counted; everything else is in fold_requests_total, which counts all of them.",
 		}, []string{"tenant", "outcome"}),
+		listItems: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_list_items_total",
+			Help: "List items by method and stage: offered by upstreams, served to the caller, and capped by a policy rule's maxItems. served/offered is the context reduction per-principal filtering already performs.",
+		}, []string{"method", "stage"}),
 		auditEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fold_audit_events_total",
 			Help: "Audit events by sink type and delivery outcome: delivered, retried, dead_lettered, dropped. Audit is the single exit door — anything but delivered means the record is incomplete somewhere.",
@@ -100,7 +108,7 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
-		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents,
+		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -201,6 +209,20 @@ func (m *metricsSet) observeTenant(tenant, outcome string, upstreamCalls int) {
 // Fail-open is deliberate, but a fleet running unbudgeted must be visible.
 func (m *metricsSet) observeBudgetDegraded(scope string) {
 	m.budgetDegr.WithLabelValues(scope).Inc()
+}
+
+// observeListShaping records what one list request offered, served, and had
+// capped. Counting all three lets an operator read the reduction as a ratio
+// rather than a number without a denominator.
+func (m *metricsSet) observeListShaping(method string, offered, served, capped int) {
+	if offered == 0 {
+		return
+	}
+	m.listItems.WithLabelValues(method, "offered").Add(float64(offered))
+	m.listItems.WithLabelValues(method, "served").Add(float64(served))
+	if capped > 0 {
+		m.listItems.WithLabelValues(method, "capped").Add(float64(capped))
+	}
 }
 
 // observeAudit records the fate of audit events for one sink.

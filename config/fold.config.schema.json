@@ -202,7 +202,8 @@
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/definitions/policyAllow" }
-        }
+        },
+        "maxItems": { "type": "integer", "minimum": 0 }
       }
     },
     "policySubjects": {
