@@ -14,8 +14,8 @@ type: application
 # deploy/helm/, since a published tag is immutable and a reused one is a
 # different chart wearing the same name. It moves independently of appVersion:
 # a chart fix that ships no new gateway is still a chart release.
-version: 0.1.5
-appVersion: "v1.8.0"
+version: 0.1.6
+appVersion: "v1.9.0"
 home: https://github.com/fold-run/fold
 sources:
   - https://github.com/fold-run/fold

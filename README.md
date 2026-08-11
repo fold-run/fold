@@ -449,7 +449,7 @@ Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SD
 
 ## Changelog
 
-### v1.9.0 — unreleased
+### v1.9.0 — 2026-08-11
 
 The console's source leaves the repo; its API gets a name of its own.
 
