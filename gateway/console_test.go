@@ -18,19 +18,22 @@ import (
 func consoleConfig(upstreams []config.Upstream) *config.Config {
 	return &config.Config{
 		Upstreams: upstreams,
-		Server:    &config.ServerSection{Console: &config.Console{Enabled: true}},
+		Server:    &config.ServerSection{Introspection: &config.Introspection{Enabled: true}, Console: &config.Console{Enabled: true}},
 	}
 }
 
 // The console is off by default: none of its routes may exist without
-// server.console.enabled — the mux must fall through to 404.
+// server.console.enabled or server.introspection.enabled — the mux must fall
+// through to 404. /api/ is a top-level namespace now, so "nothing is served
+// there by default" is the assertion that keeps it from becoming a surface
+// nobody asked for.
 func TestConsoleDisabledByDefault(t *testing.T) {
 	up, _ := newUpstreamServer(t, "tool")
 	ts, _ := startGateway(t, &config.Config{Upstreams: []config.Upstream{
 		{ID: "u", URL: up.URL},
 	}})
 
-	for _, path := range []string{"/console/", "/console/api/state", "/console"} {
+	for _, path := range []string{"/console/", "/console", "/api/federation", "/api/auth-hint"} {
 		resp, err := http.Get(ts.URL + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
@@ -88,13 +91,13 @@ func TestConsoleEnabledStateAndAssets(t *testing.T) {
 	}
 
 	// State API: version, mcpPath, and the upstream roster.
-	resp, err = http.Get(ts.URL + "/console/api/state")
+	resp, err = http.Get(ts.URL + "/api/federation")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /console/api/state: want 200, got %d", resp.StatusCode)
+		t.Fatalf("GET /api/federation: want 200, got %d", resp.StatusCode)
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Errorf("state Content-Type = %q, want application/json", ct)
@@ -182,11 +185,11 @@ func TestConsoleStateRequiresAuth(t *testing.T) {
 		{ID: "u", URL: up.URL, Namespace: "u"},
 		{ID: "dead", URL: "http://127.0.0.1:1/mcp", Namespace: "dead"},
 	}, nil)
-	cfg.Server = &config.ServerSection{Console: &config.Console{Enabled: true}}
+	cfg.Server = &config.ServerSection{Introspection: &config.Introspection{Enabled: true}, Console: &config.Console{Enabled: true}}
 	ts, _ := startGateway(t, cfg)
 
 	// No token → 401 on the data plane.
-	resp, err := http.Get(ts.URL + "/console/api/state")
+	resp, err := http.Get(ts.URL + "/api/federation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +209,7 @@ func TestConsoleStateRequiresAuth(t *testing.T) {
 	}
 
 	// Valid token → 200 with the detailed (URL-bearing) view.
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/console/api/state", nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/federation", nil)
 	req.Header.Set("Authorization", "Bearer "+iss.mint(t, "alice", "https://gw.example.com", nil))
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -383,7 +386,7 @@ func TestConsoleClientGovernance(t *testing.T) {
 				Allow:    []config.PolicyAllow{{Server: "things", Names: []string{"get_*"}}},
 			}},
 		})
-	cfg.Server = &config.ServerSection{Console: &config.Console{Enabled: true}}
+	cfg.Server = &config.ServerSection{Introspection: &config.Introspection{Enabled: true}, Console: &config.Console{Enabled: true}}
 	cfg.Audit = &config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: sink.URL}}}
 	ts, _ := startGateway(t, cfg)
 
@@ -456,7 +459,7 @@ func TestConsoleClientGovernance(t *testing.T) {
 	}
 
 	// With a policy section present, the state API reports the deny default.
-	stateReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/console/api/state", nil)
+	stateReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/federation", nil)
 	stateReq.Header.Set("Authorization", "Bearer "+c.token)
 	stateResp, err := http.DefaultClient.Do(stateReq)
 	if err != nil {
@@ -537,7 +540,7 @@ func TestConsoleDiscoveryStatus(t *testing.T) {
 	}
 	fetchState := func() stateDoc {
 		t.Helper()
-		resp, err := http.Get(ts.URL + "/console/api/state")
+		resp, err := http.Get(ts.URL + "/api/federation")
 		if err != nil {
 			t.Fatalf("GET state: %v", err)
 		}
@@ -595,13 +598,13 @@ func TestConsoleMethodDiscipline(t *testing.T) {
 	up, _ := newUpstreamServer(t, "tool")
 	ts, _ := startGateway(t, consoleConfig([]config.Upstream{{ID: "u", URL: up.URL}}))
 
-	resp, err := http.Post(ts.URL+"/console/api/state", "application/json", strings.NewReader("{}"))
+	resp, err := http.Post(ts.URL+"/api/federation", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("POST /console/api/state: want 405, got %d", resp.StatusCode)
+		t.Errorf("POST /api/federation: want 405, got %d", resp.StatusCode)
 	}
 	if allow := resp.Header.Get("Allow"); allow != http.MethodGet {
 		t.Errorf("state Allow = %q, want GET", allow)
@@ -631,11 +634,11 @@ func TestConsoleMethodDiscipline(t *testing.T) {
 	}
 }
 
-// TestConsoleViewerAllowlist: server.console.groups narrows who may read
-// the state API. A principal carrying an allowlisted group gets the state;
+// TestIntrospectionViewerAllowlist: server.introspection.groups narrows who may
+// read /api/federation. A principal carrying an allowlisted group gets the state;
 // one without gets 403 and the denial exits through the audit sink. Static
 // assets stay open either way — they carry no data.
-func TestConsoleViewerAllowlist(t *testing.T) {
+func TestIntrospectionViewerAllowlist(t *testing.T) {
 	events := make(chan []byte, 64)
 	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -649,13 +652,13 @@ func TestConsoleViewerAllowlist(t *testing.T) {
 	iss := newFixtureIssuer(t)
 	up, _ := newUpstreamServer(t, "tool")
 	cfg := authedConfig(iss, []config.Upstream{{ID: "u", URL: up.URL}}, nil)
-	cfg.Server = &config.ServerSection{Console: &config.Console{Enabled: true, Groups: []string{"ops"}}}
+	cfg.Server = &config.ServerSection{Introspection: &config.Introspection{Enabled: true, Groups: []string{"ops"}}, Console: &config.Console{Enabled: true}}
 	cfg.Audit = &config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: sink.URL}}}
 	ts, _ := startGateway(t, cfg)
 
 	get := func(token string) *http.Response {
 		t.Helper()
-		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/console/api/state", nil)
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/federation", nil)
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -731,20 +734,23 @@ done:
 	}
 }
 
-// TestConsoleAuthHint: /console/api/auth is the deliberately
+// TestConsoleAuthHint: /api/auth-hint is the deliberately
 // unauthenticated login hint — everything in it is public SPA config.
 func TestConsoleAuthHint(t *testing.T) {
 	iss := newFixtureIssuer(t)
 	up, _ := newUpstreamServer(t, "tool")
 	cfg := authedConfig(iss, []config.Upstream{{ID: "u", URL: up.URL}}, nil)
-	cfg.Server = &config.ServerSection{Console: &config.Console{
-		Enabled: true,
-		OAuth:   &config.ConsoleOAuth{ClientID: "fold-console", Scopes: []string{"openid"}},
-	}}
+	cfg.Server = &config.ServerSection{
+		Introspection: &config.Introspection{Enabled: true},
+		Console: &config.Console{
+			Enabled: true,
+			OAuth:   &config.ConsoleOAuth{ClientID: "fold-console", Scopes: []string{"openid"}},
+		},
+	}
 	ts, _ := startGateway(t, cfg)
 
 	// No token needed: the page reads this before it can possibly have one.
-	resp, err := http.Get(ts.URL + "/console/api/auth")
+	resp, err := http.Get(ts.URL + "/api/auth-hint")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +799,7 @@ func TestConsoleAuthHint(t *testing.T) {
 	}
 
 	// Method discipline holds on the hint too.
-	postResp, err := http.Post(ts.URL+"/console/api/auth", "application/json", nil)
+	postResp, err := http.Post(ts.URL+"/api/auth-hint", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -810,7 +816,7 @@ func TestConsoleAuthHintWithoutOAuth(t *testing.T) {
 	up, _ := newUpstreamServer(t, "tool")
 	ts, _ := startGateway(t, consoleConfig([]config.Upstream{{ID: "u", URL: up.URL}}))
 
-	resp, err := http.Get(ts.URL + "/console/api/auth")
+	resp, err := http.Get(ts.URL + "/api/auth-hint")
 	if err != nil {
 		t.Fatal(err)
 	}

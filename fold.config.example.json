@@ -53,6 +53,7 @@
   "server": {
     "allowedHosts": ["gw.example.com"],
     "rateLimit": { "requestsPerMinute": 6000 },
+    "introspection": { "enabled": true },
     "console": { "enabled": true }
   },
   "tracing": {

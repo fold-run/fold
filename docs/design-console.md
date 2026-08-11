@@ -1,9 +1,55 @@
 # Design: the fold console
 
-Status: **implemented** (shipping in the next minor). This doc recorded the
-design before implementation; it now serves as the decision record. The
-operational documentation lives in the README, [operations.md](operations.md),
-and [security-model.md](security-model.md).
+Status: **implemented**, with the source extracted to `fold-run/fold-console`
+in v1.9. This doc recorded the design before implementation; it now serves as
+the decision record. The operational documentation lives in the README,
+[operations.md](operations.md), and [security-model.md](security-model.md).
+
+## Two repos, one artifact
+
+Since v1.9 the console's HTML/CSS/JS is maintained in `fold-run/fold-console`
+and vendored into `gateway/console/` at a pinned commit recorded in
+`gateway/console_source.go`. The gateway still embeds and serves it, so
+nothing about what an operator receives changed.
+
+Why extract at all: a hand-written browser app was sitting in a repo whose
+review discipline is built for a proxy path, being released on that proxy's
+cadence. The two have nothing to do with each other. This is also the shape
+the leading OSS gateways converged on — UI source in its own repo, artifact
+bundled into the gateway release and pinned by commit — including one that
+tried a fully standalone dashboard and moved back after the separate repo
+decayed for lack of maintenance.
+
+Why the assets stay **checked in** rather than fetched at build time, which
+is how those gateways do it: the Go module proxy is fold's distribution
+channel. `go run github.com/fold-run/fold/cmd/fold@latest` builds from the
+proxy zip alone — it runs no generators, and **module proxy zips do not
+contain submodule content**, so a submodule would yield an empty
+`gateway/console/` and a `//go:embed` build failure. Vendoring is not a
+compromise here; it is the only mechanism that survives fold's distribution
+model, and it happens to be better: no network, no token, no fresh-clone
+breakage.
+
+What keeps vendoring honest:
+
+- **The pin is a commit SHA, not a tag** — tags are mutable, and the whole
+  safety property is that the checked-in tree is provably a function of an
+  immutable upstream point. Same discipline as `CONFORMANCE_COMMIT`.
+- **The pin lives outside the embedded tree.** `//go:embed console` would
+  sweep up a file placed in `gateway/console/` and serve it at
+  `GET /console/SOURCE`, so the constant is a generated Go file instead —
+  which also puts it in `make fmt-check` and lets `/api/federation` report
+  which console build a binary carries.
+- **CI re-downloads the pinned artifact and diffs it.** Without that, a hand
+  edit in `gateway/console/` makes the separate repo a fiction.
+- **The sync copies an explicit allowlist**, and an embed-manifest test
+  asserts the exact file set. The console repo will grow a README, a LICENSE,
+  and CI config; none of that belongs in an operator's binary. Adding a file
+  to the shipped set is a reviewed change *here*, not a unilateral one
+  upstream.
+- **The sync PR is never auto-merged.** The console runs same-origin with a
+  page holding a live Bearer token in memory; a pin bump is a supply-chain
+  change.
 
 ## Motivation
 
@@ -35,13 +81,23 @@ web page served by the gateway with (a) an observability dashboard and
 
 ## Design decisions
 
-### No build step, no framework
+### No build step *in fold*
 
-Hand-written HTML/CSS/vanilla-JS embedded via `go:embed`. fold's story is a
-single static binary and the only node dependency in CI is the conformance
-suite; an npm/React toolchain would put a frontend build into every release
-for what is a dashboard and a JSON-RPC console. If the UI outgrows vanilla
-JS, that is a v2 problem to have.
+Originally: hand-written HTML/CSS/vanilla-JS embedded via `go:embed`, on the
+reasoning that fold's story is a single static binary and the only node
+dependency in CI is the conformance suite — an npm toolchain would put a
+frontend build into every release for what is a dashboard and a JSON-RPC
+console.
+
+That reasoning survives, but it was really an argument about *fold's* build,
+not about the console's. Since v1.9 the source lives in `fold-run/fold-console`
+and this repo vendors literal files, so fold's build has no frontend step by
+construction rather than by restraint — and the console is free to have a
+toolchain of its own. What crosses the boundary is always static output.
+
+The consequence worth stating plainly: whatever the console is written in, it
+must compile to files that can be committed here. No SSR, no server runtime,
+no build-time fetch.
 
 The look is the fold.run design system (dark-only stardust tokens; IBM Plex
 Sans + Geist Mono). The fonts are the site's self-hosted OFL latin subsets,
@@ -51,33 +107,54 @@ no-external-fetches rule holds for typography too.
 ### Endpoints
 
 - `GET /console/` — static assets (embedded, no data in them, served
-  unauthenticated).
-- `GET /console/api/state` — read-only JSON snapshot (authenticated when
-  gateway auth is on; see below).
+  unauthenticated), gated by `server.console.enabled`.
+- `GET /api/federation` — read-only JSON snapshot (authenticated when
+  gateway auth is on; see below), gated by `server.introspection.enabled`.
+- `GET /api/auth-hint` — the deliberately unauthenticated sign-in hint,
+  same gate.
 
-Both are additive HTTP endpoints — allowed in a minor; the frozen wire
-surface is untouched. Wired in `buildHandler()` alongside `/health`, so
-host validation and the body cap wrap them for free. Assets ship with
+Wired in `buildHandler()` alongside `/health`, so host validation and the
+body cap wrap them for free. Assets ship with
 `Content-Security-Policy: default-src 'self'` — no external fetches, ever.
 
-The path is fixed at `/console` (not configurable) until someone needs
-otherwise.
+These were `/console/api/state` and `/console/api/auth` through v1.8, and
+this doc argued at the time that they were "additive HTTP endpoints —
+allowed in a minor; the frozen wire surface is untouched." That was true
+while the console shipped from this repo and could never disagree with them.
+It stopped being true when the console moved out and became separately
+versioned, so v1.9 renamed them and put the response shape on the frozen
+surface. The rename went out **without an alias, in a minor** — the one
+release that does that — because fold had no users to protect and the
+alternative, a major, would have changed the module path and silently pinned
+every published `go run …@latest` to v1.8 forever. The reasoning is recorded
+under "API stability" in the README so the exception cannot be mistaken for
+the rule.
 
 ### Config
 
-`server.console: { "enabled": false }`. The `server` section is
-construction-wired and Reload-rejected, so the right reload semantics are
-inherited without touching the snapshot. Default **off**: no new surface
-unless asked for, consistent with the security-posture defaults in
-[defaults.md](defaults.md) — if this ships, `console.enabled=false` gets a
-row there. Schema and lockstep test update with the field.
+Two sibling blocks, both defaulting **off**:
+
+- `server.introspection: { "enabled": false, "groups": [] }` — the read APIs.
+- `server.console: { "enabled": false, "oauth": {…} }` — the page. Requires
+  `introspection.enabled`; validation rejects the combination that cannot
+  work rather than serving a page with no data source.
+
+They are separate because the API and the page are separate surfaces: an
+operator scripting the federation snapshot should not have to serve a browser
+page, and the allowlist gates the API rather than the page. `oauth` stays
+under `console` because its redirect URI is literally `{origin}/console/` —
+which is also why `console.oauth` requires `console.enabled`.
+
+The `server` section is construction-wired and Reload-rejected, so the right
+reload semantics are inherited without touching the snapshot. Schema and
+lockstep test update with the fields.
 
 ### Auth
 
 The state API reuses the existing gateway verifier. With
-`auth.mode: "required"`, `/console/api/state` demands the same Bearer token
+`auth.mode: "required"`, `/api/federation` demands the same Bearer token
 as `/mcp`; any valid principal may view. (The viewer allowlist —
-`server.console.groups` — shipped as the follow-up: an audited 403 for
+`server.introspection.groups` — shipped as the follow-up: an audited 403 for
 principals outside the listed groups.) With auth disabled,
 the endpoint follows `/health`'s existing trusted-deployment logic and its
 redaction discipline: raw connect errors and URLs are never echoed to
@@ -87,7 +164,7 @@ anywhere.
 The page takes a pasted token and holds it in memory only (no storage).
 That was v1's whole story; the PKCE flow shipped as the follow-up
 (`server.console.oauth`): Authorization Code + PKCE against a trusted
-direct-mode issuer, an unauthenticated `/console/api/auth` hint carrying
+direct-mode issuer, an unauthenticated `/api/auth-hint` hint carrying
 the public client configuration, and the asset CSP extended with exactly
 the issuer's origin in `connect-src`. The paste-token path remains as the
 fallback (and the only path for EMA deployments, whose ID-JAGs are not

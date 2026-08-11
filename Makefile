@@ -1,6 +1,6 @@
 # Single source of truth for dev/CI commands; CI calls these same targets.
 
-.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance check fuzz cover helm-check compose-up compose-down compose-logs
+.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance sync-console console-check check fuzz cover helm-check compose-up compose-down compose-logs
 
 build:
 	go build ./...
@@ -52,6 +52,20 @@ fuzz:
 
 conformance:
 	./scripts/conformance.sh
+
+# Vendors gateway/console from fold-run/fold-console at CONSOLE_COMMIT.
+sync-console:
+	./scripts/sync-console.sh
+
+# Proves gateway/console is exactly the pinned fold-console commit — the check
+# that makes "the console is maintained elsewhere" true rather than a claim,
+# since nothing else stops a hand edit here. Network, so it is its own CI job
+# rather than part of `check` (same reasoning as conformance and helm-check).
+console-check:
+	./scripts/sync-console.sh
+	@git diff --exit-code -- gateway/console gateway/console_source.go \
+	  || { echo "gateway/console differed from its pin and has been re-vendored — review and commit"; exit 1; }
+	@echo "gateway/console matches its pin"
 
 # Lints the Helm chart and renders it against each ci values file. Not part
 # of `check` (keeps the contributor toolchain Go-only); CI runs it in its own

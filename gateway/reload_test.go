@@ -181,10 +181,22 @@ func TestReloadRejectsNonReloadableSections(t *testing.T) {
 		}
 	}
 
-	// Toggling the console is a server-section change like any other:
-	// construction-wired, so Reload rejects it (the console cannot be
+	// Toggling introspection is a server-section change like any other:
+	// construction-wired, so Reload rejects it (the read APIs cannot be
 	// switched on by a hot reload or a poisoned discovery document).
-	consoleCfg := &config.Config{Upstreams: base, Server: &config.ServerSection{Console: &config.Console{Enabled: true}}}
+	introspectionCfg := &config.Config{Upstreams: base, Server: &config.ServerSection{Introspection: &config.Introspection{Enabled: true}}}
+	if err := gw.Reload(introspectionCfg); err == nil || !strings.Contains(err.Error(), "server section") {
+		t.Errorf("introspection toggle: Reload should fail naming the server section, got %v", err)
+	}
+
+	// Same for the console page. Both blocks are set because validation
+	// rejects a console without the API that feeds it, and Reload validates
+	// before it diffs — so a console-only document would fail for the wrong
+	// reason and prove nothing about construction-wiring.
+	consoleCfg := &config.Config{Upstreams: base, Server: &config.ServerSection{
+		Introspection: &config.Introspection{Enabled: true},
+		Console:       &config.Console{Enabled: true},
+	}}
 	if err := gw.Reload(consoleCfg); err == nil || !strings.Contains(err.Error(), "server section") {
 		t.Errorf("console toggle: Reload should fail naming the server section, got %v", err)
 	}

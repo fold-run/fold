@@ -27,6 +27,7 @@ Run `make check`. CI gates every merge on those same targets plus:
 | Vulnerability scan | `make vuln` |
 | Added-latency benchmark | `make bench` — added p50 < 5 ms through the proxy path |
 | MCP conformance suite | `make conformance` — 40/40 checks, needs node/npx |
+| Vendored console matches its pin | `make console-check` — needs network |
 
 A single test runs with `go test ./gateway -run TestName -v`.
 
@@ -50,13 +51,29 @@ bridged sessions`, `docs: ...`), matching `git log`.
 5. **Known gaps are documented.** Deliberately unimplemented features live in
    README "Not implemented" — update it if you close or widen a gap.
 
+## The console is not maintained here
+
+**`gateway/console/` is vendored output. Send UI changes to
+[fold-run/fold-console](https://github.com/fold-run/fold-console).** CI's
+`console` job re-vendors from the pinned commit and fails the build on any
+difference, so an edit made directly here cannot merge. `make sync-console` is how the
+bytes get here; `gateway/console_source.go` records which upstream commit they
+came from.
+
 ## Pinned upstreams
 
 CI pins the conformance suite to a commit and package version in
-[`scripts/conformance.sh`](scripts/conformance.sh); bump both deliberately in
-their own commit. A weekly [drift workflow](.github/workflows/drift.yml)
-tests against the latest MCP SDK and conformance suite and opens an issue
-when upstream moves — fixes for drift issues should also update the pins.
+[`scripts/conformance.sh`](scripts/conformance.sh), and the console assets to a
+commit in [`scripts/sync-console.sh`](scripts/sync-console.sh). Bump each
+deliberately, in its own commit. Both pins are commit SHAs rather than tags: a
+SHA is a content hash, so it cannot be re-pointed at different bytes.
+
+Two weekly workflows watch for movement. [drift](.github/workflows/drift.yml)
+tests against the latest MCP SDK and conformance suite and opens an *issue*,
+because the fix is a judgement call. [console-sync](.github/workflows/console-sync.yml)
+opens a *PR*, because the fix is the diff — but it never auto-merges: the
+console executes in an operator's browser alongside a live token, so a pin bump
+is reviewed as a supply-chain change.
 
 ## Security issues
 

@@ -35,15 +35,15 @@ type discoverer struct {
 	seen     bool
 	failing  bool // dampens repeated fetch-failure logging to transitions
 
-	// statusMu guards the last-sync record surfaced by the console state
-	// API; the metric remains the fleet-wide view.
+	// statusMu guards the last-sync record surfaced by /api/federation;
+	// the metric remains the fleet-wide view.
 	statusMu    sync.Mutex
 	lastOutcome string // "applied" | "unchanged" | "rejected" | "error"
 	lastSyncAt  time.Time
 }
 
-// recordSync counts a sync outcome in metrics and remembers it for the
-// console state API.
+// recordSync counts a sync outcome in metrics and remembers it for
+// /api/federation.
 func (d *discoverer) recordSync(outcome string) {
 	d.g.metrics.discoverySync(outcome)
 	d.statusMu.Lock()

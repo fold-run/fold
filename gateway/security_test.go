@@ -192,7 +192,7 @@ func TestHostAllowlistDropsLocalhost(t *testing.T) {
 	}
 }
 
-func TestHealthzHidesDetailsWhenAuthRequired(t *testing.T) {
+func TestHealthHidesDetailsWhenAuthRequired(t *testing.T) {
 	iss := newFixtureIssuer(t)
 	up, _ := newUpstreamServer(t, "tool")
 	ts, _ := startGateway(t, authedConfig(iss,

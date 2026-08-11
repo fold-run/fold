@@ -114,3 +114,23 @@ jobs:
 
       - name: conformance suite through the gateway
         run: ./scripts/conformance.sh
+
+  # gateway/console is vendored from fold-run/fold-console, so this proves the
+  # checked-in bytes are exactly the pinned commit. Without it a hand edit here
+  # would silently fork the console from its source of truth and nothing would
+  # notice — which would make "the console is maintained elsewhere" a claim
+  # rather than a fact.
+  console:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Assert the source too, not just the bytes. `console-check` proves the
+      # vendored tree matches whatever repo and commit THIS commit declares, so
+      # a PR that repoints CONSOLE_REPO at an attacker's fork and vendors
+      # matching bytes would otherwise pass green.
+      - name: console pin points at the canonical repo
+        run: grep -q 'CONSOLE_REPO:-https://github.com/fold-run/fold-console.git' scripts/sync-console.sh
+
+      - name: vendored console matches its pin
+        run: make console-check

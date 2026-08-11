@@ -242,30 +242,20 @@ func TestDiscoveryRefusesRedirect(t *testing.T) {
 	}
 }
 
-// TestDeprecatedHealthzAlias: /healthz answers exactly as /health does, so
-// probes written against the old path keep passing, and carries the RFC
-// 8594 markers that say it is on its way out.
-func TestDeprecatedHealthzAlias(t *testing.T) {
+// TestHealthzIsGone: /healthz was the pre-v1.5 health path, kept as a
+// deprecated alias through v1.8 and removed in v1.9. The test exists so the
+// removal is a decision on record rather than something that could drift
+// back in — probes must be pointed at /health.
+func TestHealthzIsGone(t *testing.T) {
 	up, _ := newUpstreamServer(t, "echo")
 	ts, _ := startGateway(t, &config.Config{Upstreams: []config.Upstream{{ID: "u", URL: up.URL}}})
-
-	fresh, deprecated := getString(t, ts.URL+"/health"), getString(t, ts.URL+"/healthz")
-	if fresh != deprecated {
-		t.Fatalf("alias diverged from /health:\n  /health  = %s\n  /healthz = %s", fresh, deprecated)
-	}
 
 	resp, err := http.Get(ts.URL + "/healthz")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("/healthz status = %d, want 200 — an alias that 404s is not an alias", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Deprecation"); got != "true" {
-		t.Errorf("Deprecation header = %q, want \"true\"", got)
-	}
-	if got := resp.Header.Get("Link"); !strings.Contains(got, "/health") {
-		t.Errorf("Link header = %q, want a successor-version pointer to /health", got)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("/healthz status = %d, want 404 — the alias was removed in v1.9", resp.StatusCode)
 	}
 }
