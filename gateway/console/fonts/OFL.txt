@@ -1,7 +1,7 @@
-The fonts in this directory are latin subsets of two typefaces, both licensed
-under the SIL Open Font License, Version 1.1. The licence requires that it
-accompany the Font Software, so it travels with them here and into every fold
-binary that embeds them.
+This directory holds latin subsets of two typefaces, and the console also
+embeds outlines derived from a third. All three are licensed under the SIL Open
+Font License, Version 1.1, which requires that the licence accompany the Font
+Software — so it travels with them here and into every fold binary.
 
 IBMPlexSans-400-latin.woff2, IBMPlexSans-600-latin.woff2
   Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"
@@ -9,7 +9,14 @@ IBMPlexSans-400-latin.woff2, IBMPlexSans-600-latin.woff2
 GeistMono-400-latin.woff2, GeistMono-600-latin.woff2
   Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
 
-Both are distributed under the identical text of OFL 1.1, reproduced once
+Black Ops One — no file of its own; the fold wordmark in app.js is a set of
+outlined glyph paths derived from it, with fold's own spacing. Outlines are a
+derivative of the Font Software even when no font binary ships, so the licence
+is named here rather than left with the upstream project.
+  Copyright 2022 The Black-Ops Project Authors
+  (https://github.com/googlefonts/googlefonts-project-template)
+
+All three are distributed under the identical text of OFL 1.1, reproduced once
 below. It is also available with a FAQ at https://openfontlicense.org
 
 -----------------------------------------------------------
