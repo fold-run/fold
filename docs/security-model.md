@@ -22,8 +22,10 @@ exempt for development):
 Every `/mcp` request passes, in order: host/origin allowlist (DNS-rebinding
 protection) → body-size cap → Bearer verification (trusted issuer, JWKS
 signature, exact audience per RFC 8707, non-empty `sub`, asymmetric
-algorithms only — RS/ES/EdDSA) → global and per-principal rate limits →
-routing → policy → per-upstream guards → the upstream. Every terminal
+algorithms only — RS/ES/EdDSA) → global, per-tenant, and per-principal rate
+limits → routing (which resolves the caller's tenant) → the tenant's
+visibility subset → policy → per-upstream guards, including the per-upstream,
+per-tenant, and server budgets → the upstream. Every terminal
 response — including the refusals — produces exactly one audit event; audit
 is the single exit door.
 
@@ -130,14 +132,59 @@ consequences, each with a control:
   use `"server": "*"`, which makes every future registration instantly
   callable. With discovery enabled, name servers in allow rules.
 
-## Tenant isolation under load
+## Tenant isolation
 
-The global rate limit protects the gateway; `perPrincipalPerMinute` gives
-each authenticated principal its own bucket so one tenant's flood cannot
-429 the rest. Per-upstream limits and circuit breakers protect fragile
-backends; with Redis, all of this state — plus EMA replay protection — is
-fleet-wide. Redis outages fail open (bounded 500 ms per operation): the
-gateway degrades to per-instance enforcement rather than going down.
+A tenant is a **named set of principals**, resolved from claims the IdP
+already asserts (`tenants[]`, see the README). The line that governs
+everything below: **a tenant groups principals; it does not authenticate
+them.** It is derived from the verified `auth.Principal`, never presented
+alongside a token, so a caller can no more assert a tenant than they can
+assert a group — and tenancy adds no trust anchor, no second authorization
+engine, and no parallel allow path. A principal matching two tenant
+definitions is **refused** rather than assigned to one: picking would hand a
+caller another customer's allowance and visibility, which is precisely the
+failure the boundary exists to prevent.
+
+What isolation a tenant actually buys:
+
+- **Visibility.** `tenants[].upstreams` bounds which upstreams exist for that
+  tenant, evaluated *before* policy. It filters the fan-out rather than the
+  result, so an upstream outside the subset is never contacted on that
+  caller's behalf — no request, no session, no budget charge. Named
+  invocations against it are refused before the policy engine sees them, and
+  the console's federation view is the viewer's, so a topology listing cannot
+  undo the cut. Policy remains the authority on what may be invoked among
+  what is left; the subset is the coarser cut, not a replacement.
+- **Blast radius.** `tenants[].rateLimit` is one bucket for the whole tenant.
+  This is the thing `perPrincipalPerMinute` cannot express: that gives each
+  *person* a bucket, so ten agents on one team hold ten allowances, while a
+  tenant shares one. "Team A cannot flood team B" means the second.
+- **Consumption.** `tenants[].budget` is an accumulating, calendar-aligned
+  allowance charged in upstream invocations — and charged only for calls that
+  reach an upstream, so an outage or a rate limit never spends a customer's
+  month. Exhaustion is `-32044`, distinct from a rate limit because the
+  remedies differ.
+- **Attribution.** Every audit event a tenant's principals produce carries
+  `tenant`, denials and rejections included, and `fold_tenant_requests_total`
+  / `fold_tenant_upstream_calls_total` carry it as a label. Isolation you
+  cannot see the edges of is not something you can operate.
+
+Underneath, the gateway-wide protections still apply and are unchanged: the
+global rate limit protects the gateway, per-upstream limits and circuit
+breakers protect fragile backends. With Redis, all of this state — tenant
+buckets and budgets included, plus EMA replay protection — is fleet-wide, so
+a customer's allowance is one allowance rather than one per replica. Redis
+outages fail open (bounded 500 ms per operation): the gateway degrades to
+per-instance enforcement rather than going down, and says so via
+`fold_budget_degraded_total`.
+
+**What tenancy is not.** It is not a private federation per customer: the
+subset is a visibility filter over shared upstreams, not a routing table of
+per-tenant backends, and genuinely isolated upstream sets are separate
+gateway deployments — cheaper and more auditable than one router pretending
+they are isolated. It carries no credentials or issuers, deliberately: that
+would make a tenant a trust anchor. And it is not a substitute for policy,
+which stays deny-by-default and stays the thing that decides invocations.
 
 ## The console has no privileged path
 
@@ -158,7 +205,12 @@ two kinds of surface, each with a deliberate trust story:
   (upstream URLs, owners, labels, endpoint rotation, each upstream's
   source — static vs discovered — and its credential-strategy *name*, plus
   deployment facts: shared-state backend on/off, audit sink types, tracing
-  and EMA enablement) — the console exists to show it. Strategy names and
+  and EMA enablement) — the console exists to show it. One boundary does
+  narrow it: a viewer whose principal resolves to a tenant carrying an
+  `upstreams` subset sees that subset's topology and nothing else, counts
+  included. The subset is a visibility boundary on the MCP path, and a
+  dashboard that ignored it would be the one place a tenant could read
+  another's upstream URLs. Strategy names and
   sink types are configuration shape, not credential material; the Redis
   URL is never included, since it can embed credentials. Raw connect
   errors are the exception: they can name secret

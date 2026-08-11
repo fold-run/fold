@@ -41,6 +41,15 @@
   "audit": {
     "sinks": [ { "type": "stdout" } ]
   },
+  "tenants": [
+    {
+      "id": "acquired-co",
+      "subjects": { "issuers": ["https://acme.okta.com"], "claims": { "org_id": "acquired-co" } },
+      "budget": { "period": "month", "upstreamCalls": 500000 },
+      "rateLimit": { "requestsPerMinute": 2000 },
+      "upstreams": ["ml-search"]
+    }
+  ],
   "server": {
     "allowedHosts": ["gw.example.com"],
     "rateLimit": { "requestsPerMinute": 6000 },

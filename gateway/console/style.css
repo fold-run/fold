@@ -1,7 +1,16 @@
-/* fold console — stardust design tokens from fold.run (DESIGN.md).
-   Dark-only by design: the brand has no per-origin theming. Fonts are the
-   site's self-hosted OFL subsets (IBM Plex Sans + Geist Mono), embedded in
-   the binary like every other asset — the CSP keeps all fetches on-origin. */
+/* fold console — design tokens from fold.run (DESIGN.md / DESIGN.json,
+   2026-08-10 revision). Dark-only by design: the brand has no per-origin
+   theming. Fonts are the site's self-hosted OFL subsets (IBM Plex Sans +
+   Geist Mono), embedded in the binary like every other asset — the CSP keeps
+   all fetches on-origin.
+
+   Two rules from that revision drive everything below:
+     1. Live is a proof signal, not a colour scheme. It is licensed to
+        status-up, the active route in a topology drawing, and the focus ring.
+        Never a button, never a chip, never a border.
+     2. Actions run on the neutral ramp — an Action fill (Signal white) with
+        Backplane ink is the brightest element on the page and needs no hue.
+   One radius: 2px, on every surface including buttons. */
 
 @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url(fonts/IBMPlexSans-400-latin.woff2) format('woff2'); }
 @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 600; font-display: swap; src: url(fonts/IBMPlexSans-600-latin.woff2) format('woff2'); }
@@ -9,16 +18,30 @@
 @font-face { font-family: 'Geist Mono'; font-style: normal; font-weight: 600; font-display: swap; src: url(fonts/GeistMono-600-latin.woff2) format('woff2'); }
 
 :root {
-  --bg: #0c0d0d;            /* backplane */
-  --card: #131415;          /* rack */
-  --line: #242628;          /* trace */
-  --fg: #FAFAFA;            /* signal */
-  --muted: #94979E;         /* static */
-  --carrier: #C9CBCF;       /* links */
-  --accent: #00E599;        /* live — the one saturated move */
-  --accent-hover: #00cc88;  /* live-deep */
-  --ink: #0c0d0d;           /* text on live fills */
-  --ok: #00E599; --bad: #ff4c79; --warn: #fbbf24;
+  --bg: #121212;            /* Backplane — page ground */
+  --card: #1A1A1A;          /* Rack — panels, code */
+  --card-hi: #212121;       /* Rack, lifted — hover step */
+  --line: #2B2B2B;          /* Trace — hairlines */
+  --line-hi: #3D3D3D;       /* Trace Bright — hover borders, secondary edge */
+  --fg: #FFFFFF;            /* Signal — 18.7:1 */
+  --muted: #BCBCBC;         /* Static — muted text (9.9:1) */
+  --carrier: #E0E0E0;       /* links, labels (14.2:1) */
+
+  --live: #D6FF00;          /* PROOF ONLY — status-up, focus ring */
+  --down: #FF4C79;          /* status failures only */
+
+  /* Actions are neutral. Signal fill / Backplane ink is 18.7:1. */
+  --action: #FFFFFF;
+  --action-ink: #121212;
+  --action-hover: #D4D4D4;
+
+  --radius: 2px;            /* machined — one radius, every surface */
+  /* The marketing surfaces set controls at 44px. A console is a denser class
+     of surface: this panel stacks a token field, a picker and three mode
+     buttons above a table, and 44px on each would push the federation below
+     the fold on a laptop. Radius, ramp and type stay identical. */
+  --control-h: 34px;
+
   --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
   --mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   color-scheme: dark;
@@ -33,9 +56,18 @@ header {
   display: flex; justify-content: space-between; align-items: center; gap: 1rem;
   flex-wrap: wrap; padding: 1rem 1.5rem; border-bottom: 1px solid var(--line);
 }
-.brand { display: flex; align-items: center; gap: .6rem; }
-.brand .mark { flex: none; display: block; }
-h1 { font-size: 1.1rem; font-weight: 600; margin: 0; }
+
+/* The wordmark is drawn, never set in a webfont, and appears alone — no
+   pictorial mark beside it. The rule + descriptor is the footer/console
+   lockup from the site's Wordmark component. */
+.brand { display: flex; align-items: center; gap: .7rem; margin: 0; font-weight: inherit; }
+.wordmark { display: block; height: 19px; width: auto; color: var(--fg); shape-rendering: geometricPrecision; }
+.wm-rule { width: 1px; height: 1.05em; background: var(--line); }
+.wm-desc {
+  font: 500 .72rem/1.4 var(--mono); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .08em; white-space: nowrap;
+}
+
 h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 .75rem; }
 h3 {
   font: 600 .7rem/1.4 var(--mono); margin: 1rem 0 .35rem;
@@ -47,8 +79,10 @@ h3 {
 .auth { display: flex; gap: .5rem; }
 main { width: 100%; max-width: 72rem; margin: 0 auto; padding: 1.5rem; display: grid; gap: 2rem; flex: 1; }
 section { min-width: 0; }
-.banner { background: var(--card); border: 1px solid var(--bad); color: var(--bad);
-  padding: .5rem .75rem; border-radius: 6px; margin: 0; }
+.banner {
+  background: var(--card); border: 1px solid var(--down); color: var(--down);
+  padding: .5rem .75rem; border-radius: var(--radius); margin: 0;
+}
 .cards {
   display: grid; grid-template-columns: repeat(4, 1fr);
   grid-auto-rows: 1fr; gap: .5rem; margin-bottom: .75rem;
@@ -56,7 +90,7 @@ section { min-width: 0; }
 @media (max-width: 40rem) { .cards { grid-template-columns: repeat(2, 1fr); } }
 .cards:empty { display: none; }
 .card {
-  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: .6rem .8rem; min-width: 0;
   display: flex; flex-direction: column; gap: .2rem;
 }
@@ -65,7 +99,7 @@ section { min-width: 0; }
   text-transform: uppercase; letter-spacing: .08em;
 }
 .card b { font: 600 .82rem/1.5 var(--mono); overflow-wrap: anywhere; }
-.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
 tbody tr:last-child td { border-bottom: none; }
@@ -74,44 +108,69 @@ th {
   text-transform: uppercase; letter-spacing: .08em;
 }
 td { font: 400 .8rem/1.5 var(--mono); }
-.ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+
+/* Status semantics. Live marks a thing proven up; Down marks a failure. A
+   half-open breaker is neither — it is not proof, so it must not carry Live,
+   and the system has no third hue to give it. It reads on the neutral ramp. */
+.ok { color: var(--live); } .bad { color: var(--down); } .warn { color: var(--carrier); }
 td.err { white-space: normal; min-width: 14rem; color: var(--muted); }
 .chip {
   display: inline-block; background: var(--bg); border: 1px solid var(--line);
-  border-radius: 9999px; padding: 0 .55em; margin: .1rem .2rem .1rem 0;
+  border-radius: var(--radius); padding: 0 .55em; margin: .1rem .2rem .1rem 0;
   font: 400 .72rem/1.6 var(--mono);
 }
 .row { display: flex; align-items: center; gap: .75rem; margin: .5rem 0; }
+
+/* Segmented control: a selection within a group, not an action. It lifts one
+   background step and brightens its border rather than taking an Action fill,
+   which would put three of the brightest elements on the page in a row. */
 .seg { gap: 0; }
 .seg button {
-  background: transparent; color: var(--fg); border: 1px solid var(--line); border-radius: 0;
+  background: transparent; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 0; font-weight: 500;
 }
-.seg button:first-child { border-radius: 9999px 0 0 9999px; }
-.seg button:last-child { border-radius: 0 9999px 9999px 0; }
+.seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .seg button + button { border-left: none; }
-.seg button.active { background: var(--accent); color: var(--ink); border-color: transparent; }
-.seg button:hover:not(:disabled):not(.active) { background: var(--card); }
+.seg button.active { background: var(--card-hi); color: var(--fg); border-color: var(--line-hi); }
+.seg button.active + button { border-left: 1px solid var(--line-hi); }
+.seg button:hover:not(:disabled):not(.active) { background: var(--card); color: var(--fg); }
+
 input, select, textarea, button {
   font: inherit; color: inherit; background: var(--card);
-  border: 1px solid var(--line); border-radius: 6px; padding: .45rem .7rem;
+  border: 1px solid var(--line); border-radius: var(--radius); padding: .4rem .7rem;
 }
+input, select, .seg button { height: var(--control-h); }
 input { width: 20rem; max-width: 100%; font-family: var(--mono); font-size: .8rem; }
 select { width: 100%; font-family: var(--mono); font-size: .85rem; }
 textarea { width: 100%; font-family: var(--mono); font-size: .85rem; }
+input:hover:not(:disabled), select:hover:not(:disabled), textarea:hover:not(:disabled) { border-color: var(--line-hi); }
+
+/* Secondary is the default box: transparent on a Trace Bright hairline.
+   Primary is an Action fill with ink. Both variants share one box. */
 button {
-  cursor: pointer; background: var(--accent); color: var(--ink); border-color: transparent;
-  border-radius: 9999px; font-weight: 600; padding: .45rem 1.1rem;
-  transition: background-color 120ms ease-out;
+  cursor: pointer; height: var(--control-h);
+  background: transparent; color: var(--fg); border-color: var(--line-hi);
+  font-weight: 500; padding: 0 1rem;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out;
 }
-button:hover:not(:disabled) { background: var(--accent-hover); }
+button:hover:not(:disabled) { background: var(--card-hi); }
+button.primary {
+  background: var(--action); color: var(--action-ink); border-color: transparent;
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) { background: var(--action-hover); }
 button:disabled { opacity: .45; cursor: default; }
-@media (prefers-reduced-motion: reduce) { button { transition: none; } }
+@media (prefers-reduced-motion: reduce) { button, input, select, textarea { transition: none; } }
 ::placeholder { color: var(--muted); opacity: 1; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Focus is a proof signal: this element is the one taking input. */
+:focus-visible { outline: 2px solid var(--live); outline-offset: 1px; }
+
 h1, h2 { text-wrap: balance; }
 [hidden] { display: none !important; }
 .pane {
-  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: .75rem; margin: 0; overflow: auto; max-height: 18rem; min-height: 3rem;
   font: .8rem/1.55 var(--mono); white-space: pre-wrap;
 }
@@ -126,6 +185,7 @@ footer { border-top: 1px solid var(--line); margin-top: auto; }
 }
 .foot nav { display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: .85rem; }
 .foot .legal {
-  display: inline-flex; align-items: center; gap: .5rem; margin: 0;
+  display: inline-flex; align-items: center; gap: .6rem; margin: 0;
   color: var(--muted); font-size: .8rem;
 }
+.foot .wordmark { height: 14px; color: var(--muted); }

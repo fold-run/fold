@@ -8,7 +8,7 @@
 
 fold sits in front of any number of upstream MCP servers — in any language, on any SDK, from any team or vendor — providing federation, enterprise auth, policy, caching, rate limiting, and audit. It is built on the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk), so the wire protocol (streamable HTTP, both request/response and SSE) is the SDK's own implementation on both the client-facing and upstream-facing sides.
 
-**Conformant, provably.** The official [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) suite runs against fold fronting the reference everything-server on every merge — **40/40 checks**, including sampling, elicitation, logging, progress, and resource subscriptions bridged through the gateway. The receipt is one click away: the [`conformance` job from the v1.6.0 release run](https://github.com/fold-run/fold/actions/runs/31265336260/job/93122447010), and [every green run on `main`](https://github.com/fold-run/fold/actions/workflows/ci.yml?query=branch%3Amain+is%3Asuccess). A [weekly job](.github/workflows/drift.yml) re-runs the suite against the *latest* unpinned SDK and opens a tracking issue the moment anything drifts. Reproduce it yourself with `./scripts/conformance.sh` — the same command CI runs.
+**Conformant, provably.** The official [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) suite runs against fold fronting the reference everything-server on every merge — **40/40 checks**, including sampling, elicitation, logging, progress, and resource subscriptions bridged through the gateway. The receipt is one click away: the [`conformance` job from the v1.8.0 release run](https://github.com/fold-run/fold/actions/runs/31441568706/job/93627192567), and [every green run on `main`](https://github.com/fold-run/fold/actions/workflows/ci.yml?query=branch%3Amain+is%3Asuccess). A [weekly job](.github/workflows/drift.yml) re-runs the suite against the *latest* unpinned SDK and opens a tracking issue the moment anything drifts. Reproduce it yourself with `./scripts/conformance.sh` — the same command CI runs.
 
 ## Use cases
 
@@ -93,10 +93,11 @@ fold fans list requests out across all upstreams concurrently, merges and namesp
 POST /mcp
  → host validation      DNS-rebinding protection (Host/Origin allowlist)
  → authenticate         Bearer → issuer allowlist → JWKS → audience → Principal
- → rate limit           global window → 429 + Retry-After
- → route                federated fan-out (lists) or namespaced routing
+ → rate limit           global → tenant → per-principal windows → 429 + Retry-After
+ → route                federated fan-out (lists) or namespaced routing, tenant resolved
+ → visibility           tenant upstream subset (a fan-out never reaches what it excludes)
  → authorize            deny-by-default policy per invocation
- → per-upstream guards  rate limit, circuit breaker, request timeout
+ → per-upstream guards  rate limit, circuit breaker, request timeout, budgets
  → proxy                credentials attached, held SDK session per upstream
  → egress               per-principal list filtering, namespace rewriting
  → audit                one event per request, including denials (single exit door)
@@ -228,11 +229,11 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 |---|---|---|
 | `mcpPath` | `/mcp` | Path the gateway serves MCP on. |
 | `allowedHosts` | localhost set | DNS-rebinding protection: allowed Host/Origin hostnames. Set to your public hostname(s) in production, or `["*"]` only behind a trusted proxy. |
-| `rateLimit` | none | Global `{ requestsPerMinute }` across all upstreams, plus optional `perPrincipalPerMinute` capping each authenticated principal on its own bucket (one tenant's flood cannot 429 the others). |
+| `rateLimit` | none | Global `{ requestsPerMinute }` across all upstreams, plus optional `perPrincipalPerMinute` capping each authenticated principal on its own bucket, so one caller's flood cannot 429 the others. For a bucket shared by a *team* rather than one per person, see [`tenants`](#tenants). |
 | `budget` | none | `{ period, upstreamCalls }` — a consumption allowance across every upstream, accumulating until the calendar period rolls over. Like the rest of this section it is construction-wired: a reload rejects a change to it, so an allowance cannot be widened under a running gateway. |
 | `maxBodyBytes` | 1 MiB | Request body cap; larger bodies are answered `413` (chunked bodies are cut off at the cap). |
 | `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
-| `console` | disabled | `{ "enabled": true }` serves the read-only fold console at `/console`: an observability dashboard (federation health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts) plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. With auth enabled, the console's state API requires the same Bearer token as `/mcp`; add `"groups": ["platform-ops"]` to further restrict viewing to principals carrying one of those groups (403 otherwise, audited) — the fix for multi-tenant deployments where any valid token holder is too wide an audience. Add `"oauth": { "clientId": "fold-console" }` and the console signs users in with Authorization Code + PKCE against a trusted issuer (register `{origin}/console/` as the redirect URI at the IdP; `issuer` picks among multiple trusted issuers, `scopes` adds authorization scopes) instead of a pasted token. |
+| `console` | disabled | `{ "enabled": true }` serves the read-only fold console at `/console`: an observability dashboard (federation health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts) plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. With auth enabled, the console's state API requires the same Bearer token as `/mcp`; add `"groups": ["platform-ops"]` to further restrict viewing to principals carrying one of those groups (403 otherwise, audited) — the fix for deployments where any valid token holder is too wide an audience. (A viewer who resolves to a tenant sees that tenant's federation rather than the whole one; see [`tenants`](#tenants).) Add `"oauth": { "clientId": "fold-console" }` and the console signs users in with Authorization Code + PKCE against a trusted issuer (register `{origin}/console/` as the redirect URI at the IdP; `issuer` picks among multiple trusted issuers, `scopes` adds authorization scopes) instead of a pasted token. |
 
 ### `routing`
 
@@ -263,17 +264,31 @@ The URL decides where traffic routes and where upstream credentials attach, so i
 
 Groups principals for governance. A tenant is a label on identity, resolved from claims the IdP already asserts — it never travels alongside a token and is never a trust anchor. **A tenant groups principals; it does not authenticate them**, and policy remains the authority on what may be invoked. Reloadable, unlike `server.budget`: tenants change when a customer signs up.
 
+```jsonc
+"tenants": [
+  {
+    "id": "acme",
+    "subjects": { "claims": { "org_id": "acme-prod" } },  // same shape policy rules use
+    "budget": { "period": "month", "upstreamCalls": 500000 },
+    "rateLimit": { "requestsPerMinute": 2000 },           // one bucket for the whole tenant
+    "upstreams": ["billing", "crm"]                        // optional: all upstreams if omitted
+  }
+]
+```
+
 | Field | Default | Notes |
 |---|---|---|
-| `id` | — | Lowercase alphanumeric + hyphens. Appears in every audit event the tenant's principals produce. |
+| `id` | — | Lowercase alphanumeric + hyphens. Appears in every audit event the tenant's principals produce, and as the `tenant` label on `fold_tenant_*` metrics. |
 | `subjects` | — | Required. Which principals belong, using the same shape policy rules use (`groups`, `subs`, `issuers`, `claims`). A tenant with no selector would capture every caller, so it is rejected. |
-| `budget` | none | `{ period, upstreamCalls }` for the tenant as a whole — the dimension a per-upstream or server-wide budget cannot express. |
-| `rateLimit` | none | `{ requestsPerMinute }`, one bucket shared by the tenant's principals. Distinct from `server.rateLimit.perPrincipalPerMinute`, which gives each *person* a bucket: ten agents on one team get ten allowances there and one here. |
+| `budget` | none | `{ period, upstreamCalls }` for the tenant as a whole — the dimension a per-upstream or server-wide budget cannot express. Charged in upstream invocations like every other budget, only for calls that reach an upstream; exhaustion mints `-32044` naming the tenant. |
+| `rateLimit` | none | `{ requestsPerMinute }`, one bucket shared by the tenant's principals; over it, `429` with `Retry-After`. Distinct from `server.rateLimit.perPrincipalPerMinute`, which gives each *person* a bucket: ten agents on one team get ten allowances there and one here. |
 | `upstreams` | all | Optional visibility subset by upstream id, evaluated before policy. |
 
-A principal belongs to at most one tenant. Overlap that validation cannot decide statically — two selectors that only collide for some principals — is caught at request time and **refused**, not guessed: assigning a caller by precedence would hand them another tenant's allowance and visibility. Design record: [docs/design-tenancy.md](docs/design-tenancy.md).
+**How the four pieces behave.** The budget and the server's are charged narrowest-first (upstream → tenant → server), so a refusal never spends a wider allowance. The rate limit is enforced with its siblings before routing, widest-first (global → tenant → per-principal). The visibility subset filters the *fan-out*: an upstream outside it is never asked, so it costs no request, no budget, and no partial-failure entry when it is down — and a named invocation against it is refused before the policy engine sees it, with `-32042` (`tasks/*` answer "no upstream owns that id" instead, because there a refusal must not reveal existence). A viewer's console shows their tenant's federation, not the operator's.
 
-*Resolution ships in this release; enforcement of a tenant's budget, rate limit, and visibility subset follows.*
+A principal belongs to at most one tenant. Overlap that validation cannot decide statically — two selectors that only collide for some principals — is caught at request time and **refused**, not guessed: assigning a caller by precedence would hand them another tenant's allowance and visibility. An unmatched principal has no tenant and is governed exactly as before tenancy existed, so an existing deployment behaves identically until it declares one.
+
+Resolution is a map lookup for the two selector shapes a large document repeats — one claim equalling one value, or one group — so a document with ten thousand tenants resolves as fast as one with ten ([benchmarks](docs/benchmarks.md#tenant-resolution-cardinality)); compound selectors still scan, so keep those in the tens. Design record: [docs/design-tenancy.md](docs/design-tenancy.md).
 
 ### `tracing`
 
@@ -302,7 +317,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 
 ## Observability
 
-- `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_upstream_endpoint_healthy{upstream,endpoint}` (multi-endpoint upstreams: 1 in rotation, 0 ejected), `fold_http_rejections_total{reason}`, `fold_discovery_syncs_total{outcome}`, `fold_build_info{version}`, plus standard Go process/runtime collectors.
+- `GET /metrics` — Prometheus exposition. Gateway metrics: `fold_requests_total{method,outcome}`, `fold_request_duration_seconds{method}`, `fold_upstream_requests_total{upstream,outcome}`, `fold_upstream_request_duration_seconds{upstream}`, `fold_upstream_breaker_state{upstream}` (0 closed / 1 half-open / 2 open), `fold_upstream_endpoint_healthy{upstream,endpoint}` (multi-endpoint upstreams: 1 in rotation, 0 ejected), `fold_http_rejections_total{reason}`, `fold_discovery_syncs_total{outcome}`, `fold_build_info{version}`, plus standard Go process/runtime collectors. With `tenants` configured, two more carry the tenant dimension: `fold_tenant_requests_total{tenant,outcome}` and `fold_tenant_upstream_calls_total{tenant}` — the second counts the unit a tenant budget is charged in, so an allowance can be watched being spent. They are separate series rather than a `tenant` label on the metrics above, because label sets are frozen by the [compatibility contract](#api-stability).
 - **Distributed tracing** — W3C Trace Context (`traceparent`/`tracestate`) headers on incoming requests are always propagated to the upstream calls they cause, so the gateway hop joins the caller's trace. With the `tracing` section configured, fold also emits its own OpenTelemetry spans (server span per request, client span per upstream call, pipeline outcomes as attributes) over OTLP/HTTP — the gateway hop appears *in* the trace instead of being invisible, and upstream calls parent under fold's client span while keeping the caller's trace id.
 - **Latency, measurably** — the `bench` CI job gates every merge on added p50 latency < 5 ms through the proxy path (loose for shared runners). Typical local numbers (Apple Silicon, in-process upstream): **~0.20 ms added p50**, gateway p99 ≈ 0.57 ms. Reproduce: `make bench`.
 - **Throughput, measurably** — `make loadtest` sweeps one instance under 8/64/256 concurrent SDK client sessions, direct vs through-fold: **~9,300 req/s `tools/call` at 64 connections (p99 ≤ 19 ms), 13,400 req/s at 256 (p99 ≤ 61 ms), zero errors** (Apple M4 Pro, loopback). Methodology, full tables, and the honest caveats: [docs/benchmarks.md](docs/benchmarks.md).
@@ -328,7 +343,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/roadmap.md](docs/roadmap.md) — direction: what fold intends to build next, and what it deliberately declines.
 - [docs/design-stdio.md](docs/design-stdio.md) — design record: why stdio upstreams arrive as a sidecar shim rather than subprocess supervision in the gateway.
 - [docs/design-consumption.md](docs/design-consumption.md) — design record: quotas, budgets, and metering — what a gateway on the MCP path can honestly govern, and what it must refuse to guess.
-- [docs/design-tenancy.md](docs/design-tenancy.md) — design record (proposed): the tenant object — a named set of principals and the governance that applies to them, and why it never becomes a trust anchor.
+- [docs/design-tenancy.md](docs/design-tenancy.md) — design record: the tenant object — a named set of principals and the governance that applies to them, why it never becomes a trust anchor, and the two corrections implementation forced on the design.
 
 ## Deploying
 
@@ -394,12 +409,24 @@ This is the v1 compatibility contract, in force as of v1.0.0.
 Known gaps, documented deliberately:
 
 - **SEP-2575 `subscriptions/listen` streams** — the Go SDK supports the 2026-07-28 protocol on its streamable HTTP server only in stateless mode, which fold cannot use: session-keyed bridging (sampling, elicitation, per-client streams) requires stateful sessions. Clients on the legacy handshake — which is what the SDK negotiates against stateful servers today — get full notification fan-in (list-changed and resource-updated, tested in `gateway/listen_test.go`). fold's fan-in already sits on the surfaces the SDK reuses for listen streams, and a drift canary in that test fails when the SDK lifts the restriction. Federated *tasks* (get/list/cancel/result/update with mint-affinity and probe fallback) **are** implemented — see above.
-- **`tenants[].upstreams`, the visibility subset** — a tenant's governance is enforced (its `budget` is charged in upstream invocations like every other budget, minting `-32044` when spent; its `rateLimit` is one bucket shared by every principal in the tenant, answering 429), but the optional `upstreams` list is validated and carried without yet bounding what the tenant sees. Declare it and it is accepted; do not rely on it as a boundary until it lands. Policy is the enforcement fold has today: an allowlist scoped to `subjects` filters lists per principal *and* denies invocation, which is what the subset is a coarser cut of. Landing in phase 4 of [docs/design-tenancy.md](docs/design-tenancy.md), which tracks the rest of the tenancy work; the config surface does not change when it does.
 - **Content inspection (DLP / PII filtering / prompt-injection detection)** — deliberately out of scope. Inspecting request and response bodies means buffering and rewriting traffic, which conflicts with fold's invisibility rule (behavior through the gateway matches hitting the upstream directly) and its latency gate — and inline detection is a product of its own, not a gateway feature. fold's security model is structural instead: deny-by-default tool allowlists, per-principal invisibility, claim-gated (ABAC) rules, credential brokering so agents never hold upstream keys, and a full audit trail to feed the SIEM that does the detecting. If inline inspection becomes table stakes, the fold-shaped answer is an opt-in content-inspection hook (an external policy endpoint on the ingress/egress path), not built-in scanning.
 
-All three appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SDK dependency it waits on, the second as an in-flight item with its remaining phases, the third as a standing non-goal — alongside the rest of what fold does and does not intend to build.
+Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SDK dependency it waits on, the second as a standing non-goal — alongside the rest of what fold does and does not intend to build.
 
 ## Changelog
+
+### v1.8.0 — 2026-08-10
+
+Tenancy: the customer becomes an object instead of an assembly.
+
+- **`tenants[]`** — a named set of principals plus the governance that applies to them as a group, matched from the same verified claims policy already matches on. Before this, "team A sees these tools, gets this allowance, and appears separately in audit" was assembled from four unrelated mechanisms and the word *tenant* appeared nowhere in the config, the audit stream, or the metrics. The line the design holds above all: **a tenant groups principals; it does not authenticate them** — it is derived from the verified `auth.Principal`, never presented alongside a token, and policy remains the authority on what may be invoked. Reloadable, unlike `server.budget`: tenants change when a customer signs up. Additive by construction — declare none and nothing changes.
+- **One allowance and one bucket per team.** `tenants[].budget` is the dimension consumption governance actually wanted: `perPrincipalPerMinute` gives each *person* a bucket, so ten agents on one team hold ten allowances, while a tenant shares one — which is what "team A cannot flood team B" means. Budgets charge narrowest-first (upstream → tenant → server) so a refusal never spends a wider allowance, and buckets check widest-first (global → tenant → per-principal) so a flood is refused before it costs any routing work.
+- **`tenants[].upstreams` bounds what a tenant can see**, evaluated *before* policy. It filters the **fan-out**, not the result: an upstream outside the subset is never asked, so it costs no request, no budget, and no partial-failure entry when it is down. Named invocations against it are refused ahead of the policy engine with `-32042` — except `tasks/*`, which answer "no upstream owns that id", the posture that path already takes for another principal's task, because there a refusal must not reveal existence.
+- **A principal resolves to at most one tenant, and ambiguity is refused rather than guessed.** Assigning by precedence would hand a caller another customer's allowance and visibility the day someone reorders a list. Selector overlap cannot be decided statically — it is only decidable against a real principal — so validation catches what is genuinely checkable and the rest is caught at request time.
+- **Resolution is flat in the number of tenants.** The two selector shapes a per-customer document repeats — one claim equalling one value, or one group — are indexed at snapshot time, keyed from opposite sides: the claim index by what the tenant requires, the group index by what the principal holds. Ten thousand tenants resolve in **97 ns, zero allocations**, the same as ten; a scan cost 450 µs at that size ([benchmarks](docs/benchmarks.md#tenant-resolution-cardinality)). Compound selectors still scan, so keep those in the tens.
+- **In the record** — `tenant` on every audit event its principals produce, denials included, plus `fold_tenant_requests_total{tenant,outcome}` and `fold_tenant_upstream_calls_total{tenant}`, the second counting the unit a budget is charged in. These are new metric *names* rather than a `tenant` label on the existing ones: label sets are frozen by the compatibility contract, and a new label would break every dashboard built on them. The console's federation view is now the *viewer's* — a tenant with a subset sees its own upstreams and its own limits, closing the one place a dashboard could show a customer the topology its own traffic is refused.
+- **Helm: `appVersion` is the image users actually get.** `values.yaml` ships `image.tag: ""` and the deployment falls back to `Chart.AppVersion`, which had not moved since v0.4.0 — so a default `helm install` deployed a pre-1.0 gateway. Fixed, and the release flow now bumps it, verified by re-rendering the chart rather than by inspecting the edit.
+- **The console adopts the current fold.run design system.** Its tokens still carried the previous identity: a mint accent on every button, three radii, and the mark-plus-text lockup the drawn wordmark replaced. Live (`#D6FF00`) is now licensed to proof alone — status-up and the focus ring — while actions run the neutral ramp on a Signal-white fill, and every corner is machined at 2px. Two deliberate departures from the marketing spec, both recorded at the token: controls are 34px rather than 44px, because a console stacks a token field, a picker, and three mode buttons above a table; and a half-open breaker reads on the neutral ramp rather than in amber, because the palette has no third hue and a half-open breaker is not proof of anything. Landed in `a474025`, whose message describes only the Helm fix above.
 
 ### v1.7.0 — 2026-08-08
 

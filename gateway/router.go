@@ -76,6 +76,10 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 			if evt.UpstreamCalls > 0 {
 				g.metrics.observeFanOut(evt.UpstreamCalls)
 			}
+			// Read from the event rather than the context: the tenant is
+			// recorded once, on the same value audit is about to carry, so
+			// the two records cannot disagree about who this was.
+			g.metrics.observeTenant(evt.Tenant, string(evt.Outcome), evt.UpstreamCalls)
 			g.audit.Emit(evt)
 			endServer(span, &evt, err)
 		}
@@ -214,15 +218,16 @@ func partialFailureMeta(failed []string, total int) (mcp.Meta, error) {
 
 func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
 	principal := auth.PrincipalFromContext(ctx)
-	lists, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Tool, error) {
+	ups := visibleUpstreams(ctx, rt.upstreams)
+	lists, failed := fanOut(ctx, ups, func(ctx context.Context, u *upstream) ([]*mcp.Tool, error) {
 		return u.listTools(ctx)
 	})
-	meta, err := partialFailureMeta(failed, len(rt.upstreams))
+	meta, err := partialFailureMeta(failed, len(ups))
 	if err != nil {
 		return nil, err
 	}
 	out := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Meta: meta}
-	for i, u := range rt.upstreams {
+	for i, u := range ups {
 		// Visibility is decided on the bare name, the item emitted is the
 		// namespaced one; the two lists are index-aligned.
 		public := u.namespacedTools(lists[i])
@@ -289,15 +294,16 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 
 func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
 	principal := auth.PrincipalFromContext(ctx)
-	lists, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Prompt, error) {
+	ups := visibleUpstreams(ctx, rt.upstreams)
+	lists, failed := fanOut(ctx, ups, func(ctx context.Context, u *upstream) ([]*mcp.Prompt, error) {
 		return u.listPrompts(ctx)
 	})
-	meta, err := partialFailureMeta(failed, len(rt.upstreams))
+	meta, err := partialFailureMeta(failed, len(ups))
 	if err != nil {
 		return nil, err
 	}
 	out := &mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}, Meta: meta}
-	for i, u := range rt.upstreams {
+	for i, u := range ups {
 		public := u.namespacedPrompts(lists[i]) // index-aligned — see listTools
 		for j, p := range lists[i] {
 			if !rt.policy.Visible(principal, u.cfg.ID, "prompts/get", p.Name) {
@@ -351,16 +357,17 @@ func (g *Gateway) getPrompt(ctx context.Context, rt *routes, req mcp.Request, ev
 }
 
 func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
-	lists, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
+	ups := visibleUpstreams(ctx, rt.upstreams)
+	lists, failed := fanOut(ctx, ups, func(ctx context.Context, u *upstream) ([]*mcp.Resource, error) {
 		return u.listResources(ctx)
 	})
-	meta, err := partialFailureMeta(failed, len(rt.upstreams))
+	meta, err := partialFailureMeta(failed, len(ups))
 	if err != nil {
 		return nil, err
 	}
 	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourcesResult{Resources: []*mcp.Resource{}, Meta: meta}
-	for i, u := range rt.upstreams {
+	for i, u := range ups {
 		for _, r := range lists[i] {
 			// Resource URIs are opaque identifiers clients persist; fold
 			// never rewrites them. Ownership is remembered instead — record
@@ -389,16 +396,17 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 }
 
 func (g *Gateway) listResourceTemplates(ctx context.Context, rt *routes, req mcp.Request, evt *audit.Event) (mcp.Result, error) {
-	lists, failed := fanOut(ctx, rt.upstreams, func(ctx context.Context, u *upstream) ([]*mcp.ResourceTemplate, error) {
+	ups := visibleUpstreams(ctx, rt.upstreams)
+	lists, failed := fanOut(ctx, ups, func(ctx context.Context, u *upstream) ([]*mcp.ResourceTemplate, error) {
 		return u.listResourceTemplates(ctx)
 	})
-	meta, err := partialFailureMeta(failed, len(rt.upstreams))
+	meta, err := partialFailureMeta(failed, len(ups))
 	if err != nil {
 		return nil, err
 	}
 	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}, Meta: meta}
-	for i, u := range rt.upstreams {
+	for i, u := range ups {
 		for _, tpl := range lists[i] {
 			if !rt.policy.Visible(principal, u.cfg.ID, "resources/read", tpl.URITemplate) {
 				continue
@@ -428,12 +436,20 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 	}
 	evt.Name = params.URI
 	principal := auth.PrincipalFromContext(ctx)
+	tn := tenantFrom(ctx)
 	denied := false
 
 	// Affinity first: route to the upstream the URI was listed from.
 	if id, ok := g.resourceOwner.Load(params.URI); ok {
 		if u := rt.byID[id]; u != nil {
 			evt.Upstream = u.cfg.ID
+			// The tenant subset is the coarser cut, so it is read first: an
+			// upstream outside it is refused here rather than probed for,
+			// exactly as a policy denial would be.
+			if !tn.sees(u.cfg.ID) {
+				evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
+				return nil, errOutsideSubset(tn, "resources/read", params.URI, u.cfg.ID)
+			}
 			if !rt.policy.Decide(principal, u.cfg.ID, "resources/read", params.URI).Allowed {
 				evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
 				return nil, &jsonrpc.Error{Code: codeDenied, Message: fmt.Sprintf("policy denied resources/read %q", params.URI)}
@@ -447,8 +463,14 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 		}
 	}
 	// Probe fallback: try only the upstreams this principal may read from, so
-	// URI guessing cannot reach an upstream the caller has no grant on.
-	for _, u := range rt.upstreams {
+	// URI guessing cannot reach an upstream the caller has no grant on. The
+	// tenant's subset bounds the probe set the same way.
+	//
+	// Unlike the affinity path above, a miss here stays a miss: with no
+	// ownership record fold does not know the URI exists, so "not found" is
+	// what it actually knows, and reporting a denial instead would answer
+	// every typo from a tenanted caller with a refusal.
+	for _, u := range visibleUpstreams(ctx, rt.upstreams) {
 		if !rt.policy.Decide(principal, u.cfg.ID, "resources/read", params.URI).Allowed {
 			denied = true
 			continue
@@ -540,7 +562,10 @@ func (g *Gateway) setLevel(ctx context.Context, rt *routes, req mcp.Request, nex
 	params, _ := req.GetParams().(*mcp.SetLoggingLevelParams)
 	key, opts := g.bridgeFor(req)
 	if params != nil && key != "" {
-		for _, u := range rt.upstreams {
+		// Only the tenant's own upstreams: propagating a level to one it
+		// cannot see would open a bridged session to it on this client's
+		// behalf, which is the thing the subset exists to prevent.
+		for _, u := range visibleUpstreams(ctx, rt.upstreams) {
 			_ = u.setLoggingLevel(ctx, key, opts, params.Level) // best effort per upstream
 		}
 	}
@@ -550,6 +575,15 @@ func (g *Gateway) setLevel(ctx context.Context, rt *routes, req mcp.Request, nex
 // authorize applies the policy engine to a named invocation. Denials return
 // a policy error; the audit event records the decision either way.
 func (g *Gateway) authorize(ctx context.Context, evt *audit.Event, rt *routes, u *upstream, method, bare string) (mcp.Result, error) {
+	// The tenant's subset is evaluated before policy: it bounds which
+	// upstreams exist for this caller at all, and policy then decides what
+	// may be invoked among them. Nothing outside the subset reaches the
+	// engine, so a rule written for another tenant's upstream cannot admit
+	// this one.
+	if tn := tenantFrom(ctx); !tn.sees(u.cfg.ID) {
+		evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
+		return nil, errOutsideSubset(tn, method, evt.Name, u.cfg.ID)
+	}
 	d := rt.policy.Decide(auth.PrincipalFromContext(ctx), u.cfg.ID, method, bare)
 	evt.RuleID = d.RuleID
 	if d.Allowed {

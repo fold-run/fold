@@ -6,7 +6,19 @@ for the full deployment guide (allowedHosts, probes, TLS, Redis, secrets).
 
 ## Install
 
-From a repo checkout (the chart is not published to a registry yet):
+From the OCI registry (published with every release):
+
+```bash
+helm install fold oci://ghcr.io/fold-run/charts/fold \
+  -n fold --create-namespace -f my-values.yaml
+```
+
+The chart versions independently of the gateway: `--version 0.1.3` pins the
+chart, while the gateway build it deploys is the chart's `appVersion` (or
+`image.tag`, if you set one). `helm show chart oci://ghcr.io/fold-run/charts/fold`
+prints both.
+
+From a repo checkout, unchanged:
 
 ```bash
 helm install fold deploy/helm/fold -n fold --create-namespace -f my-values.yaml

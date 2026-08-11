@@ -61,8 +61,8 @@ coherent, so it comes first. None of these are "not yet" — they are decisions.
 
 | Pillar | fold today | What the roadmap adds | What fold declines |
 |---|---|---|---|
-| **Security and access control** | The strongest surface. Deny-by-default ABAC policy with the invisibility-plus-denial enforcement pair, five upstream credential strategies including RFC 8693 brokering, EMA, RFC 9728 metadata, host validation, and audit as the single exit door. | Depth, not parity: deny rules, argument-level constraints, destructive-operation gating, and the external decision hook. | Inline content inspection. Structural enforcement instead. |
-| **Cost and consumption** | Effectively nothing. Every limit is a request count over a sliding minute that resets rather than accumulates; there are no quotas, no budgets, and no notion of spend. The per-request audit trail and Prometheus counters are the only usage record, and neither carries a cost dimension. | The headline theme: accumulating quotas and budgets, consumption metering, and making the context-cost win fold already has legible. | Billing and monetization. fold measures; something else bills. |
+| **Security and access control** | The strongest surface. Deny-by-default ABAC policy with the invisibility-plus-denial enforcement pair, first-class tenants (a visibility subset evaluated before policy, a shared bucket, an allowance, and the tenant in every record), five upstream credential strategies including RFC 8693 brokering, EMA, RFC 9728 metadata, host validation, and audit as the single exit door. | Depth, not parity: deny rules, argument-level constraints, destructive-operation gating, and the external decision hook. | Inline content inspection. Structural enforcement instead. |
+| **Cost and consumption** | Accumulating calendar budgets at three scopes (server, upstream, tenant) alongside the sliding-window limits, metering of fan-out and items served, and per-tenant consumption series — so "what did this customer spend this month" is a query. (This row read "effectively nothing" before the Horizon 1 work below.) | The headline theme: accumulating quotas and budgets, consumption metering, and making the context-cost win fold already has legible. | Billing and monetization. fold measures; something else bills. |
 | **Developer and agent experience** | A read-only console (dashboard plus an MCP test console that is a plain client against `/mcp`), and pull-based discovery for registration. | A searchable federated catalog and an effective-permissions view — both reads. | The write registry, the self-serve storefront, and monetization. |
 | **Observability and automation** | Good instrumentation, no interpretation: frozen Prometheus metric names, OTel server and client spans, an opt-in `ServiceMonitor` in the chart, and audit to stdout or a webhook. | Packaged dashboards, alert rules, and SLOs; audit sinks with retry and reach; CRDs and a config-diff CLI. | — |
 
@@ -142,12 +142,22 @@ into the chart next to the existing `servicemonitor.yaml`, with
 [operations.md](operations.md) pointing at them. Today an operator gets a
 `/metrics` endpoint, a template to scrape it with, and interpretation nowhere.
 
-### 6. Publish the Helm chart to an OCI registry
+### 6. Publish the Helm chart to an OCI registry — **shipped**
 
-The chart is complete — deployment, service, ingress, HPA, PDB,
-an opt-in `ServiceMonitor`, a config-validating init container, and a `make
-helm-check` gate — but installs only from a repo path. Publishing it closes the
+The chart was complete — deployment, service, ingress, HPA, PDB, an opt-in
+`ServiceMonitor`, a config-validating init container, and a `make helm-check`
+gate — but installed only from a repo path. It now publishes to
+`oci://ghcr.io/fold-run/charts/fold` on every release tag, which closed the
 only literal `TODO` in the tree.
+
+Two things the entry did not anticipate. The release job **gates** rather than
+just packages: it lints and renders every `ci/` value set, and refuses to
+publish a chart whose `appVersion` does not name the tag being released —
+because a chart deploys the gateway image by default, so a mismatched pair
+would ship an install that silently runs a different version than the release
+it accompanied. And publishing is also reachable by `workflow_dispatch` for a
+named tag: the chart versions independently of the gateway, so a chart-only
+fix must not need a gateway release to reach the registry.
 
 ## Horizon 2 — themes
 
@@ -199,29 +209,34 @@ Non-negotiables: off by default, latency-budgeted with a documented cost,
 fail-open or fail-closed as a deliberate configuration choice, and its own
 audit outcome so a hook denial is as visible as a policy denial.
 
-### 10. Tenant as a first-class object
+### 10. Tenant as a first-class object — **shipped**
 
-Tenancy today is emergent — issuer-pinned policy rules, per-principal limits,
-and a console group allowlist add up to isolation, and
-[security-model.md](security-model.md) explains how, but there is no tenant
-object. `Owner{org, team, contact}` is metadata on an upstream, not a
-boundary.
+Tenancy used to be emergent — issuer-pinned policy rules, per-principal
+limits, and a console group allowlist added up to isolation, but there was no
+tenant object, and `Owner{org, team, contact}` is metadata on an upstream
+rather than a boundary.
 
-A `tenants[]` object binding verified claims to an upstream subset, a budget,
-a rate limit, and a line in the audit record makes the thing operators already
-assemble by hand into one declaration — and gives the budgets shipped in
-Horizon 1 the dimension they actually want. Designed in
-[design-tenancy.md](design-tenancy.md), which holds one line above all: a
-tenant groups principals, it does not authenticate them.
+`tenants[]` binds verified claims to an upstream subset, a budget, a rate
+limit, and a line in the audit record: the thing operators were assembling by
+hand, in one declaration — and the dimension the budgets shipped in Horizon 1
+actually wanted. Designed in [design-tenancy.md](design-tenancy.md), which
+holds one line above all: a tenant groups principals, it does not authenticate
+them. The design record also carries the two corrections implementation forced
+on it, which is the more useful half to read.
 
-Landing in phases. Shipped so far: resolution (the config, its validation, and
+Landed in phases: resolution (the config, its validation, and
 the resolved tenant on the request context), and enforcement — a tenant's
 budget charged where the server and per-upstream ones are, and one rate-limit
 bucket shared by every principal in the tenant, which is what
-`perPrincipalPerMinute` cannot express. Remaining: the visibility subset
-(`tenants[].upstreams`, accepted today but not yet a boundary — see README
-"Not implemented"), the tenant as a metric label, and the docs pass. The open
-question the design named rather than assumed was
+`perPrincipalPerMinute` cannot express; and the visibility subset, which
+bounds what a tenant sees by filtering the fan-out — an upstream outside it is
+never asked — and refuses named invocations before the policy engine sees
+them; and the record — the tenant in every audit event, two tenant-scoped
+metric series (a label on the existing ones would have broken the frozen label
+sets, so the dimension arrives as new names), and a console federation view
+that is the viewer's rather than the operator's; and the docs. **Complete** —
+what remains for tenancy is whatever operators ask for next, not a plan. The
+open question the design named rather than assumed was
 cardinality, and it is now **settled by measurement**: matching a principal
 against N definitions was linear and reached 450 µs per request at ten
 thousand tenants, so the single-dimension selector shapes are indexed at

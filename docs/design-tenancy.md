@@ -1,8 +1,8 @@
 # Design: the tenant object
 
-Status: **phases 1–3 implemented** (resolution, the cardinality question
-settled by measurement, and enforcement of the tenant's budget and rate
-limit); the visibility subset, the record, and the docs remain. This
+Status: **implemented** — all six phases. Resolution, the cardinality question
+settled by measurement, enforcement of the tenant's budget and rate limit, the
+visibility subset, the record, and the docs. This
 records the design for the [roadmap](roadmap.md)'s Horizon 2 tenancy item, and
 settles a question three shipped features have now deferred: what a tenant *is*
 in fold.
@@ -110,6 +110,19 @@ Four things, each replacing an assembly rather than adding a new concept:
   currently express by enumerating rules.
 - **Identity in the record** — `tenant` in every audit event and as a metric
   label, which is what makes "what did team A consume" answerable.
+
+  *(Implementation note: "as a metric label" could not be done as written, and
+  the correction is the same shape as the overlap one above. The v1
+  compatibility contract freezes metric names **and label sets** (README, "API
+  stability"), so adding a `tenant` label to `fold_requests_total` would break
+  every dashboard and recording rule built on it — the contract is one of the
+  things this roadmap says vetoes a feature regardless of demand. New metric
+  names are additive, which the contract permits, so the tenant dimension
+  ships as its own series: `fold_tenant_requests_total{tenant,outcome}` and
+  `fold_tenant_upstream_calls_total{tenant}`, the latter counting the same
+  unit a tenant budget is charged in. Untenanted traffic records nothing
+  rather than a `tenant=""` series, and a test asserts the frozen metrics
+  never grow the label.)*
 
 Deliberately **not** carried: credentials, issuers, or any auth configuration.
 That would make a tenant a trust anchor, which is the thing the previous
@@ -235,11 +248,44 @@ per-person buckets keep what they have; those who want both get both.
    routine. Changing an allowance does start a new counter, which is what an
    upstream's budget already does.
 4. **Visibility** — the `upstreams` subset, evaluated before policy.
+   **Shipped**, and one word of the plan turned out to matter: the subset
+   filters the *fan-out*, not the merged result. An upstream the tenant
+   cannot see is never asked, so it costs no request, no budget, and no
+   partial-failure entry when it happens to be down — and the property is
+   tested by counting hits at the fixture rather than by reading the
+   response. The same cut applies wherever a request selects an upstream:
+   the four list methods, named invocations (before the policy engine, so
+   nothing outside the subset ever reaches a rule), `resources/read` on both
+   the affinity and probe paths, `resources/subscribe`, `completion/complete`,
+   `logging/setLevel`, and the task methods.
+
+   Each surface keeps the refusal posture it already had, which matters more
+   than a single uniform answer. Tools, prompts, completion, and resources
+   answer `-32042` — the subset is a coarser cut of the same decision, so it
+   reuses the policy code rather than minting a fifth. Tasks answer
+   "no upstream owns that id", exactly as they already do for another
+   principal's task, because on that surface the refusal must not reveal
+   existence. The URI-ownership index is shared across principals, so both
+   resource paths check the subset before using it: a URI another tenant
+   listed must not resolve by affinity.
 5. **The record** — `tenant` in audit events and as a metric label, plus the
-   console's federation view.
+   console's federation view. **Shipped**, with the metric-label correction
+   recorded above: the dimension arrives as two new series rather than as a
+   label on frozen ones. The audit field landed with resolution in phase 1.
+   The console's federation view is now the *viewer's* — a tenant with a
+   subset sees its own upstreams, counts included, and its own limits, which
+   also closes the gap where a dashboard would have shown a customer the
+   topology its own traffic is refused.
 6. **Docs** — README config section, `operations.md`, `defaults.md`,
    `security-model.md` (rewriting "Tenant isolation under load", which
-   currently describes the emergent version).
+   currently describes the emergent version). **Shipped.** The
+   security-model section is now "Tenant isolation" and describes the object
+   rather than the assembly; `operations.md` gains the queries that answer
+   "what did this customer consume" and "is this customer being refused";
+   `defaults.md` records why there is no default tenant, why an absent
+   subset means every upstream, and why an absent budget means unlimited;
+   and the example config carries a tenant, so the shape is in the file
+   operators copy from.
 
 ## Explicitly out of scope
 
