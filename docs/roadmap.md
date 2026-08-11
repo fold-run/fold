@@ -235,8 +235,21 @@ method names, and name globs. Three additions, in rough order of demand:
   (`readOnlyHint`, `destructiveHint`) that fold currently ignores, so a policy
   can express "read anything, write nothing" without naming every tool.
 
-Argument matching would read the request fold already parses to route, so it
-would stay inside the invisibility rule — it decides, it does not rewrite.
+Argument matching reads the request fold already parses to route, so it stays
+inside the invisibility rule — it decides, it does not rewrite.
+
+Designed in [design-policy-depth.md](design-policy-depth.md), which settles the
+question each part raises rather than leaving it to implementation. Deny wins
+globally rather than by document order, because a rule whose correctness
+depends on where it was pasted will eventually be pasted in the wrong place —
+with the no-deny short-circuit preserved, so documents that use none pay
+nothing. Argument constraints cannot filter a list (there are no arguments at
+list time), so they make a tool visible-but-conditionally-callable, which is a
+real weakening of the invisibility pair and is written down rather than
+discovered. And destructive gating reads annotations supplied by the very
+upstream being gated, so it is documented as a hygiene control for federations
+you operate — not a boundary against a hostile server, where naming the tools
+remains the answer.
 
 ### 9. The external decision hook
 

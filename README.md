@@ -374,6 +374,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/roadmap.md](docs/roadmap.md) — direction: what fold intends to build next, and what it deliberately declines.
 - [docs/design-stdio.md](docs/design-stdio.md) — design record: why stdio upstreams arrive as a sidecar shim rather than subprocess supervision in the gateway.
 - [docs/design-consumption.md](docs/design-consumption.md) — design record: quotas, budgets, and metering — what a gateway on the MCP path can honestly govern, and what it must refuse to guess.
+- [docs/design-policy-depth.md](docs/design-policy-depth.md) — design record (proposed): deny rules, argument constraints, and destructive-operation gating — with the precedence, visibility, and trust questions each one raises settled before implementation.
 - [docs/design-tenancy.md](docs/design-tenancy.md) — design record: the tenant object — a named set of principals and the governance that applies to them, why it never becomes a trust anchor, and the two corrections implementation forced on the design.
 
 ## Deploying
