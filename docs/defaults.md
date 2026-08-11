@@ -45,6 +45,7 @@ implementation order. Verdict for all: **keep**.
 | `healthCheck` | absent (passive) | Active probing costs a connect per endpoint per interval; passive ejection + cooldown is free and correct. Opt in. |
 | `discovery.intervalMs` | 30000 | Registry churn is minutes-scale; 30 s balances freshness against load on the source. |
 | `discovery.allowedAuthStrategies` / `allowedSecretRefs` | absent (unrestricted) | Compatibility with pre-hardening discovery deployments; restricting by default post-v1.0 would break them. The producer (`fold-discovery`) is the inverse — default-deny — because it shipped with the hardening. Set the gateway allowlists whenever the discovery source is not operated by the gateway's operators. |
+| `server.metricsAddr` | unset (metrics on the main port) | Added in v1.9. Absent keeps every endpoint on one listener, which is the simplest thing to reason about and correct for the loopback default: `/metrics` is then covered by DNS-rebinding protection like everything else. It is opt-in rather than on, because a second listening socket is a deployment decision — where to bind it and what may reach it — that fold cannot make for an operator. Turn it on whenever something other than the gateway's own host scrapes. |
 | `server.redisUrl` | unset (in-process state) | Single instances need no infrastructure; fleets opt in. Redis outages fail open, bounded 500 ms per operation. |
 
 ## Observability

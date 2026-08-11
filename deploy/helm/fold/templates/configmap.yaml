@@ -6,5 +6,18 @@ metadata:
   labels:
     {{- include "fold.labels" . | nindent 4 }}
 data:
-  fold.config.json: {{ .Values.config | toPrettyJson | quote }}
+  # With the telemetry listener enabled, server.metricsAddr is set here rather
+  # than asked of the operator: the port it must match is the chart's, and a
+  # document that disagreed with the ServiceMonitor would fail as a 403 with
+  # no other symptom. An explicit metricsAddr in `config` wins — the chart
+  # only fills in what was left unsaid.
+  {{- $cfg := .Values.config }}
+  {{- if .Values.metrics.listener.enabled }}
+  {{- $server := merge (dict) (default (dict) $cfg.server) }}
+  {{- if not $server.metricsAddr }}
+  {{- $_ := set $server "metricsAddr" (printf ":%v" .Values.metrics.listener.port) }}
+  {{- end }}
+  {{- $cfg = merge (dict "server" $server) $cfg }}
+  {{- end }}
+  fold.config.json: {{ $cfg | toPrettyJson | quote }}
 {{- end }}

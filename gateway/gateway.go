@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -128,6 +129,13 @@ type Gateway struct {
 
 	stopSweeper chan struct{}
 	closeOnce   sync.Once
+
+	// metricsSrv is the separate telemetry listener (nil unless
+	// server.metricsAddr is set). The gateway owns it because the config
+	// document asks for it: an embedder who sets the field expects the
+	// listener, and one who would rather mount it themselves uses
+	// MetricsHandler and leaves the field unset.
+	metricsSrv *http.Server
 }
 
 // routes is one immutable snapshot of the gateway's reloadable state. cfg is
@@ -286,6 +294,10 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	g.stopSweeper = make(chan struct{})
 	go g.sweepLoop()
 	g.handler = g.buildHandler()
+	if err := g.startMetricsListener(); err != nil {
+		g.Close()
+		return nil, err
+	}
 	g.baseCfg = cfg
 	if cfg.Discovery != nil {
 		g.discovery = newDiscoverer(g, cfg.Discovery)
@@ -785,8 +797,61 @@ func buildStateProvider(cfg *config.Config) (state.Provider, error) {
 	return state.NewRedis(url)
 }
 
-// Close shuts down all upstream sessions, flushes buffered trace spans, and
-// releases the state provider. Safe to call more than once.
+// metricsAddr returns the configured telemetry listener address, or "".
+func (g *Gateway) metricsAddr() string {
+	if g.cfg.Server == nil {
+		return ""
+	}
+	return g.cfg.Server.MetricsAddr
+}
+
+// MetricsHandler serves the Prometheus exposition for this gateway.
+//
+// Handler() serves it at /metrics too, unless server.metricsAddr moved it to
+// its own listener — which is the arrangement to prefer when anything but the
+// gateway's own host scrapes it. A scrape names upstream ids, namespaces,
+// tenant ids, and multi-endpoint upstreams' endpoint URLs; on the public mux
+// that is what the Host allowlist is protecting, and the same check is what
+// answers a pod-IP scrape with 403. Mount this on a listener your network
+// scopes instead, and nothing has to be exempted.
+func (g *Gateway) MetricsHandler() http.Handler { return g.metrics.handler() }
+
+// startMetricsListener binds the telemetry listener when one is configured.
+// It binds eagerly (rather than in a goroutine) so an address already in use
+// fails New, where an operator sees it, instead of disappearing into a log
+// line while the gateway serves on without metrics.
+func (g *Gateway) startMetricsListener() error {
+	addr := g.metricsAddr()
+	if addr == "" {
+		return nil
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("server.metricsAddr: %w", err)
+	}
+	mux := http.NewServeMux()
+	// No host validation, no body cap, no auth: this listener is not an
+	// origin a browser can be steered to, and what guards it is that you did
+	// not put it on the public network. /health is here too so a scraper or
+	// a probe on this network can reach liveness without the Host dance.
+	mux.Handle("/metrics", g.metrics.handler())
+	mux.HandleFunc("/health", g.handleHealth)
+	g.metricsSrv = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	g.log.Info("telemetry listener", "addr", ln.Addr().String(), "paths", "/metrics, /health")
+	go func() {
+		if err := g.metricsSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			g.log.Error("telemetry listener stopped", "err", err)
+		}
+	}()
+	return nil
+}
+
+// Close shuts down all upstream sessions, stops the telemetry listener,
+// flushes buffered trace spans, and releases the state provider. Safe to call
+// more than once.
 func (g *Gateway) Close() {
 	g.closeOnce.Do(func() {
 		g.log.Info("gateway shutting down")
@@ -796,6 +861,11 @@ func (g *Gateway) Close() {
 		close(g.stopSweeper)
 		for _, u := range g.rt().upstreams {
 			u.Close()
+		}
+		if g.metricsSrv != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = g.metricsSrv.Shutdown(ctx)
+			cancel()
 		}
 		g.tracer.shutdown()
 		_ = g.state.Close()
@@ -962,7 +1032,13 @@ func (g *Gateway) buildHandler() http.Handler {
 	mux.Handle(g.cfg.MCPPath(), mcpChain)
 	mux.HandleFunc("/health", g.handleHealth)
 	mux.HandleFunc("/healthz", g.handleDeprecatedHealthz)
-	mux.Handle("/metrics", g.metrics.handler())
+	// With a separate telemetry listener configured, /metrics leaves the
+	// public mux entirely rather than being served in both places: the point
+	// of moving it is that the browser-reachable origin stops exposing the
+	// federation's shape, and a second copy here would undo that.
+	if g.metricsAddr() == "" {
+		mux.Handle("/metrics", g.metrics.handler())
+	}
 	if g.cfg.ConsoleEnabled() {
 		// The state API is data, so it authenticates like /mcp; the static
 		// assets are the same bytes for everyone and stay open. It also

@@ -186,6 +186,28 @@ they are isolated. It carries no credentials or issuers, deliberately: that
 would make a tenant a trust anchor. And it is not a substitute for policy,
 which stays deny-by-default and stays the thing that decides invocations.
 
+## Telemetry is a disclosure surface
+
+A `/metrics` scrape names upstream ids, namespaces, tenant ids, and the
+endpoint URLs of multi-endpoint upstreams — a description of the federation's
+shape and its internal hostnames. By default it is served on the main port and
+covered by the same DNS-rebinding protection as everything else, which is the
+right posture for the loopback-bound default: without it, any page an operator
+visits could read that from a gateway running on their machine. Origin
+checking alone would not do: in a rebinding attack the page and the target
+share the attacker's hostname, so the browser treats the request as same-origin
+and sends no `Origin` header at all. The Host allowlist is the check that
+catches it.
+
+The cost is that a scraper arriving under any other name — a pod IP, a service
+name — is answered `403`. `server.metricsAddr` resolves that by moving
+`/metrics` and `/health` to their own listener rather than by exempting the
+paths: a listener bound to an internal interface is not an origin a browser can
+be steered to, so it needs no Host allowlist, and the public port keeps its
+checks and stops carrying the disclosure at all. What guards the telemetry
+listener is network scope; bind it accordingly, and do not route it from
+outside.
+
 ## The console has no privileged path
 
 The optional read-only console (`server.console.enabled`, default off) adds

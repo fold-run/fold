@@ -57,6 +57,8 @@ podDisruptionBudget:
   enabled: true
 
 metrics:
+  listener:
+    enabled: true
   serviceMonitor:
     enabled: true
     labels:

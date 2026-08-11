@@ -118,6 +118,12 @@ config line, because DNS-rebinding protection covers `/metrics` too and
 Prometheus scrapes by service name: `"server": { "allowedHosts": ["localhost",
 "fold"] }`. Without it the target is answered 403 and reads as down.
 
+Set `metrics.listener.enabled=true` and the chart gives fold a second port for
+`/metrics` and `/health`, sets `server.metricsAddr` in the rendered config, and
+scrapes that port — which is what makes the ServiceMonitor work without adding
+`"*"` to `allowedHosts`. Keep the port off any public ingress; it is guarded by
+network scope, not by a Host check.
+
 Observability ships with the chart: `metrics.serviceMonitor.enabled` for
 scraping, `metrics.prometheusRule.enabled` for the alert rules, and
 `metrics.dashboard.enabled` to hand the Grafana sidecar the packaged
