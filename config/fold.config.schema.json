@@ -241,7 +241,7 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["stdout", "webhook", "file"] },
+        "type": { "enum": ["stdout", "webhook", "file", "otlp-logs"] },
         "url": { "type": "string", "format": "uri" },
         "headers": {
           "type": "object",

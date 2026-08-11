@@ -491,7 +491,7 @@ type Audit struct {
 
 // AuditSink is one audit destination.
 type AuditSink struct {
-	Type    string            `json:"type"` // "stdout" | "webhook" | "file"
+	Type    string            `json:"type"` // "stdout" | "webhook" | "file" | "otlp-logs"
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 
@@ -964,6 +964,21 @@ func (c *Config) Validate() error {
 			case "file":
 				if s.Path == "" {
 					return fmt.Errorf("audit: file sink requires a path")
+				}
+			case "otlp-logs":
+				// The collector's base URL; a bare one gets OTLP's /v1/logs
+				// path, matching the tracing section's convention.
+				if s.URL == "" {
+					return fmt.Errorf("audit: otlp-logs sink requires a url")
+				}
+				// Scheme-checked rather than IsAbs: url.Parse reads
+				// "collector:4318" as scheme "collector", which IsAbs accepts
+				// and the exporter then quietly replaces with its own default
+				// endpoint — sending the audit trail somewhere nobody asked
+				// for. Same check the tracing section makes.
+				parsed, err := url.Parse(s.URL)
+				if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+					return fmt.Errorf("audit: otlp-logs url must be an absolute http(s) URL")
 				}
 			default:
 				return fmt.Errorf("audit: unknown sink type %q", s.Type)

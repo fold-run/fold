@@ -187,6 +187,13 @@ of a receiver restarting. Beyond that:
 | `dead_lettered` | Attempts ran out; events were appended to `deadLetterPath` | Fix the receiver, then replay the file — the records are intact |
 | `dropped` | Events are gone: the buffer filled while the receiver was down, or delivery was abandoned with no `deadLetterPath` | Set `deadLetterPath`; the record has a hole for that window |
 
+The `otlp-logs` sink delegates transport to the OTel exporter, so its retry is
+the exporter's — fold's `retry` block still configures it (the attempt count is
+expressed as the exporter's elapsed-time bound). Its outcomes are counted the
+same way, and a batch it finally abandons is dead-lettered in the record's
+converted form, labelled as such so a replay tool knows which shape it is
+reading.
+
 A `4xx` other than `429` is treated as permanent and not retried — a receiver
 that rejects the payload rejects it identically every time, and retrying only
 delays the dead letter.
