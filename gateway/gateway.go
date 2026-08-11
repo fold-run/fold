@@ -190,7 +190,7 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		cfg:             cfg,
 		sep:             cfg.NamespaceSeparator(),
 		pageSize:        cfg.PageSize(),
-		audit:           audit.New(cfg.Audit),
+		audit:           nil, // built below, once metrics exist to observe it
 		state:           provider,
 		subscribers:     map[string]map[string]bool{},
 		resourceOwner:   bounded.New[string](maxResourceOwners),
@@ -207,6 +207,15 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		}
 		return nil
 	})
+	// Audit is built after metrics so its delivery outcomes have somewhere to
+	// be counted: a sink that drops events is the one failure the audit trail
+	// cannot record about itself.
+	g.audit = audit.New(cfg.Audit, audit.WithObserver(g.metrics.observeAudit))
+	for _, err := range g.audit.StartupErrors() {
+		// A sink that would not open is skipped rather than fatal — losing one
+		// destination should not take the gateway down — but it is not silent.
+		g.log.Error("audit sink not started", "err", err)
+	}
 	if cfg.Tracing != nil {
 		if g.tracer, err = newGwTracer(cfg.Tracing); err != nil {
 			return nil, err
@@ -868,6 +877,7 @@ func (g *Gateway) Close() {
 			cancel()
 		}
 		g.tracer.shutdown()
+		g.audit.Close()
 		_ = g.state.Close()
 	})
 }

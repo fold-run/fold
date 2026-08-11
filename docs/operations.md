@@ -33,6 +33,7 @@ scrapers must send an allowed `Host` header (see
 | `fold_upstream_breaker_state` | `upstream` | 0 closed, 1 half-open, 2 open. |
 | `fold_upstream_endpoint_healthy` | `upstream`, `endpoint` | Multi-endpoint upstreams only: 1 in rotation, 0 ejected after a connect failure (or by an active health probe). |
 | `fold_request_upstream_calls` | — | Upstream invocations per downstream request. A federated list fans out to every upstream, so the histogram's tail is the width of the federation and its `1` bucket is named calls. Watch it to see what a cheap-looking client request really costs. |
+| `fold_audit_events_total` | `sink`, `outcome` | Audit events by sink type and fate: `delivered`, `retried`, `dead_lettered`, `dropped`. The audit trail cannot report its own gaps — this is where one becomes visible. **Alert on `dropped` and `dead_lettered`**; the packaged `FoldAuditEventsLost` does. |
 | `fold_tenant_requests_total` | `tenant`, `outcome` | MCP requests by tenant, with the same outcomes as `fold_requests_total`. Only requests whose principal resolved to a tenant appear here — everything is counted in `fold_requests_total` regardless — so a rising `denied` or `rate_limited` rate on one tenant is a customer about to open a ticket. |
 | `fold_tenant_upstream_calls_total` | `tenant` | Upstream invocations attributed to a tenant: the same unit `tenants[].budget` is charged in, so this is a monthly allowance being spent, live. Cardinality is the number of declared tenants — config-bounded, like `upstream`. |
 | `fold_budget_degraded_total` | `scope` | Budget decisions taken per-instance because shared state was unreachable. Budgets fail open by design, so this is the signal that a fleet is not enforcing one allowance — **alert on any non-zero rate**. |
@@ -172,6 +173,35 @@ asynchronous and batched, never adding request latency). Fields:
 | `usage` | Counters the upstream published in its result `_meta`, verbatim. Absent means the upstream reported nothing — fold never synthesizes it. |
 | `error` | Error text, when the request failed. |
 | `latencyMs` | End-to-end latency. |
+
+## When audit delivery fails
+
+Audit is the single exit door, so its own failures are the ones nothing else
+reports. Delivery to a webhook is retried with exponential backoff and equal
+jitter (4 attempts, 500 ms to 30 s by default), which covers the ordinary case
+of a receiver restarting. Beyond that:
+
+| `fold_audit_events_total` outcome | What happened | What to do |
+|---|---|---|
+| `retried` | An attempt failed; another is coming | Nothing, unless it is sustained — then the receiver is unhealthy |
+| `dead_lettered` | Attempts ran out; events were appended to `deadLetterPath` | Fix the receiver, then replay the file — the records are intact |
+| `dropped` | Events are gone: the buffer filled while the receiver was down, or delivery was abandoned with no `deadLetterPath` | Set `deadLetterPath`; the record has a hole for that window |
+
+A `4xx` other than `429` is treated as permanent and not retried — a receiver
+that rejects the payload rejects it identically every time, and retrying only
+delays the dead letter.
+
+Two things worth knowing before an incident. The buffer is bounded (1024
+events) and a full buffer drops rather than blocking, because audit must never
+become the reason a request is slow — the trade is deliberate, and the drop is
+counted. And a sink that cannot be constructed at startup (a file path that
+will not open) is logged and skipped rather than fatal, so one bad destination
+does not take the gateway down; check the startup log for `audit sink not
+started` if a sink seems inert.
+
+The dead-letter file is a rotating file like any other fold writes — bounded at
+100 MB × 5 by default — for the same reason: a dead-letter file that fills the
+disk turns a delivery problem into an outage.
 
 ## Gateway error codes
 

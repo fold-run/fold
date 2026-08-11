@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sync"
@@ -77,24 +78,96 @@ type Sink interface {
 
 // Logger fans events out to sinks. A nil *Logger drops everything.
 type Logger struct {
-	sinks []Sink
+	sinks       []Sink
+	closers     []io.Closer
+	observer    Observer
+	startupErrs []error
+}
+
+// Observer is told the fate of events, by sink type and outcome (delivered,
+// retried, dead_lettered, dropped). The gateway turns this into metrics: audit
+// is the single exit door, so an event that never arrives has to be countable
+// somewhere, or a silent sink is indistinguishable from a silent system.
+type Observer func(sinkType, outcome string, n int)
+
+// Option configures a Logger at construction.
+type Option func(*Logger)
+
+// observer is stored on the Logger so sinks can report through it.
+var noopObserver Observer = func(string, string, int) {}
+
+// WithObserver reports delivery outcomes.
+func WithObserver(o Observer) Option {
+	return func(l *Logger) {
+		if o != nil {
+			l.observer = o
+		}
+	}
 }
 
 // New builds a logger from config. Absent config → no audit emission.
-func New(cfg *config.Audit) *Logger {
+//
+// A sink that cannot be constructed — a file path that will not open — is
+// reported and skipped rather than failing the gateway: losing one destination
+// should not take the endpoint down, and the error is visible at startup.
+func New(cfg *config.Audit, opts ...Option) *Logger {
 	if cfg == nil || len(cfg.Sinks) == 0 {
 		return nil
 	}
-	l := &Logger{}
+	l := &Logger{observer: noopObserver}
+	for _, opt := range opts {
+		opt(l)
+	}
 	for _, s := range cfg.Sinks {
+		report := func(outcome string, n int) { l.observer(s.Type, outcome, n) }
 		switch s.Type {
 		case "stdout":
 			l.sinks = append(l.sinks, &stdoutSink{})
 		case "webhook":
-			l.sinks = append(l.sinks, newWebhookSink(s.URL, s.Headers))
+			var dl *deadLetter
+			if s.DeadLetterPath != "" {
+				var err error
+				if dl, err = newDeadLetter(s.DeadLetterPath, report); err != nil {
+					l.startupErrs = append(l.startupErrs, err)
+					dl = nil
+				}
+			}
+			w := newWebhookSink(s.URL, s.Headers, resolveRetry(s.Retry), dl, report)
+			l.sinks = append(l.sinks, w)
+			l.closers = append(l.closers, w)
+		case "file":
+			rf, err := newRotatingFile(s.Path, s.MaxSizeMb, s.MaxFiles)
+			if err != nil {
+				l.startupErrs = append(l.startupErrs, err)
+				continue
+			}
+			fs := &fileSink{rf: rf, report: report}
+			l.sinks = append(l.sinks, fs)
+			l.closers = append(l.closers, fs)
 		}
 	}
 	return l
+}
+
+// StartupErrors reports sinks that could not be constructed, so the caller can
+// log them. Empty when every configured sink was built.
+func (l *Logger) StartupErrors() []error {
+	if l == nil {
+		return nil
+	}
+	return l.startupErrs
+}
+
+// Close releases sinks that hold resources (open files, delivery workers).
+// Buffered events are flushed on a bounded best-effort basis; a shutdown that
+// waits indefinitely on an unreachable webhook is worse than a lost tail.
+func (l *Logger) Close() {
+	if l == nil {
+		return
+	}
+	for _, c := range l.closers {
+		_ = c.Close()
+	}
 }
 
 // Emit delivers an event to every sink.
@@ -129,12 +202,20 @@ type webhookSink struct {
 	headers map[string]string
 	client  *http.Client
 	ch      chan Event
+	retry   retryPolicy
+	dead    *deadLetter
+	report  func(outcome string, n int)
+	done    chan struct{}
 }
 
-func newWebhookSink(url string, headers map[string]string) *webhookSink {
+func newWebhookSink(url string, headers map[string]string, retry retryPolicy, dead *deadLetter, report func(string, int)) *webhookSink {
 	s := &webhookSink{
 		url:     url,
 		headers: headers,
+		retry:   retry,
+		dead:    dead,
+		report:  report,
+		done:    make(chan struct{}),
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 			// A POST carrying the sink's configured headers (commonly an API
@@ -157,12 +238,30 @@ func newWebhookSink(url string, headers map[string]string) *webhookSink {
 func (s *webhookSink) Emit(e Event) {
 	select {
 	case s.ch <- e:
-	default: // full buffer: drop rather than block the request path
+	default:
+		// Full buffer: drop rather than block the request path. Audit must
+		// never become the reason a request is slow — but a drop is counted,
+		// because the alternative is losing events invisibly.
+		s.report(OutcomeDropped, 1)
 	}
 }
 
+// Close stops the delivery worker and releases the dead-letter file. In-flight
+// retries are abandoned: shutdown does not wait out a backoff against a
+// receiver that is already known to be failing.
+func (s *webhookSink) Close() error {
+	close(s.done)
+	return s.dead.Close()
+}
+
 func (s *webhookSink) run() {
-	for e := range s.ch {
+	for {
+		var e Event
+		select {
+		case e = <-s.ch:
+		case <-s.done:
+			return
+		}
 		batch := []Event{e}
 	drain:
 		for len(batch) < 100 {
@@ -173,18 +272,58 @@ func (s *webhookSink) run() {
 				break drain
 			}
 		}
-		s.post(batch)
+		s.deliver(batch)
 	}
 }
 
-func (s *webhookSink) post(batch []Event) {
+// deliver posts a batch, retrying transient failures with backoff and
+// dead-lettering what it finally cannot deliver.
+//
+// The retries happen on this worker, not per event: it is the one goroutine
+// draining the buffer, so a receiver that is down applies backpressure into
+// the buffer and then into counted drops, rather than into an unbounded pile
+// of goroutines each holding a batch.
+func (s *webhookSink) deliver(batch []Event) {
 	data, err := json.Marshal(batch)
 	if err != nil {
+		s.report(OutcomeDropped, len(batch))
 		return
 	}
+	for attempt := 1; attempt <= s.retry.maxAttempts; attempt++ {
+		err := s.post(data)
+		if err == nil {
+			s.report(OutcomeDelivered, len(batch))
+			return
+		}
+		if !err.retryable || attempt == s.retry.maxAttempts {
+			break
+		}
+		s.report(OutcomeRetried, len(batch))
+		select {
+		case <-time.After(s.retry.backoff(attempt)):
+		case <-s.done:
+			return
+		}
+	}
+	if s.dead != nil {
+		s.dead.write(batch)
+		return
+	}
+	s.report(OutcomeDropped, len(batch))
+}
+
+// postError distinguishes "try again" from "this will never work". A 400 from
+// a receiver that dislikes the payload will be disliked identically four
+// times; retrying it only delays the dead letter.
+type postError struct {
+	err       error
+	retryable bool
+}
+
+func (s *webhookSink) post(data []byte) *postError {
 	req, err := http.NewRequest(http.MethodPost, s.url, bytes.NewReader(data))
 	if err != nil {
-		return
+		return &postError{err: err, retryable: false}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range s.headers {
@@ -192,7 +331,17 @@ func (s *webhookSink) post(batch []Event) {
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return
+		// Connection refused, DNS failure, timeout: the receiver is down or
+		// unreachable, which is exactly what retry is for.
+		return &postError{err: err, retryable: true}
 	}
-	_ = resp.Body.Close()
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode < 300:
+		return nil
+	case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode >= 500:
+		return &postError{err: fmt.Errorf("audit webhook: status %d", resp.StatusCode), retryable: true}
+	default:
+		return &postError{err: fmt.Errorf("audit webhook: status %d", resp.StatusCode), retryable: false}
+	}
 }

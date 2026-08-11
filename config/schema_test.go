@@ -34,6 +34,7 @@ var schemaDefs = map[string]reflect.Type{
 	"policyAllow":    reflect.TypeOf(PolicyAllow{}),
 	"audit":          reflect.TypeOf(Audit{}),
 	"auditSink":      reflect.TypeOf(AuditSink{}),
+	"auditRetry":     reflect.TypeOf(AuditRetry{}),
 	"routing":        reflect.TypeOf(Routing{}),
 	"server":         reflect.TypeOf(ServerSection{}),
 	"console":        reflect.TypeOf(Console{}),

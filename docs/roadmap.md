@@ -121,12 +121,22 @@ The work is making that legible and bounded — a pre- and post-filter tool
 count metric so operators can see the reduction, and an optional per-rule cap.
 Nothing new lands on the hot path; the filtering already runs.
 
-### 4. Audit reach
+### 4. Audit reach — **partly shipped**
 
 Audit is the single exit door, which makes it the integration point for every
-SIEM — but it ships as stdout or a webhook with no retry, so a receiver
-blipping loses events. Add retry with a dead-letter path, plus `file` (with
-rotation) and `otlp-logs` sink types.
+SIEM — but it shipped as stdout or a webhook with no retry, so a receiver
+blipping lost events.
+
+Shipped: retry with backoff and equal jitter (on by default — the old
+one-attempt behaviour was the defect), a dead-letter path for what delivery
+finally gives up on, the `file` sink with size-based rotation, and
+`fold_audit_events_total{sink,outcome}` so a gap in the trail is visible rather
+than inferred. Jitter is not decoration: every instance in a fleet watches the
+same receiver and fails at the same instant, so unjittered retries turn a
+stumble into a synchronised stampede.
+
+Remaining: the `otlp-logs` sink, which is separated because it brings a new
+dependency (the OTel logs SDK) rather than because it is hard.
 
 These are built-in types, not an extension point: `audit.Sink` stays
 explicitly non-API under the compatibility contract. The `audit.sinks[].type`

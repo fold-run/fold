@@ -107,6 +107,22 @@ groups:
             broken; someone should decide whether to widen the allowance, which is a reload
             rather than a restart.
 
+      # The audit trail cannot report its own gaps, so this is where a gap
+      # becomes visible. dead_lettered is recoverable — the events are in a
+      # file waiting to be replayed — while dropped is not.
+      - alert: FoldAuditEventsLost
+        expr: increase(fold_audit_events_total{outcome=~"dropped|dead_lettered"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: audit sink {{ $labels.sink }} is losing events ({{ $labels.outcome }})
+          description: >-
+            fold could not deliver audit events. `dead_lettered` means they were written to
+            deadLetterPath and can be replayed; `dropped` means they are gone — either the
+            buffer filled while a receiver was down, or delivery was abandoned with no
+            deadLetterPath set. Either way the compliance record has a hole in it for this
+            window.
+
       - alert: FoldIngressRejectionSpike
         expr: |
           sum by (reason) (rate(fold_http_rejections_total{reason=~"forbidden_host|forbidden_origin|unauthenticated"}[5m]))

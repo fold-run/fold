@@ -124,6 +124,24 @@ spec:
               broken; someone should decide whether to widen the allowance, which is a reload
               rather than a restart.
 
+        # The audit trail cannot report its own gaps, so this is where a gap
+        # becomes visible. dead_lettered is recoverable — the events are in a
+        # file waiting to be replayed — while dropped is not, which is why the
+        # remedy differs and both are worth knowing about.
+        - alert: FoldAuditEventsLost
+          expr: increase(fold_audit_events_total{outcome=~"dropped|dead_lettered"}[10m]) > 0
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: audit sink {{ "{{" }} $labels.sink {{ "}}" }} is losing events ({{ "{{" }} $labels.outcome {{ "}}" }})
+            description: >-
+              fold could not deliver audit events. `dead_lettered` means they were written to
+              deadLetterPath and can be replayed; `dropped` means they are gone — either the
+              buffer filled while a receiver was down, or delivery was abandoned with no
+              deadLetterPath set. Either way the compliance record has a hole in it for this
+              window.
+
         # Rebinding protection and auth failures are quiet in a healthy
         # deployment. A spike is a misconfigured client or someone probing.
         - alert: FoldIngressRejectionSpike

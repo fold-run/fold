@@ -241,12 +241,26 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["stdout", "webhook"] },
+        "type": { "enum": ["stdout", "webhook", "file"] },
         "url": { "type": "string", "format": "uri" },
         "headers": {
           "type": "object",
           "additionalProperties": { "type": "string" }
-        }
+        },
+        "path": { "type": "string" },
+        "maxSizeMb": { "type": "integer", "minimum": 0 },
+        "maxFiles": { "type": "integer", "minimum": 0 },
+        "retry": { "$ref": "#/definitions/auditRetry" },
+        "deadLetterPath": { "type": "string" }
+      }
+    },
+    "auditRetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAttempts": { "type": "integer", "minimum": 0 },
+        "initialBackoffMs": { "type": "integer", "minimum": 0 },
+        "maxBackoffMs": { "type": "integer", "minimum": 0 }
       }
     },
     "routing": {

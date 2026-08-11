@@ -38,6 +38,11 @@ type metricsSet struct {
 	// like the upstream label. They carry no per-principal dimension.
 	tenantReq   *prometheus.CounterVec // requests by tenant and outcome
 	tenantCalls *prometheus.CounterVec // upstream invocations attributed to a tenant
+
+	// auditEvents counts delivery outcomes per sink. A dropped or
+	// dead-lettered event is the audit trail being incomplete, which is the
+	// one failure the trail cannot report about itself.
+	auditEvents *prometheus.CounterVec
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -84,6 +89,10 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_tenant_requests_total",
 			Help: "MCP requests by tenant and outcome. Only requests whose principal resolved to a tenant are counted; everything else is in fold_requests_total, which counts all of them.",
 		}, []string{"tenant", "outcome"}),
+		auditEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_audit_events_total",
+			Help: "Audit events by sink type and delivery outcome: delivered, retried, dead_lettered, dropped. Audit is the single exit door — anything but delivered means the record is incomplete somewhere.",
+		}, []string{"sink", "outcome"}),
 		tenantCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fold_tenant_upstream_calls_total",
 			Help: "Upstream invocations attributed to a tenant — the same unit a tenant budget is charged in, so this is what a budget is spent on, live.",
@@ -91,7 +100,7 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
-		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls,
+		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -192,6 +201,11 @@ func (m *metricsSet) observeTenant(tenant, outcome string, upstreamCalls int) {
 // Fail-open is deliberate, but a fleet running unbudgeted must be visible.
 func (m *metricsSet) observeBudgetDegraded(scope string) {
 	m.budgetDegr.WithLabelValues(scope).Inc()
+}
+
+// observeAudit records the fate of audit events for one sink.
+func (m *metricsSet) observeAudit(sink, outcome string, n int) {
+	m.auditEvents.WithLabelValues(sink, outcome).Add(float64(n))
 }
 
 func (m *metricsSet) discoverySync(outcome string) {

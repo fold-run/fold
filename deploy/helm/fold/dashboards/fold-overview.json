@@ -834,13 +834,67 @@
       "description": "Non-zero means Redis was unreachable and each instance is enforcing its own copy of an allowance, so a fleet of N enforces N budgets. Fail-open is deliberate; silent is not."
     },
     {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Audit delivery",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 6
+      },
+      "description": "Audit is the single exit door, and this is the one failure the trail cannot record about itself. delivered is the healthy line; retried means a receiver is stumbling; dead_lettered means events were written to a file for replay instead of delivered; dropped means they are gone \u2014 a full buffer, or a give-up with no deadLetterPath configured.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (sink, outcome) (rate(fold_audit_events_total[5m]))",
+          "legendFormat": "{{sink}} {{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 18,
       "type": "row",
       "title": "Ingress and configuration",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 33,
+        "y": 39,
         "w": 24,
         "h": 1
       },
@@ -856,7 +910,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 34,
+        "y": 40,
         "w": 8,
         "h": 6
       },
@@ -910,7 +964,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 34,
+        "y": 40,
         "w": 8,
         "h": 6
       },
@@ -963,7 +1017,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 34,
+        "y": 40,
         "w": 8,
         "h": 6
       },
