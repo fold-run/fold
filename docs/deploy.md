@@ -95,6 +95,13 @@ envFrom:
       name: fold-upstream-secrets   # holds GH_TOOLS_API_KEY
 ```
 
+For a single host, `docker compose --profile observability up` brings up
+Prometheus and Grafana with fold's dashboard already loaded — the same
+dashboard file the chart ships, mounted rather than copied. It needs one
+config line, because DNS-rebinding protection covers `/metrics` too and
+Prometheus scrapes by service name: `"server": { "allowedHosts": ["localhost",
+"fold"] }`. Without it the target is answered 403 and reads as down.
+
 Observability ships with the chart: `metrics.serviceMonitor.enabled` for
 scraping, `metrics.prometheusRule.enabled` for the alert rules, and
 `metrics.dashboard.enabled` to hand the Grafana sidecar the packaged

@@ -31,7 +31,10 @@ import (
 const (
 	dashboardPath = "../deploy/helm/fold/dashboards/fold-overview.json"
 	rulesPath     = "../deploy/helm/fold/templates/prometheusrule.yaml"
-	metricsSource = "metrics.go"
+	// The same alerts for deployments without the prometheus-operator: plain
+	// Prometheus, which is what the compose observability profile runs.
+	plainRulesPath = "../deploy/observability/alerts.yml"
+	metricsSource  = "metrics.go"
 )
 
 // metricNamesUnexercised are declared metrics deliberately absent from the
@@ -85,7 +88,7 @@ func declaredMetrics(t *testing.T) []string {
 func packReferences(t *testing.T) map[string][]string {
 	t.Helper()
 	refs := map[string][]string{}
-	for _, path := range []string{dashboardPath, rulesPath} {
+	for _, path := range []string{dashboardPath, rulesPath, plainRulesPath} {
 		for _, name := range foldMetricRE.FindAllString(readFile(t, path), -1) {
 			base := baseMetric(name)
 			if !slices.Contains(refs[base], path) {
@@ -160,5 +163,31 @@ func TestDashboardIsWellFormed(t *testing.T) {
 				t.Errorf("panel %q has an empty expression", p.Title)
 			}
 		}
+	}
+}
+
+// The alerts exist twice — as a PrometheusRule for the operator, and as a
+// plain rules file for everything else — because the two consumers cannot read
+// each other's format. Two copies drift, and the way they drift is silent: a
+// deployment shape quietly missing an alert looks exactly like a deployment
+// shape where nothing is wrong. So the alert names must match exactly.
+func TestBothRuleFilesCarryTheSameAlerts(t *testing.T) {
+	alertRE := regexp.MustCompile(`(?m)^\s*-?\s*alert:\s*(\w+)`)
+	names := func(path string) []string {
+		var out []string
+		for _, m := range alertRE.FindAllStringSubmatch(readFile(t, path), -1) {
+			out = append(out, m[1])
+		}
+		slices.Sort(out)
+		return out
+	}
+	crd, plain := names(rulesPath), names(plainRulesPath)
+	if len(crd) == 0 {
+		t.Fatalf("no alerts found in %s — the extraction is wrong, not the rules", rulesPath)
+	}
+	if !slices.Equal(crd, plain) {
+		t.Errorf("the two rule files disagree.\n  %s: %v\n  %s: %v\n"+
+			"An alert added to one must be added to the other, or a deployment shape "+
+			"silently loses it.", rulesPath, crd, plainRulesPath, plain)
 	}
 }

@@ -56,6 +56,19 @@ Three things ship in the chart:
 | Grafana dashboard | [`deploy/helm/fold/dashboards/fold-overview.json`](../deploy/helm/fold/dashboards/fold-overview.json) | `metrics.dashboard.enabled=true` (ConfigMap for the Grafana sidecar), or import the JSON by hand |
 | Alert rules | [`templates/prometheusrule.yaml`](../deploy/helm/fold/templates/prometheusrule.yaml) | `metrics.prometheusRule.enabled=true` (needs the prometheus-operator CRDs) |
 | Scrape config | `templates/servicemonitor.yaml` | `metrics.serviceMonitor.enabled=true` |
+| The same alerts for a plain Prometheus | [`deploy/observability/alerts.yml`](../deploy/observability/alerts.yml) | `rule_files:` in your prometheus.yml |
+| A whole local stack — Prometheus + Grafana, dashboard preloaded | [`deploy/observability/`](../deploy/observability) | `docker compose --profile observability up` |
+
+**The scrape needs a Host fold admits.** DNS-rebinding protection covers
+`/metrics` like every other path, so a scraper reaching fold by any name
+outside `server.allowedHosts` is answered `403` and the target reads as down
+with no other symptom. Under compose, Prometheus scrapes `fold:8080`, so the
+config needs `"server": { "allowedHosts": ["localhost", "fold"] }`. On
+Kubernetes the operator scrapes the pod IP, which no static allowlist can
+name — set `allowedHosts` to include `"*"`, or scrape through a name you do
+list. This is the same constraint the chart already handles for probes with
+`probes.hostHeader`.
+
 
 A `gateway/observability_pack_test.go` keeps the pack and the code in
 lockstep, both directions: every `fold_*` name a panel or rule references must
