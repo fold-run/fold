@@ -135,6 +135,17 @@ podDisruptionBudget:
   minAvailable: 1
 
 metrics:
+  # A separate listener for /metrics (and /health), which is what makes
+  # scraping work without weakening the public endpoint. fold's DNS-rebinding
+  # protection covers /metrics on the main port, and the operator scrapes pod
+  # IPs — a Host no static allowlist can name — so with this off the
+  # ServiceMonitor below is answered 403 unless server.allowedHosts includes
+  # "*". Enabled here, the chart sets server.metricsAddr for you (inline
+  # `config` only) and points the ServiceMonitor at this port.
+  listener:
+    enabled: false
+    port: 9090
+
   serviceMonitor:
     # Requires the prometheus-operator CRDs.
     enabled: false

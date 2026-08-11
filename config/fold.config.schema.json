@@ -267,6 +267,7 @@
         "budget": { "$ref": "#/definitions/budget" },
         "maxBodyBytes": { "type": "integer", "minimum": 0 },
         "redisUrl": { "type": "string", "format": "uri" },
+        "metricsAddr": { "type": "string" },
         "console": { "$ref": "#/definitions/console" }
       }
     },

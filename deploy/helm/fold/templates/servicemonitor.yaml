@@ -16,7 +16,10 @@ spec:
     matchLabels:
       {{- include "fold.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    # The telemetry port when it exists, the main port otherwise. Scraping the
+    # main port only works where server.allowedHosts admits the pod IP the
+    # operator dials, which in practice means "*" — see metrics.listener.
+    - port: {{ if .Values.metrics.listener.enabled }}metrics{{ else }}http{{ end }}
       path: /metrics
       interval: {{ .Values.metrics.serviceMonitor.interval }}
 {{- end }}

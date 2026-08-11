@@ -527,6 +527,25 @@ type ServerSection struct {
 	// environment variable; absent → in-process state.
 	RedisURL string `json:"redisUrl,omitempty"`
 
+	// MetricsAddr moves /metrics to its own listener ("host:port", or
+	// ":9090" for every interface). Absent — the default — leaves /metrics on
+	// the main mux, behind the same Host allowlist as everything else.
+	//
+	// Why moving it is the safer arrangement rather than exempting the path:
+	// a scrape carries upstream ids, namespaces, tenant ids, and the endpoint
+	// URLs of multi-endpoint upstreams. On the main mux, DNS-rebinding checks
+	// are what keep a browser from reading that — and the price is that a
+	// scraper arriving under any other name is answered 403, which is why a
+	// ServiceMonitor cannot scrape a pod IP. A separate listener settles
+	// both: it is not an origin a victim's browser can be steered to, so it
+	// needs no Host allowlist, and a scraper may address it however it likes.
+	// Bind it to an internal interface and keep it off the public network —
+	// that network scope is what protects it.
+	//
+	// Construction-wired like the rest of this section: Reload rejects a
+	// change to it.
+	MetricsAddr string `json:"metricsAddr,omitempty"`
+
 	// Console enables the read-only fold console at /console: an embedded
 	// observability dashboard plus an MCP test console that talks to the
 	// gateway's own /mcp endpoint (fully governed — policy, rate limits,
@@ -703,6 +722,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Server != nil && c.Server.MaxBodyBytes < 0 {
 		return fmt.Errorf("server: maxBodyBytes must be positive")
+	}
+	if c.Server != nil && c.Server.MetricsAddr != "" {
+		// Checked here rather than at bind time, so a typo fails
+		// `fold --validate` and the chart's config-validating init container
+		// instead of a rollout.
+		if _, _, err := net.SplitHostPort(c.Server.MetricsAddr); err != nil {
+			return fmt.Errorf(`server: metricsAddr must be host:port (":9090", "127.0.0.1:9090"): %w`, err)
+		}
 	}
 	if c.Server != nil {
 		if err := c.Server.Budget.validate("server"); err != nil {

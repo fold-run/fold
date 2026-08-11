@@ -78,6 +78,11 @@ spec:
             - name: http
               containerPort: {{ .Values.server.port }}
               protocol: TCP
+            {{- if .Values.metrics.listener.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.listener.port }}
+              protocol: TCP
+            {{- end }}
           {{- with .Values.envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

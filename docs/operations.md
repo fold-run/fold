@@ -59,15 +59,37 @@ Three things ship in the chart:
 | The same alerts for a plain Prometheus | [`deploy/observability/alerts.yml`](../deploy/observability/alerts.yml) | `rule_files:` in your prometheus.yml |
 | A whole local stack — Prometheus + Grafana, dashboard preloaded | [`deploy/observability/`](../deploy/observability) | `docker compose --profile observability up` |
 
-**The scrape needs a Host fold admits.** DNS-rebinding protection covers
-`/metrics` like every other path, so a scraper reaching fold by any name
-outside `server.allowedHosts` is answered `403` and the target reads as down
-with no other symptom. Under compose, Prometheus scrapes `fold:8080`, so the
-config needs `"server": { "allowedHosts": ["localhost", "fold"] }`. On
-Kubernetes the operator scrapes the pod IP, which no static allowlist can
-name — set `allowedHosts` to include `"*"`, or scrape through a name you do
-list. This is the same constraint the chart already handles for probes with
-`probes.hostHeader`.
+### The scrape has to reach a listener that will answer it
+
+DNS-rebinding protection covers `/metrics` like every other path, so a scraper
+reaching fold by any name outside `server.allowedHosts` is answered `403` and
+the target reads as down with no other symptom. A pod IP is a Host no static
+allowlist can name.
+
+**The fix is `server.metricsAddr`** — a separate listener for `/metrics` and
+`/health`:
+
+```jsonc
+"server": { "metricsAddr": ":9090" }   // bind it to an internal interface
+```
+
+In the chart, `metrics.listener.enabled=true` sets it, opens the container and
+service port, and points the ServiceMonitor at it — after which scraping works
+without touching `allowedHosts`. Under compose, add the port and scrape
+`fold:9090`.
+
+Why a second listener rather than exempting the path: a scrape names upstream
+ids, namespaces, tenant ids, and multi-endpoint upstreams' endpoint URLs. On
+the main port, rebinding protection is what keeps a page the operator visits
+from reading that — a real exposure for the loopback-bound default. A separate
+listener is not an origin a browser can be steered to, so it needs no Host
+allowlist, and **what protects it is that you did not put it on the public
+network**. The public port keeps its checks unchanged.
+
+Without the listener, the workarounds are unchanged and still documented:
+`allowedHosts` must include whatever name the scraper dials — `"fold"` under
+compose, `"*"` on Kubernetes. This is the same constraint the chart already
+handles for probes with `probes.hostHeader`.
 
 
 A `gateway/observability_pack_test.go` keeps the pack and the code in
