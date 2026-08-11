@@ -11,6 +11,17 @@
 #
 # Optional stdio shim, to federate an MCP server that has no HTTP endpoint:
 # docker compose --profile stdio up   (see the stdio service below)
+#
+# Optional observability stack — Prometheus scraping fold, and Grafana with
+# fold's dashboard already loaded (no import step):
+# docker compose --profile observability up
+# Then http://localhost:3000 (anonymous, admin) → "fold — gateway overview".
+#
+# One config line is required for it: fold's DNS-rebinding protection covers
+# /metrics like every other path, and Prometheus scrapes with Host "fold" (the
+# service name), which the default localhost allowlist does not admit — the
+# scrape gets 403 and the target sits down. Add the service name:
+#   "server": { "allowedHosts": ["localhost", "fold"] }
 
 services:
   fold:
@@ -104,4 +115,46 @@ services:
     # shim runs processes on demand. Expose it only if you mean to.
     expose:
       - "8091"
+    restart: unless-stopped
+
+  # --- observability profile -------------------------------------------
+  # The same dashboard and rules the Helm chart ships, wired for a single
+  # host. Both files are mounted from the paths the chart also uses, so a
+  # compose deployment and a Kubernetes one cannot drift into showing
+  # different things.
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      # Enough for a laptop; this stack is for seeing the gateway, not for
+      # long-term retention.
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+    restart: unless-stopped
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.5.1
+    ports:
+      - "3000:3000"
+    environment:
+      # Anonymous admin: this is a local stack bound to localhost, and a login
+      # prompt in front of a demo dashboard is friction without a threat model.
+      # Do not copy this into anything reachable.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_USERS_DEFAULT_THEME=dark
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      # The dashboard lives in the chart, and is mounted from there rather than
+      # copied: one file, two deployment shapes.
+      - ./deploy/helm/fold/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
     restart: unless-stopped
