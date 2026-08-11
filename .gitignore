@@ -1,5 +1,11 @@
 /fold
 /dist/
+
+# Local compose stack: the operator's own config, the generated SHIM_TOKEN,
+# and whatever the filesystem server is pointed at.
+/fold.config.json
+/.env
+/data/
 *.log
 *.test
 coverage.out

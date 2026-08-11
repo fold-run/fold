@@ -47,9 +47,25 @@ curl -fsS http://localhost:8080/health
 
 docker compose --profile redis up -d           # with shared-state Redis
 
-# With a local stdio MCP server behind the shim (see docs/stdio.md):
+# With a local stdio MCP server behind the shim (see docs/stdio.md). The
+# token goes to both services: the shim authenticates with it, and the
+# gateway resolves the upstream's `secretRef` from its own environment.
 SHIM_TOKEN=$(openssl rand -hex 16) docker compose --profile stdio up -d
 ```
+
+The Makefile wraps the same thing, generating `SHIM_TOKEN` into `.env` once
+so a restart does not invalidate the running shim's:
+
+```bash
+make compose-up                                  # stdio + observability
+make compose-up PROFILES=                        # gateway only
+make compose-up PROFILES="stdio redis observability"
+make compose-logs
+make compose-down
+```
+
+`fold.config.json`, `.env`, and `./data` (whatever the filesystem server is
+pointed at) are local operator state and are gitignored.
 
 Dockerfiles live in [`deploy/docker/`](../deploy/docker) — `fold.Dockerfile`,
 `discovery.Dockerfile`, and `stdio.Dockerfile`. The compose file references the

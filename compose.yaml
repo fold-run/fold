@@ -23,6 +23,8 @@
 # scrape gets 403 and the target sits down. Add the service name:
 #   "server": { "allowedHosts": ["localhost", "fold"] }
 
+name: fold-run
+
 services:
   fold:
     image: ghcr.io/fold-run/fold:latest
@@ -42,11 +44,14 @@ services:
     volumes:
       - ./fold.config.json:/etc/fold/fold.config.json:ro
     # Secrets referenced by the config's secretRef fields are plain env vars;
-    # pass them through from the host (or an env_file):
-    environment: []
+    # pass them through from the host (or an env_file). SHIM_TOKEN is here
+    # rather than commented out because the gateway resolves the shim's
+    # bearer from its own environment — with it absent the stdio upstream
+    # fails to authenticate. `:-` keeps it harmless when the profile is off.
+    environment:
+      - SHIM_TOKEN=${SHIM_TOKEN:-}
     #  - ML_SEARCH_API_KEY=${ML_SEARCH_API_KEY}
     #  - REDIS_URL=redis://redis:6379   # with: docker compose --profile redis up
-    #  - SHIM_TOKEN=${SHIM_TOKEN}       # with: docker compose --profile stdio up
     restart: unless-stopped
 
   redis:
