@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,11 +39,55 @@ import (
 )
 
 // version is stamped at build time via
-// -ldflags="-X github.com/fold-run/fold/gateway.version=v...".
-var version = "dev"
+// -ldflags="-X github.com/fold-run/fold/gateway.ldflagsVersion=v...", and recovered
+// from the binary's own module metadata when it was not. See resolveVersion.
+var version = resolveVersion(ldflagsVersion, moduleVersion)
+
+// ldflagsVersion is what goreleaser stamps. It is separate from `version` so
+// the resolution below has an unambiguous "nothing was stamped" input; -X
+// against `version` itself would be overwritten by the initialiser.
+var ldflagsVersion = "dev"
 
 // Version reports the gateway build version.
 func Version() string { return version }
+
+// moduleVersion returns the version Go recorded for the main module, or "" if
+// the binary carries none.
+func moduleVersion() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	return bi.Main.Version
+}
+
+// resolveVersion decides what this build should call itself.
+//
+// goreleaser stamps every released artifact, but the module proxy is fold's
+// other distribution channel and cannot: `go run
+// github.com/fold-run/fold/cmd/fold@latest` — the install the README leads
+// with — produces a binary whose version reads "dev".
+//
+// That is not cosmetic. It reaches /api/federation, /health, the startup log
+// and the MCP clientInfo, and the console gates its own surfaces on it: an
+// unparseable version is treated as current, so every operator installing that
+// way silently loses version-skew detection and gets unversioned docs links.
+// Go already records the module version in the binary for exactly this case.
+//
+// The stamp still wins where there is one. "(devel)", which is what a build
+// from a working tree records, is not a version and leaves "dev" alone —
+// that path is a developer's, and it is honest about being one.
+func resolveVersion(stamped string, module func() string) string {
+	if stamped != "dev" {
+		return stamped
+	}
+	switch v := module(); v {
+	case "", "(devel)":
+		return stamped
+	default:
+		return v
+	}
+}
 
 // tokenInfoPrincipalKey carries the verified Principal through the SDK's
 // TokenInfo.Extra map into per-request MCP metadata.
