@@ -5,102 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <title>fold console</title>
-  <link rel="stylesheet" href="style.css">
+  <script type="module" crossorigin src="./app.js"></script>
+  <link rel="stylesheet" crossorigin href="./style.css">
 </head>
 <body>
-  <header>
-    <h1 class="brand">
-      <svg class="wordmark" viewBox="0 0 44.3 19.1" fill="none" stroke="currentColor"
-           stroke-width="3" role="img" aria-label="fold"><title>fold</title>
-        <path d="M4.2 19 V6.3 A4.8 4.8 0 0 1 9 1.5"/>
-        <path d="M0 8.4 H8.6"/>
-        <circle cx="18" cy="13" r="4.6"/>
-        <path d="M28 0 V19"/>
-        <circle cx="38.2" cy="13" r="4.6"/>
-        <path d="M42.8 0 V19"/>
-      </svg>
-      <span class="wm-rule" aria-hidden="true"></span>
-      <span class="wm-desc">Console</span>
-      <span id="version" class="muted"></span>
-    </h1>
-    <div class="auth">
-      <button id="signin" type="button" hidden>Sign in</button>
-      <input id="token" type="password" placeholder="Bearer token (if auth is required)" autocomplete="off" spellcheck="false">
-      <button id="refresh" type="button">Refresh</button>
-    </div>
-  </header>
-
-  <main>
-    <p id="banner" class="banner" hidden></p>
-
-    <section>
-      <h2>Federation.</h2>
-      <div id="summary" class="cards"></div>
-      <div class="tablewrap">
-        <table id="upstreams">
-          <thead>
-            <tr>
-              <th>Upstream</th><th>Namespace</th><th>Source</th><th>Auth</th><th>Connected</th>
-              <th>Breaker</th><th>Latency</th><th>Endpoints</th><th>Owner</th><th>Labels</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div id="discovery" class="cards"></div>
-    </section>
-
-    <section>
-      <h2>Test console.</h2>
-      <p class="muted">Calls go through the gateway's own MCP endpoint — policy,
-      rate limits, and audit apply exactly as they do for any other client.</p>
-      <div class="row">
-        <button id="connect" type="button" class="primary">Connect &amp; list</button>
-        <span id="mcpstatus" class="muted"></span>
-      </div>
-      <div class="row seg" role="group" aria-label="What to invoke">
-        <button id="mode-tools" type="button" class="active" disabled>Tools</button>
-        <button id="mode-prompts" type="button" disabled>Prompts</button>
-        <button id="mode-resources" type="button" disabled>Resources</button>
-      </div>
-      <div class="row">
-        <select id="picker" disabled aria-label="Item to invoke"></select>
-      </div>
-      <p id="itemdesc" class="muted"></p>
-      <textarea id="args" rows="6" placeholder='{"argument": "value"}' spellcheck="false" disabled></textarea>
-      <div class="row">
-        <button id="call" type="button" class="primary" disabled>Call tool</button>
-      </div>
-      <h3>Result</h3>
-      <pre id="result" class="pane"></pre>
-      <h3>Wire log</h3>
-      <pre id="wire" class="pane tall"></pre>
-    </section>
-  </main>
-
-  <footer>
-    <div class="foot">
-      <span class="legal">
-        <svg class="wordmark" viewBox="0 0 44.3 19.1" fill="none" stroke="currentColor"
-             stroke-width="3" aria-hidden="true" focusable="false">
-          <path d="M4.2 19 V6.3 A4.8 4.8 0 0 1 9 1.5"/>
-          <path d="M0 8.4 H8.6"/>
-          <circle cx="18" cy="13" r="4.6"/>
-          <path d="M28 0 V19"/>
-          <circle cx="38.2" cy="13" r="4.6"/>
-          <path d="M42.8 0 V19"/>
-        </svg>
-        © fold.run · the enterprise MCP gateway
-      </span>
-      <nav aria-label="fold project">
-        <a href="https://fold.run/" rel="noopener">fold.run</a>
-        <a href="https://docs.fold.run/" rel="noopener">Docs</a>
-        <a href="https://github.com/fold-run/fold" rel="noopener">GitHub</a>
-        <a href="https://fold.run/status/" rel="noopener">Status</a>
-      </nav>
-    </div>
-  </footer>
-
-  <script src="app.js"></script>
+  <!-- The shell renders here. Deliberately empty: the page is served from an
+       embedded filesystem with no server-side rendering, and anything static
+       enough to ship in this file would be replaced on first paint anyway. -->
+  <div id="app"></div>
+  <noscript>
+    The fold console is a client-side application and needs JavaScript. The
+    same data is available without it from the gateway's read APIs —
+    <code>GET /api/federation</code> and <code>GET /api/auth-hint</code>.
+  </noscript>
 </body>
 </html>

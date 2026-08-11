@@ -14,20 +14,34 @@
 # why those need a separate checksum to be worth anything. This also keeps one
 # pin idiom in the repo rather than two — see scripts/conformance.sh.
 #
+# What is copied is upstream's dist/, which is BUILD OUTPUT upstream commits.
+# The console is a TypeScript SPA now; it was hand-written HTML/CSS/JS through
+# fold v1.9, vendored then from a directory upstream called console/. Two
+# things follow for whoever reviews a bump here:
+#
+#   - The diff on gateway/console/ is minified bundle output. Reading it is not
+#     a review. Read the upstream diff on src/ — upstream CI rebuilds and fails
+#     on any drift between the two, so the bytes below are entailed by it.
+#   - The pin and the source path move together. A pin from before the rename
+#     has no dist/, and one from after has no console/; either mismatch fails
+#     loudly below rather than vendoring stale bytes.
+#
 # Requires: git.
 set -euo pipefail
 
 # Bump deliberately, in its own commit. The scheduled console-sync workflow
 # proposes bumps as PRs; it never merges them.
 CONSOLE_REPO="${CONSOLE_REPO:-https://github.com/fold-run/fold-console.git}"
-CONSOLE_COMMIT="${CONSOLE_COMMIT:-499253d0f70c895a76af60049910fb14dd4b80fd}"
+CONSOLE_COMMIT="${CONSOLE_COMMIT:-ea4c545249d533b6833ef6409b4cb48c1d70159d}"
 
 # The exact file set that may enter the binary. //go:embed takes the whole
-# directory, so without an allowlist the console repo's README, LICENSE, CI
-# config, and dev harness would ship to every operator and be served under
-# /console/. Adding a file to the shipped set is a reviewed change HERE, not a
-# unilateral one upstream. gateway/introspection_test.go asserts the same set
-# from the other side, against the embedded FS.
+# directory, so without an allowlist anything upstream's build happened to emit
+# alongside these — a source map, a second chunk, a stats file — would ship to
+# every operator and be served under /console/. Adding a file to the shipped
+# set is a reviewed change HERE, not a unilateral one upstream, and that
+# matters more now that upstream's output is generated rather than typed.
+# gateway/introspection_test.go asserts the same set from the other side,
+# against the embedded FS.
 #
 # fonts/OFL.txt is not decoration: OFL 1.1 requires the licence accompany the
 # Font Software, and these subsets are embedded in every fold binary. It ships
@@ -92,9 +106,15 @@ fi
 git -C "$work/console" fetch --quiet origin "$CONSOLE_COMMIT"
 git -C "$work/console" checkout --quiet "$CONSOLE_COMMIT"
 
-src="$work/console/console"
+src="$work/console/dist"
 if [[ ! -d "$src" ]]; then
-  echo "sync-console: $CONSOLE_REPO@${CONSOLE_COMMIT:0:12} has no console/ directory" >&2
+  echo "sync-console: $CONSOLE_REPO@${CONSOLE_COMMIT:0:12} has no dist/ directory" >&2
+  if [[ -d "$work/console/console" ]]; then
+    # Named explicitly, because the generic message sends the reader upstream
+    # to look for a directory that is there under its old name. Pins from
+    # before the console became a built SPA carry console/ instead.
+    echo "  it has console/, so this pin predates the dist/ rename — bump it" >&2
+  fi
   exit 1
 fi
 
