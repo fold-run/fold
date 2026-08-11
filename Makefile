@@ -1,6 +1,6 @@
 # Single source of truth for dev/CI commands; CI calls these same targets.
 
-.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance check fuzz cover helm-check
+.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance check fuzz cover helm-check compose-up compose-down compose-logs
 
 build:
 	go build ./...
@@ -69,3 +69,30 @@ helm-check:
 
 # Everything CI gates on except the bench and conformance jobs.
 check: fmt-check tidy-check vet build race lint
+
+# --- local compose stack (compose.yaml) ------------------------------------
+# Not a gate; a one-command way to run the gateway on this host. PROFILES
+# selects the optional services:
+#   make compose-up PROFILES=                      # gateway only
+#   make compose-up PROFILES="stdio observability" # default
+#   make compose-up PROFILES="stdio redis observability"
+PROFILES ?= stdio observability
+COMPOSE = docker compose $(foreach p,$(PROFILES),--profile $(p))
+
+# SHIM_TOKEN is written to .env rather than generated per invocation because
+# the gateway and the shim must agree on it, and a fresh value on every `up`
+# would leave the running shim rejecting the gateway until both restart.
+compose-up:
+	@test -f fold.config.json || { \
+		echo "fold.config.json missing — cp fold.config.example.json fold.config.json (then edit)"; exit 1; }
+	@test -f .env || { echo "SHIM_TOKEN=$$(openssl rand -hex 16)" > .env; echo "wrote .env with a fresh SHIM_TOKEN"; }
+	@mkdir -p data
+	$(COMPOSE) up -d
+	@echo "health:     curl -fsS http://localhost:8080/health"
+	@echo "prometheus: http://localhost:9090   grafana: http://localhost:3000"
+
+compose-down:
+	$(COMPOSE) down
+
+compose-logs:
+	$(COMPOSE) logs -f

@@ -351,7 +351,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 fold is a single static binary with no local state — see [docs/deploy.md](docs/deploy.md) for the full guide (TLS, `allowedHosts`, probes, Redis, secrets, audit shipping, production checklist).
 
 - **Docker**: `ghcr.io/fold-run/fold` (multi-arch, distroless) — see [Quick start](#quick-start).
-- **docker compose**: [`compose.yaml`](compose.yaml) with an optional Redis profile.
+- **docker compose**: [`compose.yaml`](compose.yaml), with optional Redis, stdio-shim, and observability profiles — `make compose-up` runs it.
 - **Kubernetes**: Helm chart in [`deploy/helm/fold`](deploy/helm/fold) — probes, config-as-ConfigMap, secrets via `envFrom`, optional Ingress/HPA/PDB/ServiceMonitor.
 - **VM / bare metal**: prebuilt binaries on the [releases page](https://github.com/fold-run/fold/releases) plus a hardened systemd unit in the guide.
 
@@ -384,6 +384,7 @@ make check         # fmt-check + tidy-check + vet + build + race + lint
 make bench         # added-latency gate (p50 < 5 ms through the proxy path)
 make fuzz          # fuzz config parsing and namespace routing (seeds run in `make test`)
 make conformance   # official conformance suite through the gateway (needs node)
+make compose-up    # run the local stack on this host (see docs/deploy.md)
 ```
 
 CI runs these same targets (`.github/workflows/ci.yml`), plus `govulncheck` (`make vuln`).
