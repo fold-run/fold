@@ -7,7 +7,7 @@ description: Cut a fold release — verify gates, write the changelog and bump t
 
 Releases are annotated-tag-driven: pushing `vX.Y.Z` triggers
 `.github/workflows/release.yml` (goreleaser). The version string is stamped
-via `-ldflags "-X github.com/fold-run/fold/gateway.version=..."` — goreleaser
+via `-ldflags "-X github.com/fold-run/fold/gateway.ldflagsVersion=..."` — goreleaser
 handles this; never hardcode a version in source.
 
 **Cardinal rule: every git-touching step needs the user's explicit,

@@ -14,7 +14,7 @@ builds:
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags:
-      - -s -w -X github.com/fold-run/fold/gateway.version={{ .Tag }}
+      - -s -w -X github.com/fold-run/fold/gateway.ldflagsVersion={{ .Tag }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
   # The Kubernetes discovery-document producer. Linux-only: it runs in a

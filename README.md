@@ -449,6 +449,13 @@ Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SD
 
 ## Changelog
 
+### v1.10.1 — unreleased
+
+A gateway installed from the module proxy knows its own version.
+
+- **`go run github.com/fold-run/fold/cmd/fold@latest` reported `dev`.** goreleaser stamps the version with `-ldflags`, and the module proxy path cannot — so the install this README leads with produced a binary whose `/api/federation`, `/health`, startup log and MCP `clientInfo` all claimed to be a development build. Not cosmetic: the console gates its own surfaces on that string and treats an unparseable one as current, so every operator on that path silently lost version-skew detection and got unversioned documentation links. Go already records the resolved module version in the binary, so the gateway now reads it when nothing stamped one. A release keeps its stamp, and a build from a working tree still says `dev` — that one is a developer's, and it is honest about being one.
+- **The stamp target moved to `gateway.ldflagsVersion`.** `-X` only writes a string variable whose initialiser is a constant, and `version` now has to be computed, so leaving the flag pointed at it would have silently reverted every release to `dev`. `.goreleaser.yaml`, the Dockerfile, and the release runbook move together; a unit test covers each build route rather than only the one this machine happens to produce.
+
 ### v1.10.0 — 2026-08-11
 
 The console is rewritten, and the field that takes your Bearer token starts working.

@@ -47,7 +47,7 @@ CI (`.github/workflows/ci.yml`) gates every merge on: gofmt, `go mod tidy -diff`
 
 **Errors**: the gateway mints only `-32040` (upstream rate limit), `-32041` (upstream unavailable/circuit open), `-32042` (policy denied), `-32043` (unknown namespace). Upstream errors pass through verbatim.
 
-**Config**: one JSON document (`config` package), validated in `gateway.New` and by `fold --validate`. `FOLD_CONFIG` accepts a file path or inline JSON. The version string is stamped via `-ldflags "-X github.com/fold-run/fold/gateway.version=..."`.
+**Config**: one JSON document (`config` package), validated in `gateway.New` and by `fold --validate`. `FOLD_CONFIG` accepts a file path or inline JSON. The version string is stamped via `-ldflags "-X github.com/fold-run/fold/gateway.ldflagsVersion=..."`, and falls back to the module version Go records in the binary when nothing stamped it (a `go install` build).
 
 ## Rules the repo follows
 
