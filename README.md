@@ -449,7 +449,7 @@ Both gaps appear in [docs/roadmap.md](docs/roadmap.md) — the first with the SD
 
 ## Changelog
 
-### v1.10.1 — unreleased
+### v1.10.1 — 2026-08-11
 
 A gateway installed from the module proxy knows its own version.
 
