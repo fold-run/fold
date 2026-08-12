@@ -35,6 +35,31 @@ docker run --rm -p 8080:8080 \
 Images are multi-arch (linux/amd64, linux/arm64), tagged `latest` and per
 release (`v0.7.0`).
 
+### Verifying what you deploy
+
+Every release artifact carries sigstore provenance signed by the release
+workflow — the images, the Helm chart, the binary archives, and
+`checksums.txt`. Verification proves the artifact was built by
+`fold-run/fold`'s release workflow, not by whoever held a registry token:
+
+```bash
+# An image (also works for ghcr.io/fold-run/fold-discovery and fold-stdio):
+gh attestation verify oci://ghcr.io/fold-run/fold:v1.11.0 --owner fold-run
+
+# The Helm chart:
+gh attestation verify oci://ghcr.io/fold-run/charts/fold:<chart-version> --owner fold-run
+
+# A downloaded binary archive:
+gh attestation verify fold_*_linux_amd64.tar.gz --owner fold-run
+```
+
+Images additionally embed BuildKit provenance and an SBOM in the registry
+(`docker buildx imagetools inspect ghcr.io/fold-run/fold:v1.11.0` shows
+them), and cluster admission controllers that verify GitHub attestations
+(Kyverno, sigstore policy-controller) can enforce this at deploy time. For
+production, prefer the release tag — or the digest the attestation names —
+over `latest`.
+
 ## docker compose
 
 [`compose.yaml`](../compose.yaml) at the repo root runs the gateway with

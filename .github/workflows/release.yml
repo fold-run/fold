@@ -14,9 +14,9 @@ on:
         description: "Release tag whose chart to publish (e.g. v1.8.0)"
         required: true
 
+# Every job declares its own permissions; the workflow default is the floor.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   binaries:
@@ -27,19 +27,19 @@ jobs:
       id-token: write # provenance attestation (sigstore)
       attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # goreleaser derives the changelog from history
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
       - name: install syft (SBOM generation)
-        uses: anchore/sbom-action/download-syft@v0
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: goreleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: "~> v2"
@@ -48,7 +48,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/*.tar.gz
@@ -61,6 +61,11 @@ jobs:
   # release flow bumps it (see .claude/skills/fold-release).
   chart:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # chart provenance attestation (sigstore)
+      attestations: write
     env:
       # The tag being published: the pushed tag, or the one named on a
       # chart-only dispatch.
@@ -68,11 +73,11 @@ jobs:
     steps:
       # Check out the tag rather than the default branch, so a dispatch
       # publishes the chart as that release shipped it, not as main has it now.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.chart_tag || github.ref_name }}
 
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       # Publishing a chart that renders wrong is worse than not publishing:
       # a `helm install` from an OCI registry has no repo checkout to inspect
@@ -101,63 +106,123 @@ jobs:
             --password "${{ secrets.GITHUB_TOKEN }}"
 
       - name: package and push
+        id: push
         run: |
           helm package deploy/helm/fold --destination dist
           # The chart's own version is the OCI tag; `helm push` derives the
           # repository name from the chart, so the target is the namespace.
-          helm push dist/fold-*.tgz oci://ghcr.io/fold-run/charts
+          out=$(helm push dist/fold-*.tgz oci://ghcr.io/fold-run/charts 2>&1)
+          echo "$out"
+          digest=$(echo "$out" | awk '/^Digest:/ {print $2}')
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "helm push reported no digest to attest" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
+      # The chart is a deployment artifact like the images: an operator's
+      # `helm install oci://...` should be verifiable back to this workflow
+      # (gh attestation verify oci://ghcr.io/fold-run/charts/fold --owner fold-run).
+      - name: attest chart provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/fold-run/charts/fold
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # The images are the artifact the chart and compose actually deploy, so
+  # they carry the same supply-chain evidence as the binaries: BuildKit
+  # provenance + SBOM attached in-registry (provenance/sbom below), and a
+  # sigstore attestation on each image digest, so an admission controller or
+  # `gh attestation verify oci://ghcr.io/fold-run/fold:vX --owner fold-run`
+  # can prove an image came from this workflow rather than from whoever held
+  # a registry token.
   image:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # image provenance attestation (sigstore)
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: build and push image
-        uses: docker/build-push-action@v7
+        id: fold
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: deploy/docker/fold.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/fold-run/fold:${{ github.ref_name }}
             ghcr.io/fold-run/fold:latest
 
+      - name: attest image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/fold-run/fold
+          subject-digest: ${{ steps.fold.outputs.digest }}
+          push-to-registry: true
+
       - name: build and push discovery image
-        uses: docker/build-push-action@v7
+        id: discovery
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: deploy/docker/discovery.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/fold-run/fold-discovery:${{ github.ref_name }}
             ghcr.io/fold-run/fold-discovery:latest
+
+      - name: attest discovery image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/fold-run/fold-discovery
+          subject-digest: ${{ steps.discovery.outputs.digest }}
+          push-to-registry: true
 
       # The shim's image is not distroless: its job is to execute a server, and
       # most stdio servers arrive through a language runtime. The published
       # image carries Node, since npx-delivered servers are the common case;
       # operators serving Python servers rebuild with --build-arg RUNTIME_BASE.
       - name: build and push stdio shim image
-        uses: docker/build-push-action@v7
+        id: stdio
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: deploy/docker/stdio.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/fold-run/fold-stdio:${{ github.ref_name }}
             ghcr.io/fold-run/fold-stdio:latest
+
+      - name: attest stdio image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/fold-run/fold-stdio
+          subject-digest: ${{ steps.stdio.outputs.digest }}
+          push-to-registry: true
