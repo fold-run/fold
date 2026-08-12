@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -250,6 +251,11 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		}
 		return nil
 	})
+	// Degraded limiter/breaker decisions (Redis unreachable → per-instance
+	// enforcement) count like degraded budget decisions do.
+	if r, ok := provider.(*state.Redis); ok {
+		r.OnDegraded(g.metrics.observeStateDegraded)
+	}
 	// Audit is built after metrics so its delivery outcomes have somewhere to
 	// be counted: a sink that drops events is the one failure the audit trail
 	// cannot record about itself.
@@ -311,9 +317,13 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		}
 	}
 	if cfg.AuthRequired() {
-		g.verifier = auth.NewVerifier(cfg.Auth, http.DefaultClient)
+		// Trust-anchor fetches (issuer JWKS, the EMA IdP's JWKS) get the
+		// bounded, redirect-refusing client — http.DefaultClient would hang
+		// on a wedged IdP and follow a redirect off the configured URI.
+		anchors := auth.TrustAnchorClient()
+		g.verifier = auth.NewVerifier(cfg.Auth, anchors)
 		if cfg.Auth.EMA != nil {
-			ema, err := auth.NewEMA(cfg.Auth, http.DefaultClient, provider.Once("emajti"))
+			ema, err := auth.NewEMA(cfg.Auth, anchors, provider.Once("emajti"))
 			if err != nil {
 				return nil, err
 			}
@@ -404,6 +414,16 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	}
 	g.baseCfg = cfg
 	if cfg.Discovery != nil {
+		// The allowlists are what stop a compromised discovery source from
+		// pointing gateway-held secrets (or callers' tokens, via
+		// passthrough) at endpoints of its choosing. Absent, that trust is
+		// total — say so at startup, like the budget-without-Redis warning.
+		if cfg.Discovery.AllowedAuthStrategies == nil &&
+			cfg.Discovery.AllowedSecretRefs == nil &&
+			cfg.Discovery.AllowedCredentialHosts == nil {
+			g.log.Warn("discovery configured without credential allowlists — the source can attach any secretRef and point credentialed upstreams anywhere",
+				"hint", "set discovery.allowedAuthStrategies / allowedSecretRefs / allowedCredentialHosts unless the source is operated by the gateway's own operators")
+		}
 		g.discovery = newDiscoverer(g, cfg.Discovery)
 		go g.discovery.loop()
 	}
@@ -1224,10 +1244,38 @@ func (g *Gateway) bodyCapMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		if r.Body != nil && r.Body != http.NoBody {
-			r.Body = http.MaxBytesReader(w, r.Body, limit)
+			// A chunked body carries no honest Content-Length, so the cap
+			// only trips mid-read inside the handler. The tripwire makes
+			// that refusal exit through the same metric and audit event as
+			// the declared-length branch — the single exit door does not
+			// have a chunked-encoding side gate.
+			tripwire := &bodyCapTripwire{ReadCloser: http.MaxBytesReader(w, r.Body, limit)}
+			r.Body = tripwire
+			defer func() {
+				if tripwire.tripped {
+					g.metrics.reject("body_too_large")
+					g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeError, Error: "request body exceeds maxBodyBytes"})
+				}
+			}()
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bodyCapTripwire notes when MaxBytesReader cut the body off, so the
+// middleware can account for refusals the handler discovers mid-read.
+type bodyCapTripwire struct {
+	io.ReadCloser
+	tripped bool
+}
+
+func (b *bodyCapTripwire) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		b.tripped = true
+	}
+	return n, err
 }
 
 func (g *Gateway) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata {

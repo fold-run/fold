@@ -332,3 +332,54 @@ func TestRedisStoreOutageFallsBackToMirror(t *testing.T) {
 		t.Error("outage invented a record")
 	}
 }
+
+// A Redis outage degrades rate limits and breakers to per-instance
+// enforcement — decided by warm local mirrors — not to allow-everything,
+// and every degraded decision is reported.
+func TestRedisOutageDegradesPerInstance(t *testing.T) {
+	mr := miniredis.RunT(t)
+	p, err := NewRedis("redis://" + mr.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Close() })
+	var degraded []string
+	p.OnDegraded(func(kind string) { degraded = append(degraded, kind) })
+	ctx := context.Background()
+
+	l := p.Limiter("up:x", 2)
+	br := p.Breaker("up:x", 2, time.Minute)
+
+	// Warm the mirrors while Redis is healthy: one request consumed, one
+	// upstream failure recorded.
+	if ok, _ := l.Allow(ctx); !ok {
+		t.Fatal("first request should be allowed")
+	}
+	br.Record(ctx, false)
+
+	mr.Close() // outage
+
+	// The local window already holds the pre-outage request: one more fits
+	// rpm=2, the next is refused — enforcement, not allow-all.
+	if ok, _ := l.Allow(ctx); !ok {
+		t.Fatal("second request within rpm=2 should be allowed during the outage")
+	}
+	if ok, _ := l.Allow(ctx); ok {
+		t.Fatal("third request must be refused by the local mirror")
+	}
+
+	// One more failure reaches threshold=2 on the warm mirror; the breaker
+	// opens per-instance.
+	br.Record(ctx, false)
+	if br.Allow(ctx) {
+		t.Fatal("breaker must open from the local mirror during the outage")
+	}
+
+	seen := map[string]bool{}
+	for _, k := range degraded {
+		seen[k] = true
+	}
+	if !seen["limiter"] || !seen["breaker"] {
+		t.Fatalf("degraded decisions must be observed for both kinds, got %v", degraded)
+	}
+}
