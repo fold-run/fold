@@ -77,6 +77,22 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Keyless cosign signature on the checksum file, for operators verifying
+# outside the `gh attestation` toolchain (the GitHub attestation covers the
+# same subjects). The release workflow installs cosign and provides the OIDC
+# identity (id-token: write).
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    output: true
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+
 sboms:
   - artifacts: archive
 

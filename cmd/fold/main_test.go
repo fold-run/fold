@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -314,5 +317,30 @@ func TestServeAndGracefulShutdown(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "shutting down") {
 		t.Errorf("expected graceful-shutdown log, stderr: %s", errb.String())
+	}
+}
+
+// TestRunHealthcheck: the self-probe answers "is the process serving" — any
+// HTTP response is healthy, including /health's 503-when-all-upstreams-are-
+// down, which must never restart a container. Only a dead process fails.
+func TestRunHealthcheck(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	u, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := runHealthcheck(u.Hostname(), port); got != 0 {
+		t.Fatalf("healthcheck against a serving (degraded) process = %d, want 0", got)
+	}
+	ts.Close()
+	if got := runHealthcheck(u.Hostname(), port); got != 1 {
+		t.Fatalf("healthcheck against a dead port = %d, want 1", got)
 	}
 }

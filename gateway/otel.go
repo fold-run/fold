@@ -30,6 +30,11 @@ type gwTracer struct {
 	provider *sdktrace.TracerProvider
 	tracer   trace.Tracer
 	prop     propagation.TextMapPropagator
+
+	// recordPrincipal gates the enduser.id span attribute — opt-in, because
+	// the subject is personal data and trace backends commonly have broader
+	// access than the audit trail (which carries the same identity).
+	recordPrincipal bool
 }
 
 func newGwTracer(cfg *config.Tracing) (*gwTracer, error) {
@@ -73,6 +78,7 @@ func newGwTracer(cfg *config.Tracing) (*gwTracer, error) {
 		tracer:   provider.Tracer("github.com/fold-run/fold/gateway"),
 		prop: propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{}, propagation.Baggage{}),
+		recordPrincipal: cfg.RecordPrincipal,
 	}, nil
 }
 
@@ -92,8 +98,8 @@ func (t *gwTracer) startServer(ctx context.Context, method string, hdr http.Head
 
 // endServer stamps the request's terminal audit fields onto its span — the
 // span and the audit event describe the same outcome by construction.
-func endServer(span trace.Span, evt *audit.Event, err error) {
-	if span == nil {
+func (t *gwTracer) endServer(span trace.Span, evt *audit.Event, err error) {
+	if t == nil || span == nil {
 		return
 	}
 	attrs := []attribute.KeyValue{attribute.String("fold.outcome", string(evt.Outcome))}
@@ -109,7 +115,7 @@ func endServer(span trace.Span, evt *audit.Event, err error) {
 	if evt.RuleID != "" {
 		attrs = append(attrs, attribute.String("fold.policy.rule", evt.RuleID))
 	}
-	if evt.Principal != "" {
+	if evt.Principal != "" && t.recordPrincipal {
 		attrs = append(attrs, attribute.String("enduser.id", evt.Principal))
 	}
 	span.SetAttributes(attrs...)

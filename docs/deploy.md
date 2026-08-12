@@ -57,6 +57,15 @@ gh attestation verify oci://ghcr.io/fold-run/charts/fold:<chart-version> --owner
 
 # A downloaded binary archive:
 gh attestation verify fold_*_linux_amd64.tar.gz --owner fold-run
+
+# Without the gh toolchain: the checksum file carries a keyless cosign
+# signature (checksums.txt.sig + .pem on the release), and the checksums
+# then cover every archive:
+cosign verify-blob checksums.txt \
+  --signature checksums.txt.sig --certificate checksums.txt.pem \
+  --certificate-identity-regexp '^https://github.com/fold-run/fold/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --check --ignore-missing checksums.txt
 ```
 
 Images additionally embed BuildKit provenance and an SBOM in the registry
@@ -103,9 +112,13 @@ Dockerfiles live in [`deploy/docker/`](../deploy/docker) — `fold.Dockerfile`,
 published images by default; the `build:` stanzas to run from source are
 commented in place.
 
-The fold service has no compose healthcheck — distroless images carry no
-shell or curl to run one with. Probe `/health` from the host or your
-monitoring instead.
+The fold service's compose healthcheck runs the binary's own self-probe:
+`fold --healthcheck` GETs the local `/health` and exits by result, which is
+what gives the distroless image (no shell, no curl) a native HEALTHCHECK.
+It deliberately counts *any* HTTP response as healthy — it answers "is the
+process serving", and `/health`'s 503-when-all-upstreams-are-down must not
+restart the container (see "Probes" below). The same flag works for plain
+`docker run --health-cmd "/fold --healthcheck"`.
 
 ## Kubernetes (Helm)
 

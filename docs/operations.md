@@ -293,10 +293,12 @@ unreachable and each instance is enforcing its own copy of that allowance.
 W3C trace context propagates to upstream calls unconditionally. With the
 `tracing` section configured, fold also emits its own spans over OTLP/HTTP:
 a server span per MCP request named by method, carrying `mcp.method`,
-`mcp.name`, `fold.upstream`, `fold.outcome`, `fold.policy.decision`,
-`fold.policy.rule`, and `enduser.id` (the same terminal fields as the audit
-event), and a client span per upstream call (`upstream <id>`) closed with
-its guard outcome. Export is batched off the request path; `Close`/shutdown
+`mcp.name`, `fold.upstream`, `fold.outcome`, `fold.policy.decision`, and
+`fold.policy.rule` (the same terminal fields as the audit event; the
+principal's subject joins them as `enduser.id` only with
+`tracing.recordPrincipal: true` — since v1.11 spans carry no personal data
+by default, the audit trail being where identity belongs), and a client
+span per upstream call (`upstream <id>`) closed with its guard outcome. Export is batched off the request path; `Close`/shutdown
 flushes with a 3 s bound so a dead collector cannot hang termination.
 
 ## Log streams

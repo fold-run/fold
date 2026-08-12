@@ -59,6 +59,7 @@ implementation order. Verdict for all: **keep**.
 |---|---|---|
 | `tracing` | absent (propagation-only) | First-party spans are opt-in; W3C trace propagation is always on and free. |
 | `tracing.sampleRatio` | 1.0 | An operator who configures tracing wants the traces; parent-based, so callers' sampling decisions are honored either way. |
+| `tracing.recordPrincipal` | `false` (added in v1.11) | Before v1.11 the principal's subject was always stamped on server spans as `enduser.id`. Now opt-in — a deliberate default change, made for privacy: the subject is personal data, trace backends commonly have broader access than the audit trail, and the audit event carries the same identity under audit-grade access. Dashboards keyed on span `enduser.id` set this to `true` knowingly. |
 | `tracing.serviceName` | `fold` | — |
 | `--log-level` / `--log-format` | `info` / `text` | Human-first on a terminal; `json` for collectors. |
 
