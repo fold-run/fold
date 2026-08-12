@@ -26,5 +26,35 @@ it does NOT restart pods — use a reloader controller or:
   kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "fold.fullname" . }}
 {{- end }}
 
+{{- $replicas := .Values.replicaCount }}
+{{- if .Values.autoscaling.enabled }}{{ $replicas = .Values.autoscaling.minReplicas }}{{ end }}
+{{- if and (gt (int $replicas) 1) (not .Values.redis.url) (not .Values.redis.existingSecret) }}
+
+WARNING: {{ $replicas }} replicas without Redis. Each pod enforces its own
+rate limits, budgets, ID-JAG replay protection, and task ownership — N pods
+means N copies of every limit, and a replayed assertion can be redeemed once
+per pod. Set redis.existingSecret (or redis.url) to make the fleet behave as
+one gateway.
+{{- end }}
+{{- if .Values.config }}
+{{- $disc := dig "discovery" (dict) .Values.config }}
+{{- if $disc }}
+{{- if not (or (hasKey $disc "allowedAuthStrategies") (hasKey $disc "allowedSecretRefs") (hasKey $disc "allowedCredentialHosts")) }}
+
+WARNING: discovery is enabled without credential allowlists. The discovery
+source can attach any secretRef the gateway holds and point credentialed
+upstreams at any endpoint. Unless the source is operated by this gateway's
+own operators, set discovery.allowedAuthStrategies, allowedSecretRefs, and
+allowedCredentialHosts.
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.listener.enabled) }}
+
+NOTE: metrics.serviceMonitor is on but metrics.listener is off — Prometheus
+scrapes pod IPs, which the gateway's Host allowlist answers 403. Enable
+metrics.listener; never widen allowedHosts for a scraper.
+{{- end }}
+
 Health:   GET /health   (send a Host header the allowlist admits)
 Metrics:  GET /metrics

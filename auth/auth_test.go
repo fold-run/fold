@@ -353,3 +353,23 @@ func TestTokenEndpointRefusesRedirects(t *testing.T) {
 		}
 	}
 }
+
+// TestTrustAnchorClient: the JWKS-fetch client is bounded and refuses
+// redirects — http.DefaultClient has neither property, which is why the
+// gateway must never wire it for trust anchors.
+func TestTrustAnchorClient(t *testing.T) {
+	c := TrustAnchorClient()
+	if c.Timeout <= 0 {
+		t.Fatal("trust-anchor client must carry a timeout")
+	}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	redirector := httptest.NewServer(http.RedirectHandler(target.URL, http.StatusFound))
+	t.Cleanup(redirector.Close)
+	_, err := c.Get(redirector.URL)
+	if err == nil || !strings.Contains(err.Error(), "refusing redirect") {
+		t.Fatalf("redirect must be refused, got %v", err)
+	}
+}

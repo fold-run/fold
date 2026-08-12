@@ -333,9 +333,13 @@ reachable by any caller. If you run more than one replica with task-using
 upstreams, Redis is the difference between a guarantee and a coincidence.
 
 Operationally forgiving by design: every Redis operation is bounded at
-500 ms and fails open, so a Redis outage degrades to per-instance state
-instead of taking the gateway down (replay protection and task ownership
-fall back to each instance's local mirror rather than to nothing). A bad URL is a boot failure (validated
+500 ms and fails open, so a Redis outage degrades to per-instance
+enforcement instead of taking the gateway down. Every primitive keeps a
+local mirror: replay protection, task ownership, budgets, and — since
+v1.11 — rate limits and circuit breakers, whose mirrors are fed on every
+healthy decision so they are warm when an outage starts. Degraded decisions
+are counted (`fold_budget_degraded_total`, `fold_state_degraded_total`) and
+the packaged alerts fire on them. A bad URL is a boot failure (validated
 with a PING at startup). Any managed Redis- or Valkey-compatible service
 works; the chart deliberately ships no Redis subchart — bring your own or a
 managed offering.
@@ -399,7 +403,16 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 - [ ] `server.allowedHosts` pinned to your public hostname(s), not `["*"]`
 - [ ] `auth.mode: "required"` with your IdP's issuer (anonymous gateways
       have no per-principal policy or rate limits)
-- [ ] `policy.defaultDecision: "deny"` with explicit allow rules
+- [ ] `policy.defaultDecision: "deny"` with explicit allow rules (an absent
+      `policy` block is an allow-all engine)
+- [ ] Discovery: `allowedAuthStrategies`, `allowedSecretRefs`, and
+      `allowedCredentialHosts` set whenever the registry is not operated by
+      the gateway's own operators (the gateway warns at startup when all
+      three are absent); avoid `"server": "*"` policy rules combined with
+      discovery
+- [ ] Multi-tenant: `server.introspection.groups` set — any valid principal
+      may otherwise read the federation topology from `/api/federation`
+- [ ] `rediss://` for Redis and HTTPS upstream URLs even inside the mesh
 - [ ] TLS terminated in front; SSE timeouts/buffering configured
 - [ ] Redis configured when running more than one replica
 - [ ] An `audit` sink configured and shipped somewhere durable

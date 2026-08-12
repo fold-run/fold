@@ -184,8 +184,11 @@ breakers protect fragile backends. With Redis, all of this state — tenant
 buckets and budgets included, plus EMA replay protection — is fleet-wide, so
 a customer's allowance is one allowance rather than one per replica. Redis
 outages fail open (bounded 500 ms per operation): the gateway degrades to
-per-instance enforcement rather than going down, and says so via
-`fold_budget_degraded_total`.
+per-instance enforcement rather than going down — every primitive keeps a
+local mirror, including (since v1.11) the rate-limit windows and breaker
+state, whose mirrors are fed on every healthy decision so an outage starts
+warm — and says so via `fold_budget_degraded_total` and
+`fold_state_degraded_total`.
 
 **What tenancy is not.** It is not a private federation per customer: the
 subset is a visibility filter over shared upstreams, not a routing table of

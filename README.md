@@ -166,6 +166,11 @@ List freshness works end to end: when an upstream emits a `list_changed` notific
 }
 ```
 
+The groups claim must be a JSON **array** of strings; any other shape (a
+single string, a comma-joined value) reads as no groups — fail closed, so a
+misconfigured claim denies rather than grants. Configure the IdP to emit an
+array.
+
 With `mode: "required"`, every `/mcp` request needs a valid Bearer token: trusted issuer (checked before any network I/O), verified signature via cached JWKS, exact audience match, a non-empty `sub`, asymmetric algorithms only (RS/ES/EdDSA). Failures answer 401 with a `WWW-Authenticate` challenge pointing at `/.well-known/oauth-protected-resource` (RFC 9728), which the gateway publishes. Issuer and JWKS URLs must use `https` (loopback exempt) — they are the inbound trust anchor. The JWKS fetch is single-flighted, size-bounded, and timeout-bounded so an unauthenticated flood of unknown-`kid` tokens cannot be amplified into requests against the IdP.
 
 #### `auth.ema` (Enterprise-Managed Authorization)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/fold-run/fold/internal/breaker"
+	"github.com/fold-run/fold/internal/ratelimit"
 )
 
 // redisOpTimeout caps every Redis operation so a stalled Redis cannot stall
@@ -20,6 +22,10 @@ const redisOpTimeout = 500 * time.Millisecond
 // limits, circuit breakers, and list caches.
 type Redis struct {
 	client *redis.Client
+
+	// degraded holds the OnDegraded callback (func(kind string)); atomic
+	// because the gateway registers it after limiters may already exist.
+	degraded atomic.Value
 }
 
 // NewRedis connects and validates a Redis provider from a redis:// URL.
@@ -46,7 +52,14 @@ func (r *Redis) Limiter(scope string, rpm int) Limiter {
 	if rpm <= 0 {
 		return memLimiter{l: nil} // unlimited
 	}
-	return &redisLimiter{client: r.client, scope: scope, rpm: rpm, window: time.Minute}
+	return &redisLimiter{
+		client:   r.client,
+		scope:    scope,
+		rpm:      rpm,
+		window:   time.Minute,
+		fallback: memLimiter{l: ratelimit.New(rpm)},
+		note:     r.noteDegraded,
+	}
 }
 
 // Breaker implements Provider.
@@ -54,7 +67,30 @@ func (r *Redis) Breaker(scope string, threshold int, halfOpenAfter time.Duration
 	if threshold <= 0 {
 		return memBreaker{b: nil}
 	}
-	return &redisBreaker{client: r.client, scope: scope, threshold: threshold, halfOpenAfter: halfOpenAfter}
+	return &redisBreaker{
+		client:        r.client,
+		scope:         scope,
+		threshold:     threshold,
+		halfOpenAfter: halfOpenAfter,
+		fallback:      memBreaker{b: breaker.New(threshold, halfOpenAfter)},
+		note:          r.noteDegraded,
+	}
+}
+
+// OnDegraded registers fn to be told each time a rate-limit or breaker
+// decision was made per-instance because Redis was unreachable
+// (kind: "limiter" | "breaker"). The gateway wires it into
+// fold_state_degraded_total — fail-open is deliberate, but a fleet whose
+// limits are momentarily per-instance must be visible, exactly as budgets
+// already are. Safe to call before or after limiters exist.
+func (r *Redis) OnDegraded(fn func(kind string)) {
+	r.degraded.Store(fn)
+}
+
+func (r *Redis) noteDegraded(kind string) {
+	if fn, ok := r.degraded.Load().(func(string)); ok && fn != nil {
+		fn(kind)
+	}
 }
 
 // ListCache implements Provider.
@@ -180,6 +216,9 @@ func opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 // redisLimiter is a two-bucket sliding window over shared counters:
 // INCR the current fixed window, weight in the previous one by overlap.
 type redisLimiter struct {
+	fallback memLimiter        // per-instance mirror, decisive during outages
+	note     func(kind string) // degraded-decision observer (Redis.noteDegraded)
+
 	client *redis.Client
 	scope  string
 	rpm    int
@@ -203,8 +242,16 @@ func (l *redisLimiter) Allow(ctx context.Context) (bool, time.Duration) {
 	curCmd := pipe.Incr(ctx, l.key(idx))
 	pipe.Expire(ctx, l.key(idx), 2*l.window)
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		return true, 0 // fail open
+		// Fail open across the fleet, but not to nothing: the local window
+		// — fed on every healthy decision below, so it is warm when the
+		// outage starts — keeps enforcing this instance's share. Same
+		// degrade-to-per-instance posture as budgets, Once, and Store.
+		l.note("limiter")
+		return l.fallback.Allow(ctx)
 	}
+	// Keep the local mirror warm; its verdict is ignored while Redis is the
+	// authority.
+	_, _ = l.fallback.Allow(ctx)
 	prev, _ := strconv.ParseFloat(prevCmd.Val(), 64)
 	cur := float64(curCmd.Val())
 	effective := prev*(1-elapsed) + cur
@@ -224,6 +271,13 @@ type redisBreaker struct {
 	scope         string
 	threshold     int
 	halfOpenAfter time.Duration
+
+	// fallback mirrors every Record (in-memory, effectively free), so when
+	// Redis is unreachable this instance's own view of the upstream —
+	// already warm — takes over the Allow decision. Its verdict is ignored
+	// while Redis answers; note reports each degraded decision.
+	fallback memBreaker
+	note     func(kind string)
 }
 
 func (b *redisBreaker) failKey() string  { return "fold:cb:" + b.scope + ":failures" }
@@ -239,7 +293,11 @@ func (b *redisBreaker) Allow(ctx context.Context) bool {
 		return true // closed
 	}
 	if err != nil {
-		return true // fail open
+		// Redis unreachable: this instance's warm local mirror decides, so
+		// an outage degrades to per-instance breaking rather than to a
+		// breaker that never opens (see the fallback field).
+		b.note("breaker")
+		return b.fallback.Allow(ctx)
 	}
 	if time.Now().UnixMilli() < openUntil {
 		return false
@@ -247,12 +305,16 @@ func (b *redisBreaker) Allow(ctx context.Context) bool {
 	// Half-open: admit one probe fleet-wide.
 	ok, err := b.client.SetNX(ctx, b.probeKey(), "1", b.halfOpenAfter).Result()
 	if err != nil {
-		return true
+		b.note("breaker")
+		return b.fallback.Allow(ctx)
 	}
 	return ok
 }
 
 func (b *redisBreaker) Record(ctx context.Context, success bool) {
+	// Mirror every outcome locally first — this is what makes the fallback
+	// warm instead of blind when an outage starts.
+	b.fallback.Record(ctx, success)
 	ctx, cancel := opCtx(ctx)
 	defer cancel()
 

@@ -51,6 +51,11 @@ type metricsSet struct {
 	// panics counts recovered panics by site (see rescue.go). The gateway
 	// survives them by design, but every one is a bug — alert on non-zero.
 	panics *prometheus.CounterVec
+
+	// stateDegr counts rate-limit/breaker decisions made per-instance
+	// because Redis was unreachable — the limiter/breaker peer of
+	// fold_budget_degraded_total, and the same posture: fail open, loudly.
+	stateDegr *prometheus.CounterVec
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -113,10 +118,15 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_panics_total",
 			Help: "Panics recovered by the gateway, by site. The process survives them by design, but every one is a bug — alert on non-zero.",
 		}, []string{"site"}),
+		stateDegr: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_state_degraded_total",
+			Help: "Rate-limit and circuit-breaker decisions made per-instance because shared state was unreachable, by kind (limiter, breaker). Fail-open is deliberate; a fleet enforcing N separate copies of one limit must be visible — alert on it, like fold_budget_degraded_total.",
+		}, []string{"kind"}),
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
 		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems, m.panics,
+		m.stateDegr,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -264,6 +274,12 @@ func (m *metricsSet) observeListShaping(method string, offered, served, capped i
 	if capped > 0 {
 		m.listItems.WithLabelValues(method, "capped").Add(float64(capped))
 	}
+}
+
+// observeStateDegraded counts a limiter/breaker decision taken without
+// shared state (wired into state.Redis.OnDegraded).
+func (m *metricsSet) observeStateDegraded(kind string) {
+	m.stateDegr.WithLabelValues(kind).Inc()
 }
 
 // panicked counts one recovered panic (see rescue.go).
