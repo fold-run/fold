@@ -14,9 +14,9 @@
 
 # Declared before the first FROM so it can be used in one; re-declare inside a
 # stage if a stage ever needs to read it.
-ARG RUNTIME_BASE=node:22-slim
+ARG RUNTIME_BASE=node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 
-FROM golang:1.26 AS build
+FROM golang:1.26@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

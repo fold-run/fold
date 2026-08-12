@@ -42,6 +42,9 @@ scrapers must send an allowed `Host` header (see
 | `fold_budget_degraded_total` | `scope` | Budget decisions taken per-instance because shared state was unreachable. Budgets fail open by design, so this is the signal that a fleet is not enforcing one allowance — **alert on any non-zero rate**. |
 | `fold_http_rejections_total` | `reason` | Requests refused before the MCP layer: `body_too_large`, `forbidden_host`, `forbidden_origin`, `unauthenticated`, `rate_limited`, `oauth_token_rate_limited`, `introspection_viewer` (principal outside `server.introspection.groups`; was `console_viewer` and undocumented before v1.9). |
 | `fold_discovery_syncs_total` | `outcome` | Discovery polls: `applied`, `unchanged`, `rejected` (document failed parse or merged validation), `error` (fetch failed). |
+| `fold_downstream_sessions` | — | Live downstream MCP sessions. Sessions idle past `server.sessionIdleTimeoutMs` are expired; sustained growth means clients are minting sessions faster than they expire — raise the alarm before memory does. |
+| `fold_upstream_bridged_sessions` | `upstream` | Per-client bridged sessions currently held against each upstream (idle ones sweep after 5 minutes). |
+| `fold_panics_total` | `site` | Panics the gateway recovered instead of dying from: the request path (`route`, `fanout`), background loops (`sweep`, `discovery`, `probe`, `health`, `reload`, `telemetry`), SDK-invoked handlers (`bridge`, `notify`), and the audit delivery worker (`audit`). The process survives them by design, but **every one is a bug: alert on non-zero** and file what the paired `panic recovered` log line's stack trace shows. |
 | `fold_build_info` | `version` | Always 1. |
 
 Plus the standard Go process/runtime collectors. Alerting starters:
@@ -227,6 +230,7 @@ errors pass through verbatim):
 | `-32044` | Consumption budget exhausted for the period | Not transient within the period — the message names the reset instant. Do **not** treat it as a backoff delay; a monthly reset would mean sleeping for weeks. |
 | `-32002` | Task id not owned by any upstream | The task is unknown or belongs to another principal. |
 | `-32602` | Invalid or expired list cursor | Restart the list from the beginning. |
+| `-32603` | Internal gateway error: a recovered panic, or an ambiguous tenant configuration | For a panic, retry is reasonable and the operator's `fold_panics_total` counter plus a `panic recovered` log line correspond to it. An ambiguous tenant match is config, not code — the gateway logs `ambiguous tenant configuration` and refuses rather than guesses; fix the tenant selectors. |
 
 HTTP-level refusals: `401` (missing/invalid token, with a
 `WWW-Authenticate` challenge), `403` (host/origin not allowed), `413` (body

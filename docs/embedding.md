@@ -47,7 +47,12 @@ Notes:
 - **`Handler()`** serves the MCP endpoint plus the operational endpoints
   (`/health`, `/metrics`, and the OAuth endpoints when auth/EMA are
   configured) — mount it at the root of a listener, not under a prefix.
-  fold does not terminate TLS; that is your server's job.
+  fold does not terminate TLS; that is your server's job. So are the
+  listener's connection bounds: give your `http.Server` a
+  `ReadHeaderTimeout` and an `IdleTimeout` (the CLI uses 10 s and 120 s),
+  but **no `WriteTimeout`** — MCP responses ride long-lived SSE streams,
+  and a write timeout severs them mid-response. `IdleTimeout` is safe:
+  it applies only between requests on a keep-alive connection.
 - **`WithLogger`** supplies a `*slog.Logger` for operational events; without
   it the gateway is silent. Per-request accounting is in `/metrics` and the
   audit sinks, not the log stream.

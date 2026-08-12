@@ -11,11 +11,24 @@ updates:
       go-minor-patch:
         update-types: [minor, patch]
 
-  # GitHub Actions used by the CI and release workflows.
+  # GitHub Actions used by the CI and release workflows. `uses:` lines are
+  # pinned to commit SHAs (a moved tag on a dependency action is code
+  # execution inside jobs holding release-signing permissions); Dependabot
+  # maintains the SHA pins and keeps the version comments in step.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     groups:
       actions:
+        patterns: ["*"]
+
+  # Base images in deploy/docker are pinned by digest for the same reason
+  # the actions are pinned by SHA; this keeps the digests moving.
+  - package-ecosystem: docker
+    directory: /deploy/docker
+    schedule:
+      interval: weekly
+    groups:
+      base-images:
         patterns: ["*"]

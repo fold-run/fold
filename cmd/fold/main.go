@@ -162,7 +162,18 @@ func run(cfg *config.Config, source, watchPath string, logger *slog.Logger, addr
 	defer gw.Close()
 
 	// No write timeout: MCP responses ride long-lived SSE streams.
-	srv := &http.Server{Addr: addr, Handler: gw.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	// IdleTimeout is safe alongside them — it applies only between requests
+	// on a keep-alive connection, never inside a response — and is what
+	// stops idle connections from being held (and counting against fds)
+	// forever. MaxHeaderBytes is Go's default, pinned so the bound is a
+	// choice rather than an inheritance.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           gw.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

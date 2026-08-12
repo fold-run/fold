@@ -45,6 +45,19 @@ groups:
             Compare against fold_upstream_request_duration_seconds before suspecting the
             gateway: this measurement contains whatever the upstream took.
 
+      # The gateway recovers panics instead of dying from them, but every one
+      # is a bug that was one missing recover() from an outage.
+      - alert: FoldPanicRecovered
+        expr: increase(fold_panics_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: fold recovered a panic at site {{ $labels.site }}
+          description: >-
+            The process survived and the affected request was answered with an internal
+            error, but a panic is always a bug. The paired log line ("panic recovered")
+            carries the stack trace — file it.
+
   # Things that mean an upstream is failing, which fold is surviving.
   - name: fold.upstreams
     rules:

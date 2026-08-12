@@ -37,6 +37,15 @@ const (
 	// bridgedIdleTimeout bounds how long a per-client upstream session
 	// outlives its last use before the sweeper closes it.
 	bridgedIdleTimeout = 5 * time.Minute
+
+	// maxConnectCandidates bounds how many endpoints one connect attempt
+	// walks before reporting the upstream down (see connect).
+	maxConnectCandidates = 3
+
+	// minProbeIntervalMs floors active health-probe intervals for static
+	// upstreams, matching the discovery path's default floor
+	// (config.Discovery.MinHealthCheckIntervalResolved).
+	minProbeIntervalMs = 1000
 )
 
 // upstream wraps one configured MCP server: a shared root session (lists,
@@ -162,12 +171,22 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 		subscribed:     map[string]bool{},
 		log:            slog.New(slog.DiscardHandler),
 	}
+	// streamIdle is opt-in, not defaulted: the SDK client only resets its
+	// reconnect budget when Last-Event-ID advances, so a default idle cut
+	// against an upstream that legitimately never sends notifications would
+	// burn through the no-progress retries and kill the whole session (~5
+	// cuts) — the gateway causing exactly the failure the knob exists to
+	// bound. An operator sets it for upstreams whose streams actually wedge.
+	streamIdle := time.Duration(0)
 	if t := cfg.Timeouts; t != nil {
 		if t.ConnectMs > 0 {
 			u.connectTimeout = time.Duration(t.ConnectMs) * time.Millisecond
 		}
 		if t.RequestMs > 0 {
 			u.requestTimeout = time.Duration(t.RequestMs) * time.Millisecond
+		}
+		if t.StreamIdleMs > 0 {
+			streamIdle = time.Duration(t.StreamIdleMs) * time.Millisecond
 		}
 	}
 	if cfg.CacheTTLMs > 0 {
@@ -214,6 +233,7 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 		}
 	}
 	ct := newCredentialTransport(u.creds, sessionEra, upstreamHosts)
+	ct.streamIdle = streamIdle
 	u.httpClient = &http.Client{
 		Transport: ct,
 		// Never follow a redirect that changes host: credentials are attached
@@ -259,6 +279,10 @@ type credentialTransport struct {
 	sessionEra    bool
 	upstreamHosts map[string]bool     // credentials/trace attach only to these hosts
 	log           func() *slog.Logger // resolved lazily (upstream logger set after construction)
+
+	// streamIdle bounds silence on the standalone SSE stream (see the GET
+	// branch of RoundTrip); 0 disables the bound.
+	streamIdle time.Duration
 }
 
 func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool, upstreamHosts map[string]bool) *credentialTransport {
@@ -332,9 +356,60 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 			}
 			return synthetic405(req), nil
 		}
+		// timeouts.streamIdleMs: bound silence on the standalone stream.
+		// sseHeaderTimeout above catches a server that never answers the
+		// GET; this catches one that answers and then wedges — TCP alive,
+		// no bytes — which otherwise holds a dead notification channel
+		// open forever. Cutting the stream is safe by construction: the
+		// SDK client reconnects interrupted standalone streams with
+		// backoff and Last-Event-ID, so a healthy-but-quiet upstream sees
+		// a periodic re-GET, and a wedged one is actually retried. POST
+		// response streams are deliberately not wrapped — they carry an
+		// in-flight call whose lifetime requestTimeout already governs,
+		// and severed mid-call they may not be resumable.
+		if err == nil && resp.StatusCode == http.StatusOK && t.streamIdle > 0 &&
+			strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+			resp.Body = newIdleTimeoutBody(resp.Body, t.streamIdle)
+		}
 		return resp, err
 	}
 	return t.base.RoundTrip(req)
+}
+
+// idleTimeoutBody closes an SSE stream that has gone silent for longer than
+// idle. Each delivered byte re-arms the timer; when it fires, the underlying
+// body is closed, which unblocks the SDK's pending Read with an error it
+// treats as a transient interruption (and reconnects from).
+type idleTimeoutBody struct {
+	rc       io.ReadCloser
+	timer    *time.Timer
+	idle     time.Duration
+	timedOut atomic.Bool
+}
+
+func newIdleTimeoutBody(rc io.ReadCloser, idle time.Duration) *idleTimeoutBody {
+	b := &idleTimeoutBody{rc: rc, idle: idle}
+	b.timer = time.AfterFunc(idle, func() {
+		b.timedOut.Store(true)
+		_ = rc.Close()
+	})
+	return b
+}
+
+func (b *idleTimeoutBody) Read(p []byte) (int, error) {
+	n, err := b.rc.Read(p)
+	if n > 0 {
+		b.timer.Reset(b.idle)
+	}
+	if err != nil && b.timedOut.Load() {
+		err = fmt.Errorf("upstream SSE stream idle for %s: %w", b.idle, err)
+	}
+	return n, err
+}
+
+func (b *idleTimeoutBody) Close() error {
+	b.timer.Stop()
+	return b.rc.Close()
 }
 
 // connect establishes a new session, load-balancing across the upstream's
@@ -344,8 +419,18 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // connected to — balancing is per new session, matching MCP's sessionful
 // wire protocol.
 func (u *upstream) connect(ctx context.Context, opts *mcp.ClientOptions) (*mcp.ClientSession, error) {
+	candidates := u.endpoints.candidates()
+	// Bound the failover walk: with every replica of a K-replica upstream
+	// black-holing SYNs, walking all of them costs K×connectTimeout per
+	// caller before the breaker has even seen the failures. Three attempts
+	// is enough to step over a couple of freshly-dead replicas (ejections
+	// push known-bad ones to the back anyway); beyond that the upstream is
+	// down and failing fast is the correct answer.
+	if len(candidates) > maxConnectCandidates {
+		candidates = candidates[:maxConnectCandidates]
+	}
 	var lastErr error
-	for _, endpoint := range u.endpoints.candidates() {
+	for _, endpoint := range candidates {
 		session, err := u.connectTo(ctx, endpoint, opts)
 		if err != nil {
 			u.endpoints.markDown(endpoint)
@@ -443,25 +528,42 @@ func (u *upstream) startHealthProbes() {
 	if hc == nil || hc.IntervalMs <= 0 || u.probeStop != nil {
 		return
 	}
+	interval := hc.IntervalMs
+	// The same floor discovered upstreams get (clampDiscoveredUpstreams),
+	// applied to static config: a probe is a full MCP handshake per endpoint
+	// per interval, and a typo'd "1" would make the gateway a flood source
+	// against its own upstream. Clamped rather than rejected so an existing
+	// aggressive config keeps probing, just not pathologically.
+	if interval < minProbeIntervalMs {
+		u.log.Warn("clamping health-probe interval", "requested", interval, "floor", minProbeIntervalMs)
+		interval = minProbeIntervalMs
+	}
 	u.probeStop = make(chan struct{})
-	go u.probeLoop(time.Duration(hc.IntervalMs) * time.Millisecond)
+	go u.probeLoop(time.Duration(interval) * time.Millisecond)
 }
 
 // probeLoop probes every endpoint once immediately — a replica that is
 // already dead is ejected before the first client request — then on each
 // interval until the upstream closes.
 func (u *upstream) probeLoop(interval time.Duration) {
-	u.probeEndpoints()
+	u.safeProbe()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			u.probeEndpoints()
+			u.safeProbe()
 		case <-u.probeStop:
 			return
 		}
 	}
+}
+
+// safeProbe runs one probe round, dropping a poisoned round rather than
+// ending the loop (or, unrecovered, the process — see rescue.go).
+func (u *upstream) safeProbe() {
+	defer u.rescue("probe")
+	u.probeEndpoints()
 }
 
 // probeEndpoints connects to each endpoint concurrently (a full MCP
@@ -473,6 +575,7 @@ func (u *upstream) probeEndpoints() {
 	var wg sync.WaitGroup
 	for _, endpoint := range u.endpoints.all() {
 		wg.Go(func() {
+			defer u.rescue("probe") // own goroutine; see rescue.go
 			ctx, cancel := context.WithTimeout(context.Background(), u.connectTimeout)
 			defer cancel()
 			session, err := u.connectTo(ctx, endpoint, &mcp.ClientOptions{})
@@ -512,20 +615,28 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 			u.onListChanged(kind)
 		}
 	}
+	// These run on the SDK client's read-loop goroutine off upstream-supplied
+	// input, with no recovery above them — and an upstream that panics its
+	// handler on every notification would otherwise crash-loop the gateway.
+	// See rescue.go.
 	opts := &mcp.ClientOptions{
 		ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
+			defer u.rescue("notify")
 			u.lists.Invalidate(ctx, "tools")
 			notifyDownstream("tools")
 		},
 		PromptListChangedHandler: func(ctx context.Context, _ *mcp.PromptListChangedRequest) {
+			defer u.rescue("notify")
 			u.lists.Invalidate(ctx, "prompts")
 			notifyDownstream("prompts")
 		},
 		ResourceListChangedHandler: func(ctx context.Context, _ *mcp.ResourceListChangedRequest) {
+			defer u.rescue("notify")
 			u.lists.Invalidate(ctx, "resources")
 			notifyDownstream("resources")
 		},
 		ResourceUpdatedHandler: func(ctx context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
+			defer u.rescue("notify")
 			if u.onResourceUpdated != nil {
 				u.onResourceUpdated(ctx, req.Params)
 			}
@@ -638,6 +749,14 @@ func (u *upstream) isSubscribed(uri string) bool {
 	return u.subscribed[uri]
 }
 
+// bridgedCount reports how many per-client sessions this upstream currently
+// holds (scraped by sessionCollector).
+func (u *upstream) bridgedCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.bridged)
+}
+
 // sweepBridged closes bridged sessions idle longer than bridgedIdleTimeout.
 func (u *upstream) sweepBridged() {
 	u.mu.Lock()
@@ -718,7 +837,15 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 	if err != nil {
 		u.breaker.Record(ctx, false)
 		observe("connect_error")
-		return &jsonrpc.Error{Code: codeUpstreamDown, Message: err.Error()}
+		// The client-facing message is generic on purpose: a raw connect
+		// error names internal endpoints and can name secret env vars, the
+		// same strings /health and /api/federation already redact for
+		// untrusted callers. The details are in the gateway log (connect
+		// warns per endpoint as it fails).
+		return &jsonrpc.Error{
+			Code:    codeUpstreamDown,
+			Message: fmt.Sprintf("upstream %q unavailable (connect failed; details in gateway logs)", u.cfg.ID),
+		}
 	}
 	// Budgets are checked here, after the session is in hand, so consumption
 	// counts only invocations that actually reach the upstream. Checking
@@ -754,9 +881,12 @@ func (u *upstream) guardedDo(ctx context.Context, acquire func(context.Context) 
 		u.dropSession(session)
 	}
 	observe("error")
+	// Generic like the connect branch above — a transport error's text can
+	// carry internal hostnames or a credential injector's env-var name.
+	// The full error is on the warn line just logged.
 	return &jsonrpc.Error{
 		Code:    codeUpstreamDown,
-		Message: fmt.Sprintf("upstream %q: %v", u.cfg.ID, err),
+		Message: fmt.Sprintf("upstream %q request failed (details in gateway logs)", u.cfg.ID),
 	}
 }
 

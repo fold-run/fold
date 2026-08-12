@@ -253,7 +253,14 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	// Audit is built after metrics so its delivery outcomes have somewhere to
 	// be counted: a sink that drops events is the one failure the audit trail
 	// cannot record about itself.
-	g.audit = audit.New(cfg.Audit, audit.WithObserver(g.metrics.observeAudit))
+	g.audit = audit.New(cfg.Audit,
+		audit.WithObserver(g.metrics.observeAudit),
+		// Delivery-worker panics count and log like every other recovered
+		// panic (site "audit"), instead of masquerading as sink failures.
+		audit.WithPanicHook(func(r any, stack []byte) {
+			g.metrics.panicked("audit")
+			g.log.Error("panic recovered", "site", "audit", "panic", r, "stack", string(stack))
+		}))
 	for _, err := range g.audit.StartupErrors() {
 		// A sink that would not open is skipped rather than fatal — losing one
 		// destination should not take the gateway down — but it is not silent.
@@ -311,6 +318,34 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 				return nil, err
 			}
 			g.ema = ema
+			// The token endpoint is an authorization server surface; its
+			// terminal responses flow through audit like every other refusal
+			// or grant the gateway produces. A replayed ID-JAG is the event
+			// the trail most needs to carry — invisible here, an attacker
+			// replaying assertions under the rate limit left no record at all.
+			ema.OnExchange = func(x auth.TokenExchange) {
+				evt := audit.Event{
+					Method:    "oauth/token",
+					Principal: x.Subject,
+					Issuer:    x.Issuer,
+					Error:     x.Detail,
+					// The exchange outcome verbatim ("minted", "replayed",
+					// "invalid_grant", ...): a replay must be alertable on a
+					// structured field, not a substring of the error text.
+					Decision: x.Outcome,
+				}
+				switch x.Outcome {
+				case "minted":
+					evt.Outcome = audit.OutcomeOK
+				case "replayed", "invalid_grant":
+					// An assertion that does not verify — or verifies but was
+					// already redeemed — is a failed authentication.
+					evt.Outcome = audit.OutcomeUnauthenticated
+				default: // invalid_request, unsupported_grant_type, server_error
+					evt.Outcome = audit.OutcomeError
+				}
+				g.audit.Emit(evt)
+			}
 			g.emaTokenLimit = provider.Limiter("oauth-token", cfg.Auth.EMA.ResolvedTokenRateLimit())
 			// Tokens fold mints are presented back to fold: trust them via
 			// the local key, no JWKS round-trip.
@@ -343,6 +378,23 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	if err := g.registerTaskMethods(); err != nil {
 		return nil, err
 	}
+	// Registered here rather than in newMetricsSet because it reads
+	// g.server, which only now exists.
+	g.metrics.registry.MustRegister(&sessionCollector{
+		downstream: func() int {
+			n := 0
+			for range g.server.Sessions() {
+				n++
+			}
+			return n
+		},
+		upstreams: func() []*upstream {
+			if rt := g.routes.Load(); rt != nil {
+				return rt.upstreams
+			}
+			return nil
+		},
+	})
 	g.stopSweeper = make(chan struct{})
 	go g.sweepLoop()
 	g.handler = g.buildHandler()
@@ -575,6 +627,7 @@ func (g *Gateway) applyLocked(base *config.Config, discovered []config.Upstream)
 		if succ := next.byID[r.cfg.ID]; succ != nil {
 			for _, uri := range r.subscribedURIs() {
 				go func() {
+					defer g.rescue("reload")
 					ctx, cancel := context.WithTimeout(context.Background(), succ.connectTimeout+succ.requestTimeout)
 					defer cancel()
 					if err := succ.subscribe(ctx, uri); err != nil {
@@ -586,6 +639,7 @@ func (g *Gateway) applyLocked(base *config.Config, discovered []config.Upstream)
 		// Drain: no new requests route to a retired upstream, and closing
 		// after its request timeout lets in-flight calls finish.
 		go func() {
+			defer g.rescue("reload")
 			timer := time.NewTimer(r.requestTimeout)
 			defer timer.Stop()
 			select {
@@ -645,10 +699,15 @@ func (g *Gateway) sweepLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			for _, u := range g.rt().upstreams {
-				u.sweepBridged()
-			}
-			g.reapSubscribers()
+			// One poisoned tick is dropped, not the loop: without the sweep,
+			// idle sessions and orphaned subscriptions grow for the life of
+			// the process.
+			g.safely("sweep", func() {
+				for _, u := range g.rt().upstreams {
+					u.sweepBridged()
+				}
+				g.reapSubscribers()
+			})
 		case <-g.stopSweeper:
 			return
 		}
@@ -891,9 +950,11 @@ func (g *Gateway) startMetricsListener() error {
 	g.metricsSrv = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	g.log.Info("telemetry listener", "addr", ln.Addr().String(), "paths", "/metrics, /health")
 	go func() {
+		defer g.rescue("telemetry")
 		if err := g.metricsSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			g.log.Error("telemetry listener stopped", "err", err)
 		}
@@ -1036,14 +1097,19 @@ func (g *Gateway) invocationCtx(fallback context.Context, key string) context.Co
 // invocation's context so it rides that call's stream.
 func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
 	key := ss.ID()
+	// All four handlers run on SDK client goroutines with no recovery above
+	// them (see rescue.go): notifications swallow a panic, request handlers
+	// convert it into an error answer to the upstream.
 	opts := &mcp.ClientOptions{
 		// Advertise no capabilities by default; handlers below add theirs.
 		Capabilities: &mcp.ClientCapabilities{},
 		LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) {
+			defer g.rescue("bridge")
 			g.bumpBridgeActivity(key)
 			_ = ss.Log(g.invocationCtx(ctx, key), req.Params) // notification; client gone is fine
 		},
 		ProgressNotificationHandler: func(ctx context.Context, req *mcp.ProgressNotificationClientRequest) {
+			defer g.rescue("bridge")
 			g.bumpBridgeActivity(key)
 			_ = ss.NotifyProgress(g.invocationCtx(ctx, key), req.Params) // notification; client gone is fine
 		},
@@ -1053,13 +1119,25 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
 		caps = init.Capabilities
 	}
 	if caps != nil && caps.Sampling != nil {
-		opts.CreateMessageHandler = func(ctx context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+		opts.CreateMessageHandler = func(ctx context.Context, req *mcp.CreateMessageRequest) (res *mcp.CreateMessageResult, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					notePanic(g.log, g.metrics, "bridge", r)
+					res, err = nil, fmt.Errorf("internal gateway error")
+				}
+			}()
 			g.bumpBridgeActivity(key)
 			return ss.CreateMessage(g.invocationCtx(ctx, key), req.Params)
 		}
 	}
 	if caps != nil && caps.Elicitation != nil {
-		opts.ElicitationHandler = func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		opts.ElicitationHandler = func(ctx context.Context, req *mcp.ElicitRequest) (res *mcp.ElicitResult, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					notePanic(g.log, g.metrics, "bridge", r)
+					res, err = nil, fmt.Errorf("internal gateway error")
+				}
+			}()
 			g.bumpBridgeActivity(key)
 			return ss.Elicit(g.invocationCtx(ctx, key), req.Params)
 		}
@@ -1070,7 +1148,15 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
 func (g *Gateway) buildHandler() http.Handler {
 	streamable := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return g.server },
-		&mcp.StreamableHTTPOptions{},
+		&mcp.StreamableHTTPOptions{
+			// Zero would mean sessions never expire (SDK semantics). Clients
+			// routinely reconnect without DELETE — each abandoned session
+			// then holds gateway state forever, and reapSubscribers reads it
+			// as live, so the upstream subscriptions it pins never release
+			// either. Expiry is the backstop that turns both into bounded
+			// garbage; fold_downstream_sessions watches it work.
+			SessionTimeout: time.Duration(g.cfg.SessionIdleTimeoutMs()) * time.Millisecond,
+		},
 	)
 
 	// Pipeline (outermost first): host validation → auth → global rate
@@ -1191,7 +1277,10 @@ func (g *Gateway) tokenRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ok, retry := g.emaTokenLimit.Allow(r.Context()); !ok {
 			g.metrics.reject("oauth_token_rate_limited")
-			g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeRateLimited, Error: "oauth token endpoint rate limit"})
+			// Method matches the exchange events ServeToken emits, so one
+			// SIEM query over method="oauth/token" sees this endpoint's
+			// whole story — the floods included.
+			g.audit.Emit(audit.Event{Method: "oauth/token", Outcome: audit.OutcomeRateLimited, Error: "oauth token endpoint rate limit"})
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -1460,6 +1549,13 @@ func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes) (status
 	var wg sync.WaitGroup
 	for i, u := range upstreams {
 		wg.Go(func() {
+			// Own goroutine — recover here or the process dies (see rescue.go).
+			defer func() {
+				if r := recover(); r != nil {
+					notePanic(g.log, g.metrics, "health", r)
+					statuses[i] = upstreamHealth{ID: u.cfg.ID, Namespace: u.cfg.Namespace, Error: "internal error"}
+				}
+			}()
 			h := upstreamHealth{
 				ID:        u.cfg.ID,
 				Namespace: u.cfg.Namespace,

@@ -32,9 +32,18 @@ is the single exit door.
 With EMA, fold additionally acts as a deliberately one-grant-wide
 authorization server: `POST /oauth/token` exchanges an enterprise-IdP ID-JAG
 (RFC 7523) for a short-lived fold-signed token. Each assertion's `jti` is
-single-use (recorded fleet-wide via Redis when configured), the endpoint is
-rate limited against amplification, and issuers marked `mode: "exchange"`
-are never accepted as direct bearer issuers.
+single-use (recorded fleet-wide via Redis when configured; the in-process
+recorder is size-bounded at 100k live records, a ceiling only reachable by
+signing that many valid assertions inside one assertion's lifetime), the
+endpoint is rate limited against amplification, and issuers marked
+`mode: "exchange"` are never accepted as direct bearer issuers. The exchange
+obeys the same single-exit-door rule as `/mcp`: every terminal response —
+the mint, an invalid assertion, the rate-limited 429, and above all a
+**detected replay** — emits one audit event (`method: "oauth/token"`) whose
+`decision` field carries the exchange outcome verbatim (`minted`,
+`replayed`, `invalid_grant`, ...), so a replay is alertable on a structured
+field and an attacker probing the endpoint under the rate limit is visible
+to the trail rather than only to the rate limiter.
 
 ## Enforcement: the invisibility pair
 

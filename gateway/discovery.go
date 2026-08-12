@@ -63,6 +63,14 @@ func newDiscoverer(g *Gateway, cfg *config.Discovery) *discoverer {
 	interval := 30 * time.Second
 	if cfg.IntervalMs > 0 {
 		interval = time.Duration(cfg.IntervalMs) * time.Millisecond
+		// Floor, not rejection: a 1 ms typo turns the gateway into a flood
+		// source against its own discovery source, but an aggressive
+		// registration should still federate — the same posture as the
+		// health-probe clamps.
+		if interval < time.Second {
+			g.log.Warn("clamping discovery poll interval", "requestedMs", cfg.IntervalMs, "floor", "1s")
+			interval = time.Second
+		}
 	}
 	return &discoverer{
 		g:   g,
@@ -90,13 +98,16 @@ func newDiscoverer(g *Gateway, cfg *config.Discovery) *discoverer {
 // the federation before the first client request lands — then on each
 // interval until the gateway closes.
 func (d *discoverer) loop() {
-	d.sync()
+	// Each sync runs under rescue (see rescue.go): a poisoned document must
+	// cost one sync, not the loop — an ended loop would freeze the federation
+	// on the last good set with nothing left polling for the fix.
+	d.g.safely("discovery", d.sync)
 	ticker := time.NewTicker(d.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			d.sync()
+			d.g.safely("discovery", d.sync)
 		case <-d.stop:
 			return
 		}
