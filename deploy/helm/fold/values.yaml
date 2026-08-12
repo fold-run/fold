@@ -51,7 +51,9 @@ redis:
   # across replicas so the fleet behaves as one gateway. Without it each pod
   # keeps in-memory state (fine for replicaCount: 1). External Redis/Valkey
   # only — the chart deliberately ships no Redis subchart.
-  # Plain redis:// URL. Prefer existingSecret when the URL carries a password.
+  # Plain redis:// URL — for password-less endpoints only: this value lands
+  # verbatim in the Deployment manifest, readable by anyone who can `get
+  # deployments`. A URL carrying a password belongs in existingSecret.
   url: ""
   # Name of a Secret holding the URL, and the key within it.
   existingSecret: ""
@@ -102,6 +104,38 @@ service:
   port: 8080
   annotations: {}
 
+# Opt-in NetworkPolicy. Two things make it worth turning on here more than
+# in the average chart: the metrics listener's documented security model is
+# "you did not put it on the public network" — this is the chart-native way
+# to make that true — and the pod holds every upstream credential, which an
+# egress allowlist meaningfully contains. Requires a CNI that enforces
+# NetworkPolicy; on one that doesn't, the object renders and does nothing.
+networkPolicy:
+  enabled: false
+  # Peers allowed to reach the MCP port. Empty = any peer the CNI admits
+  # (the policy still scopes the metrics port separately).
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: ingress-nginx
+  ingressFrom: []
+  # Peers allowed to scrape the metrics listener port (rendered only when
+  # metrics.listener.enabled). Empty = any.
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: monitoring
+  metricsIngressFrom: []
+  # Egress lockdown: when enabled, the pod may reach DNS plus only these
+  # rules — cover your upstreams, IdP (JWKS/token endpoints), Redis, and
+  # any audit webhook/OTLP collector.
+  egress:
+    enabled: false
+    rules: []
+    #  - to:
+    #      - namespaceSelector: {}
+    #    ports:
+    #      - port: 443
+    #        protocol: TCP
+
 ingress:
   enabled: false
   className: ""
@@ -130,8 +164,12 @@ autoscaling:
   maxReplicas: 10
   targetCPUUtilizationPercentage: 75
 
+# On by default: the chart defaults to two replicas, which is exactly the
+# shape where one node drain can take both pods at once. Rendered only when
+# it protects something — with a single fixed replica a minAvailable: 1
+# budget would block every voluntary drain, so the template skips it there.
 podDisruptionBudget:
-  enabled: false
+  enabled: true
   minAvailable: 1
 
 metrics:

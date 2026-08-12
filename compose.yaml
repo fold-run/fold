@@ -27,7 +27,7 @@ name: fold-run
 
 services:
   fold:
-    image: ghcr.io/fold-run/fold:latest
+    image: ghcr.io/fold-run/fold:v1.10.1 # bumped by the release flow; digest + attestation verifiable via `gh attestation verify`
     # To run from source instead:
     # build:
     #   context: .
@@ -40,7 +40,10 @@ services:
       - --log-format
       - json
     ports:
-      - "8080:8080"
+      # Loopback like Redis below: this file is a local/dev arrangement, and
+      # the gateway (possibly auth-disabled) must not be LAN-reachable by
+      # default. Publishing deliberately: override with "0.0.0.0:8080:8080".
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./fold.config.json:/etc/fold/fold.config.json:ro
     # Secrets referenced by the config's secretRef fields are plain env vars;
@@ -86,7 +89,7 @@ services:
     # Carries Node, since npx-delivered servers are the common case. To serve a
     # Python server, or to pin your own runtime base, build from source instead
     # by uncommenting `build` (see deploy/docker/stdio.Dockerfile).
-    image: ghcr.io/fold-run/fold-stdio:latest
+    image: ghcr.io/fold-run/fold-stdio:v1.10.1
     # build:
     #   context: .
     #   dockerfile: deploy/docker/stdio.Dockerfile
@@ -136,7 +139,7 @@ services:
       # Enough for a laptop; this stack is for seeing the gateway, not for
       # long-term retention.
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -146,7 +149,8 @@ services:
     profiles: ["observability"]
     image: grafana/grafana:11.5.1
     ports:
-      - "3000:3000"
+      # Loopback is load-bearing here: Grafana runs anonymous-Admin below.
+      - "127.0.0.1:3000:3000"
     environment:
       # Anonymous admin: this is a local stack bound to localhost, and a login
       # prompt in front of a demo dashboard is friction without a threat model.
