@@ -584,6 +584,15 @@ type ServerSection struct {
 	// memory one request can pin. Default 1 MiB.
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 
+	// SessionIdleTimeoutMs closes a downstream MCP session after this long
+	// without a request from its client. Ending a session with DELETE is
+	// optional in the protocol and clients routinely reconnect without it;
+	// an unexpired session pins gateway memory — and the upstream
+	// subscriptions it holds — forever. Default 30 minutes; negative
+	// disables expiry (the pre-1.11 behavior). Construction-wired like the
+	// rest of this section: Reload rejects a change to it.
+	SessionIdleTimeoutMs int `json:"sessionIdleTimeoutMs,omitempty"`
+
 	// RedisURL shares cache, rate-limit, and circuit-breaker state across
 	// gateway instances (redis:// URL). Defaults to the REDIS_URL
 	// environment variable; absent → in-process state.
@@ -1132,6 +1141,16 @@ func (c *Config) MaxBodyBytes() int64 {
 		return c.Server.MaxBodyBytes
 	}
 	return 1 << 20
+}
+
+// SessionIdleTimeoutMs returns how long a downstream MCP session may sit
+// idle before the gateway closes it, in milliseconds. Default 30 minutes;
+// 0 — from a negative config value — means sessions never expire.
+func (c *Config) SessionIdleTimeoutMs() int {
+	if c.Server != nil && c.Server.SessionIdleTimeoutMs != 0 {
+		return max(c.Server.SessionIdleTimeoutMs, 0)
+	}
+	return 30 * 60 * 1000
 }
 
 // MCPPath returns the path the gateway serves MCP on (default "/mcp").

@@ -90,13 +90,16 @@ func newDiscoverer(g *Gateway, cfg *config.Discovery) *discoverer {
 // the federation before the first client request lands — then on each
 // interval until the gateway closes.
 func (d *discoverer) loop() {
-	d.sync()
+	// Each sync runs under rescue (see rescue.go): a poisoned document must
+	// cost one sync, not the loop — an ended loop would freeze the federation
+	// on the last good set with nothing left polling for the fix.
+	d.g.safely("discovery", d.sync)
 	ticker := time.NewTicker(d.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			d.sync()
+			d.g.safely("discovery", d.sync)
 		case <-d.stop:
 			return
 		}

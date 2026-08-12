@@ -281,6 +281,7 @@
         "rateLimit": { "$ref": "#/definitions/rateLimit" },
         "budget": { "$ref": "#/definitions/budget" },
         "maxBodyBytes": { "type": "integer", "minimum": 0 },
+        "sessionIdleTimeoutMs": { "type": "integer" },
         "redisUrl": { "type": "string", "format": "uri" },
         "metricsAddr": { "type": "string" },
         "introspection": { "$ref": "#/definitions/introspection" },

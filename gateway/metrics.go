@@ -47,6 +47,10 @@ type metricsSet struct {
 	// listItems makes the filtering visible: fold has always shrunk a
 	// caller's list to what they may invoke, and nothing said by how much.
 	listItems *prometheus.CounterVec
+
+	// panics counts recovered panics by site (see rescue.go). The gateway
+	// survives them by design, but every one is a bug — alert on non-zero.
+	panics *prometheus.CounterVec
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -105,10 +109,14 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_tenant_upstream_calls_total",
 			Help: "Upstream invocations attributed to a tenant — the same unit a tenant budget is charged in, so this is what a budget is spent on, live.",
 		}, []string{"tenant"}),
+		panics: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_panics_total",
+			Help: "Panics recovered by the gateway, by site. The process survives them by design, but every one is a bug — alert on non-zero.",
+		}, []string{"site"}),
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
-		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems,
+		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems, m.panics,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -168,6 +176,39 @@ func (c *upstreamCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
+// sessionCollector exports session-population gauges resolved at scrape
+// time, like upstreamCollector. Sessions are where an abandoned client turns
+// into retained memory (each holds gateway state, and its subscriptions pin
+// upstream ones), so their population must be watchable — expiry without a
+// gauge would leave a leak and its fix equally invisible.
+type sessionCollector struct {
+	downstream func() int         // live downstream MCP sessions
+	upstreams  func() []*upstream // for per-upstream bridged session counts
+}
+
+var (
+	downstreamSessionsDesc = prometheus.NewDesc(
+		"fold_downstream_sessions",
+		"Live downstream MCP sessions. Sustained growth means clients mint sessions faster than server.sessionIdleTimeoutMs expires them.",
+		nil, nil)
+	bridgedSessionsDesc = prometheus.NewDesc(
+		"fold_upstream_bridged_sessions",
+		"Per-client bridged sessions currently held against an upstream.",
+		[]string{"upstream"}, nil)
+)
+
+func (c *sessionCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- downstreamSessionsDesc
+	ch <- bridgedSessionsDesc
+}
+
+func (c *sessionCollector) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(downstreamSessionsDesc, prometheus.GaugeValue, float64(c.downstream()))
+	for _, u := range c.upstreams() {
+		ch <- prometheus.MustNewConstMetric(bridgedSessionsDesc, prometheus.GaugeValue, float64(u.bridgedCount()), u.cfg.ID)
+	}
+}
+
 func (m *metricsSet) observeRequest(method, outcome string, d time.Duration) {
 	m.requests.WithLabelValues(method, outcome).Inc()
 	m.requestDur.WithLabelValues(method).Observe(d.Seconds())
@@ -223,6 +264,11 @@ func (m *metricsSet) observeListShaping(method string, offered, served, capped i
 	if capped > 0 {
 		m.listItems.WithLabelValues(method, "capped").Add(float64(capped))
 	}
+}
+
+// panicked counts one recovered panic (see rescue.go).
+func (m *metricsSet) panicked(site string) {
+	m.panics.WithLabelValues(site).Inc()
 }
 
 // observeAudit records the fate of audit events for one sink.

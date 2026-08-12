@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -87,8 +88,13 @@ type Logger struct {
 	sinks       []Sink
 	closers     []io.Closer
 	observer    Observer
+	panicHook   PanicHook
 	startupErrs []error
 }
+
+// PanicHook is told about a panic recovered inside a delivery worker: the
+// recovered value and the stack at recovery.
+type PanicHook func(recovered any, stack []byte)
 
 // Observer is told the fate of events, by sink type and outcome (delivered,
 // retried, dead_lettered, dropped). The gateway turns this into metrics: audit
@@ -107,6 +113,18 @@ func WithObserver(o Observer) Option {
 	return func(l *Logger) {
 		if o != nil {
 			l.observer = o
+		}
+	}
+}
+
+// WithPanicHook routes recovered delivery-worker panics into the caller's
+// panic accounting, so this package's recoveries alert exactly like the
+// gateway's own (fold_panics_total, the "panic recovered" log line). Absent,
+// a recovered panic still writes stderr — never silent, merely unaggregated.
+func WithPanicHook(h PanicHook) Option {
+	return func(l *Logger) {
+		if h != nil {
+			l.panicHook = h
 		}
 	}
 }
@@ -139,6 +157,7 @@ func New(cfg *config.Audit, opts ...Option) *Logger {
 				}
 			}
 			w := newHTTPSink(s.URL, s.Headers, jsonBatch, resolveRetry(s.Retry), dl, report)
+			w.onPanic = l.panicHook
 			l.sinks = append(l.sinks, w)
 			l.closers = append(l.closers, w)
 		case "otlp-logs":
@@ -236,6 +255,7 @@ type httpSink struct {
 	retry   retryPolicy
 	dead    *deadLetter
 	report  func(outcome string, n int)
+	onPanic PanicHook // nil → stderr fallback in deliverSafe
 	done    chan struct{}
 }
 
@@ -304,8 +324,30 @@ func (s *httpSink) run() {
 				break drain
 			}
 		}
-		s.deliver(batch)
+		s.deliverSafe(batch)
 	}
+}
+
+// deliverSafe keeps the delivery worker alive across a panic. The worker is
+// the one goroutine draining this sink's buffer: unrecovered, a panic ends
+// the process; merely swallowed at the loop, it would end the worker and
+// silently turn every later event into a drop. The batch it was carrying is
+// counted as dropped — the observer contract that a lost event is always
+// countable holds even here — and the panic itself goes to the hook, so it
+// alerts like every other recovered panic rather than masquerading as a
+// sink failure.
+func (s *httpSink) deliverSafe(batch []Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.report(OutcomeDropped, len(batch))
+			if s.onPanic != nil {
+				s.onPanic(r, debug.Stack())
+			} else {
+				fmt.Fprintf(os.Stderr, "fold: audit: panic recovered in delivery worker: %v\n%s", r, debug.Stack())
+			}
+		}
+	}()
+	s.deliver(batch)
 }
 
 // deliver posts a batch, retrying transient failures with backoff and

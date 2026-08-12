@@ -13,6 +13,7 @@ implementation order. Verdict for all: **keep**.
 | `--host` | `127.0.0.1` | The other half of the pair. Never widen this default. |
 | `server.allowedHosts` | localhost set (only when unset) | DNS-rebinding protection that matches the loopback default. An explicit allowlist replaces — never extends — the localhost seed. |
 | `server.maxBodyBytes` | 1 MiB | Bounds memory per request. Deliberately conservative; workloads shipping large base64 content raise it knowingly. |
+| `server.sessionIdleTimeoutMs` | 30 min (added in v1.11) | Ending a session with `DELETE` is optional in the protocol, so without expiry every abandoned client leaves a session — and the upstream subscriptions it pins — held forever. 30 minutes is long enough that a thinking human or a slow agent never notices (the SDK counts any request as activity), short enough that leaks stay bounded. Negative opts out, restoring the pre-1.11 behavior. |
 | `auth.ema.tokenTtlSec` | 600 | Short-lived minted tokens; refresh is cheap (the ID-JAG is re-presented). |
 | `auth.ema.tokenRateLimitPerMinute` | 600 | Anti-amplification on the unauthenticated token endpoint. |
 | `server.introspection.enabled` | `false` (added in v1.9) | No new surface unless asked for. `/api/federation` names upstream URLs, owners, and labels; serving it is a deliberate act, not a default. |

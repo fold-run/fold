@@ -451,17 +451,24 @@ func (u *upstream) startHealthProbes() {
 // already dead is ejected before the first client request — then on each
 // interval until the upstream closes.
 func (u *upstream) probeLoop(interval time.Duration) {
-	u.probeEndpoints()
+	u.safeProbe()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			u.probeEndpoints()
+			u.safeProbe()
 		case <-u.probeStop:
 			return
 		}
 	}
+}
+
+// safeProbe runs one probe round, dropping a poisoned round rather than
+// ending the loop (or, unrecovered, the process — see rescue.go).
+func (u *upstream) safeProbe() {
+	defer u.rescue("probe")
+	u.probeEndpoints()
 }
 
 // probeEndpoints connects to each endpoint concurrently (a full MCP
@@ -473,6 +480,7 @@ func (u *upstream) probeEndpoints() {
 	var wg sync.WaitGroup
 	for _, endpoint := range u.endpoints.all() {
 		wg.Go(func() {
+			defer u.rescue("probe") // own goroutine; see rescue.go
 			ctx, cancel := context.WithTimeout(context.Background(), u.connectTimeout)
 			defer cancel()
 			session, err := u.connectTo(ctx, endpoint, &mcp.ClientOptions{})
@@ -512,20 +520,28 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 			u.onListChanged(kind)
 		}
 	}
+	// These run on the SDK client's read-loop goroutine off upstream-supplied
+	// input, with no recovery above them — and an upstream that panics its
+	// handler on every notification would otherwise crash-loop the gateway.
+	// See rescue.go.
 	opts := &mcp.ClientOptions{
 		ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
+			defer u.rescue("notify")
 			u.lists.Invalidate(ctx, "tools")
 			notifyDownstream("tools")
 		},
 		PromptListChangedHandler: func(ctx context.Context, _ *mcp.PromptListChangedRequest) {
+			defer u.rescue("notify")
 			u.lists.Invalidate(ctx, "prompts")
 			notifyDownstream("prompts")
 		},
 		ResourceListChangedHandler: func(ctx context.Context, _ *mcp.ResourceListChangedRequest) {
+			defer u.rescue("notify")
 			u.lists.Invalidate(ctx, "resources")
 			notifyDownstream("resources")
 		},
 		ResourceUpdatedHandler: func(ctx context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
+			defer u.rescue("notify")
 			if u.onResourceUpdated != nil {
 				u.onResourceUpdated(ctx, req.Params)
 			}
@@ -636,6 +652,14 @@ func (u *upstream) isSubscribed(uri string) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.subscribed[uri]
+}
+
+// bridgedCount reports how many per-client sessions this upstream currently
+// holds (scraped by sessionCollector).
+func (u *upstream) bridgedCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.bridged)
 }
 
 // sweepBridged closes bridged sessions idle longer than bridgedIdleTimeout.

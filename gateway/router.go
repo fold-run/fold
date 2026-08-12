@@ -56,7 +56,7 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 			evt.Issuer = principal.Issuer
 		}
 
-		res, err := g.route(ctx, method, req, &evt, next)
+		res, err := g.routeSafe(ctx, method, req, &evt, next)
 
 		evt.UpstreamCalls = int(m.upstreamCalls.Load())
 		if u := m.usage.Load(); u != nil {
@@ -111,6 +111,24 @@ func classify(err error) audit.Outcome {
 		}
 	}
 	return audit.OutcomeError
+}
+
+// routeSafe runs route, converting a panic into a JSON-RPC internal error.
+// The SDK dispatches each request on its own goroutine with no recovery
+// above this middleware, so without the conversion one nil-field edge case
+// in a handler would end the process for every session. The wire message is
+// generic: a panic value can carry internal details (endpoints, state) the
+// error paths already refuse to leak. Falling through to the normal return
+// keeps audit the single exit door — the event is still emitted, outcome
+// "error".
+func (g *Gateway) routeSafe(ctx context.Context, method string, req mcp.Request, evt *audit.Event, next mcp.MethodHandler) (res mcp.Result, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			notePanic(g.log, g.metrics, "route", r)
+			res, err = nil, &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: "internal gateway error"}
+		}
+	}()
+	return g.route(ctx, method, req, evt, next)
 }
 
 func (g *Gateway) route(ctx context.Context, method string, req mcp.Request, evt *audit.Event, next mcp.MethodHandler) (mcp.Result, error) {
@@ -188,6 +206,16 @@ func fanOut[T any](ctx context.Context, ups []*upstream, fn func(context.Context
 	var wg sync.WaitGroup
 	for i, u := range ups {
 		wg.Go(func() {
+			// Each worker is its own goroutine: a panic here would skip the
+			// middleware's recovery and kill the process, so it is converted
+			// into that one upstream failing — the partial-failure shape the
+			// caller already handles.
+			defer func() {
+				if r := recover(); r != nil {
+					notePanic(u.log, u.metrics, "fanout", r)
+					errs[i] = fmt.Errorf("upstream %q: internal error", u.cfg.ID)
+				}
+			}()
 			results[i], errs[i] = fn(ctx, u)
 		})
 	}
