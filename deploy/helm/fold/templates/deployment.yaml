@@ -31,6 +31,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "fold.serviceAccountName" . }}
+      # The gateway needs no Kubernetes API access (only fold-discovery
+      # does); set on the pod as well as the ServiceAccount so a
+      # user-supplied SA doesn't silently re-mount a token.
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.podSecurityContext }}
       securityContext:
@@ -164,7 +168,25 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.topologySpreadConstraints }}
+      {{- if .Values.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- toYaml . | nindent 8 }}
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+      {{- else }}
+      # Default soft spread across zones and nodes: two replicas on one node
+      # defeat the point of running two. ScheduleAnyway keeps single-node
+      # clusters (kind, minikube) working; set topologySpreadConstraints in
+      # values to replace these entirely.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "fold.selectorLabels" . | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "fold.selectorLabels" . | nindent 14 }}
       {{- end }}

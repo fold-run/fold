@@ -20,16 +20,22 @@ resolves secrets, so it needs no credentials).
 ```bash
 docker run --rm -p 8080:8080 \
   -e FOLD_CONFIG="$(cat fold.config.json)" \
-  -e ML_SEARCH_API_KEY=... \
+  --env-file fold.env \
   ghcr.io/fold-run/fold:latest --host 0.0.0.0
 ```
 
 - `FOLD_CONFIG` takes either a file path or the JSON document itself —
-  inlining it avoids a volume mount entirely.
+  inlining it avoids a volume mount entirely. The config document carries no
+  secrets by design, so inlining it on the command line is fine.
+- Secrets referenced by the config's `secretRef` fields are ordinary
+  environment variables. Put them in an env file (`chmod 600 fold.env`,
+  one `NAME=value` per line) rather than `-e NAME=value` — a literal `-e`
+  value lands in your shell history and in the process listing of the
+  `docker run` invocation. (Either way the values are visible to anyone
+  with Docker API access via `docker inspect`; that boundary is Docker's,
+  not the flag's.)
 - `--host 0.0.0.0` is required in a container: the binary binds `127.0.0.1`
   by default, which is unreachable through published ports.
-- Secrets referenced by the config's `secretRef` fields are ordinary
-  environment variables (`-e NAME=...` or `--env-file`).
 - The image runs as nonroot on distroless static; `--read-only` works.
 
 Images are multi-arch (linux/amd64, linux/arm64), tagged `latest` and per
@@ -211,6 +217,15 @@ reachable. The chart's probe defaults follow from that:
 - **Startup**: `httpGet /health` with a ~2-minute budget for first upstream
   connects and JWKS fetches.
 
+The same split applies outside the chart — nomad checks, load-balancer
+target groups, uptime monitors, hand-written manifests. **Never use
+`/health` as a liveness/restart signal**: it answers `503` when every
+upstream is down, so an orchestrator restarting on it kills perfectly
+healthy gateways at the exact moment the federation is degraded — the worst
+possible time. Use a TCP check for "is the process alive", `/health` for
+"should this instance receive traffic", and give it a timeout above the 5 s
+fan-out budget.
+
 Upgrading from v1.8 or earlier: `/healthz` was the path through v1.4 and a
 deprecated alias thereafter. **It was removed in v1.9 and now 404s.** Point
 probes, load-balancer target checks, and uptime monitors at `/health` before
@@ -241,6 +256,41 @@ that automatically, and under systemd `ExecReload` covers the SIGHUP path
 For upstreams that come and go without any operator involvement, see the
 `discovery` section in the README — fold can poll a registry document and
 swap discovered upstreams in and out on its own.
+
+## Rotating credentials
+
+Hot reload covers the config *document*; it does **not** re-read the
+environment. Every secret enters the process as an env var named by a
+`secretRef`, and a container's environment is fixed at start — updating the
+Kubernetes Secret changes nothing in running pods. Rotation is therefore
+always: update the Secret (or EnvironmentFile), then restart the process
+(`kubectl rollout restart deploy/<fold>`; `systemctl restart fold`). A
+SIGHUP is not enough, however tempting the hot-reload section makes it look.
+
+Per credential:
+
+- **Upstream API keys / OAuth client secrets** (`auth.secretRef`,
+  `clientAuth.secretRef`): overlap-friendly — provision the new credential
+  at the upstream, update the Secret, rolling-restart, then revoke the old
+  one. Zero downtime with `replicaCount` ≥ 2 and the PDB the chart now
+  applies by default.
+- **The EMA signing key** (`auth.ema.signingKeyRef`): read once at startup,
+  and there is no dual-key overlap — after the restart the gateway trusts
+  only the new key, so fold-minted tokens signed by the old key (up to
+  `tokenTtlSec`, default 10 minutes old) fail verification and clients
+  transparently re-exchange their ID-JAGs. Rotate off-peak if that brief
+  re-exchange wave matters.
+- **The Redis password** (`redis.existingSecret` / `REDIS_URL`): update and
+  restart; during any window where an instance holds the old URL, state
+  operations fail open per the Redis outage semantics below — degraded
+  enforcement, not an outage.
+- **The discovery bearer token** (`discovery.bearerSecretRef`) and **audit
+  webhook headers**: same update-then-restart; a stale discovery token
+  fails safe (last good upstream set keeps serving), a stale webhook header
+  shows up as `fold_audit_events_total` retries/drops.
+- **IdP signing keys (JWKS)**: the one rotation that needs nothing from
+  you. The verifier refetches the JWKS on an unknown `kid`, so normal IdP
+  key rollover is absorbed live — no restart, no config change.
 
 ## TLS and ingress
 
@@ -341,8 +391,16 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 - [ ] Redis configured when running more than one replica
 - [ ] An `audit` sink configured and shipped somewhere durable
 - [ ] `fold --validate` gating config changes in CI/CD
-- [ ] Kubernetes: PodDisruptionBudget on, resource limits sized, probe Host
-      header matches the allowlist
+- [ ] Kubernetes: PodDisruptionBudget on (the chart's default when
+      `replicaCount` ≥ 2), resource limits sized, probe Host header matches
+      the allowlist, `networkPolicy.enabled` scoping the metrics port and —
+      with `egress.enabled` — where upstream credentials may travel
+- [ ] Release artifacts verified at deploy time (`gh attestation verify`,
+      or a cosign/Kyverno admission policy — see "Verifying what you deploy")
+- [ ] A credential-rotation procedure written down (see "Rotating
+      credentials"): secrets enter as env vars, and hot reload does *not*
+      re-read them
 - [ ] Alerts on `fold_upstream_breaker_state`, `fold_http_rejections_total`,
-      and `/health` degradation (plus `fold_discovery_syncs_total`
-      `rejected`/`error` outcomes when discovery is enabled)
+      `fold_panics_total`, and `/health` degradation (plus
+      `fold_discovery_syncs_total` `rejected`/`error` outcomes when
+      discovery is enabled)

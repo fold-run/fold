@@ -1,4 +1,9 @@
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- /* A budget only helps when there is more than one pod to protect: with
+a single fixed replica, minAvailable: 1 would block every voluntary drain
+rather than bound disruption. Autoscaled deployments qualify via their
+minReplicas floor. */}}
+{{- $protects := or .Values.autoscaling.enabled (ge (int .Values.replicaCount) 2) }}
+{{- if and .Values.podDisruptionBudget.enabled $protects }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

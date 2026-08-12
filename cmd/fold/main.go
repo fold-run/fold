@@ -216,7 +216,14 @@ func run(cfg *config.Config, source, watchPath string, logger *slog.Logger, addr
 			logger.Info("shutting down")
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			return srv.Shutdown(ctx)
+			if err := srv.Shutdown(ctx); err != nil {
+				// SSE streams that outlived the drain are severed rather
+				// than left holding connections past the process's own
+				// shutdown.
+				_ = srv.Close()
+				return err
+			}
+			return nil
 		}
 	}
 }
