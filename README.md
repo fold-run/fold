@@ -325,11 +325,12 @@ Resolution is a map lookup for the two selector shapes a large document repeats 
 {
   "otlpEndpoint": "http://otel-collector:4318",  // OTLP/HTTP collector; a bare base URL gets the standard /v1/traces path
   "serviceName": "fold",                         // resource service.name (default "fold")
-  "sampleRatio": 1.0                             // sampling for traces fold roots itself; parent-based, so sampled callers stay sampled
+  "sampleRatio": 1.0,                            // sampling for traces fold roots itself; parent-based, so sampled callers stay sampled
+  "recordPrincipal": false                       // opt-in: stamp the principal's subject on server spans as enduser.id
 }
 ```
 
-Absent, fold only propagates the caller's W3C trace context (see Observability). Present, fold emits its own spans: one server span per MCP request — carrying method, tool/prompt name, routed upstream, policy decision + rule id, principal, and outcome, the same fields as the audit event — and one client span per upstream call with its guard outcome (ok, rate-limited, circuit open, error). Spans export through a batching processor, so the request path never waits on the collector.
+Absent, fold only propagates the caller's W3C trace context (see Observability). Present, fold emits its own spans: one server span per MCP request — carrying method, tool/prompt name, routed upstream, policy decision + rule id, and outcome, the same fields as the audit event — and one client span per upstream call with its guard outcome (ok, rate-limited, circuit open, error). The principal's subject is stamped only with `recordPrincipal: true`: it is personal data, trace backends commonly have broader access than the audit trail, and the audit event already carries the same identity. Spans export through a batching processor, so the request path never waits on the collector.
 
 ## Error codes
 

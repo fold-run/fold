@@ -81,7 +81,7 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 			// the two records cannot disagree about who this was.
 			g.metrics.observeTenant(evt.Tenant, string(evt.Outcome), evt.UpstreamCalls)
 			g.audit.Emit(evt)
-			endServer(span, &evt, err)
+			g.tracer.endServer(span, &evt, err)
 		}
 		return res, err
 	}

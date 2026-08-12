@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -53,6 +54,7 @@ func main() {
 		validate    = flag.Bool("validate", false, "validate the config and exit")
 		showSchema  = flag.Bool("schema", false, "print the config JSON Schema and exit")
 		showVersion = flag.Bool("version", false, "print the version and exit")
+		healthcheck = flag.Bool("healthcheck", false, "probe the local gateway's /health and exit 0 if the process is serving (container HEALTHCHECKs; needs no config)")
 		watch       = flag.Bool("watch", false, "watch the config file and hot-reload on change (SIGHUP always reloads)")
 		logFormat   = flag.String("log-format", "text", "log format: text | json")
 		logLevel    = flag.String("log-level", "info", "log level: debug | info | warn | error")
@@ -66,6 +68,9 @@ func main() {
 	if *showSchema {
 		_, _ = os.Stdout.Write(config.Schema())
 		return
+	}
+	if *healthcheck {
+		os.Exit(runHealthcheck(*host, *port))
 	}
 
 	path := *configPath
@@ -101,6 +106,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "fold: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runHealthcheck probes the local gateway's /health and reports through the
+// exit code — the self-probe that gives the distroless image (no shell, no
+// curl) a usable container HEALTHCHECK. Any HTTP response counts as healthy:
+// this answers "is the process alive and serving", and /health's
+// 503-when-all-upstreams-are-down must never read as "restart the
+// container" (docs/deploy.md, "Probes" — the same rule as liveness probes).
+func runHealthcheck(host string, port int) int {
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/health")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fold: healthcheck: %v\n", err)
+		return 1
+	}
+	_ = resp.Body.Close()
+	return 0
 }
 
 // isInline reports whether the config source is the JSON document itself

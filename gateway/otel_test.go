@@ -9,7 +9,10 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/fold-run/fold/audit"
 	"github.com/fold-run/fold/config"
 )
 
@@ -81,5 +84,34 @@ func TestTracingJoinsCallerTrace(t *testing.T) {
 	}
 	if got == parent || strings.Contains(got, parentSpan) {
 		t.Errorf("upstream traceparent %q should carry fold's span, not the caller's span id", got)
+	}
+}
+
+// TestSpanPrincipalOptIn: the principal's subject reaches spans as
+// enduser.id only with tracing.recordPrincipal — by default spans carry no
+// personal data; the audit trail is where identity belongs.
+func TestSpanPrincipalOptIn(t *testing.T) {
+	for _, record := range []bool{false, true} {
+		exp := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+		gt := &gwTracer{
+			provider:        provider,
+			tracer:          provider.Tracer("test"),
+			recordPrincipal: record,
+		}
+		_, span := gt.startServer(context.Background(), "tools/call", nil)
+		gt.endServer(span, &audit.Event{Outcome: audit.OutcomeOK, Principal: "alice"}, nil)
+
+		var got bool
+		for _, s := range exp.GetSpans() {
+			for _, a := range s.Attributes {
+				if a.Key == "enduser.id" {
+					got = true
+				}
+			}
+		}
+		if got != record {
+			t.Errorf("recordPrincipal=%v: enduser.id present=%v", record, got)
+		}
 	}
 }

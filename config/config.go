@@ -134,6 +134,13 @@ type Tracing struct {
 	// default 1). Parent-based: callers that sampled their trace stay
 	// sampled regardless.
 	SampleRatio float64 `json:"sampleRatio,omitempty"`
+
+	// RecordPrincipal stamps the verified principal's subject on server
+	// spans as `enduser.id`. Off by default (changed in v1.11 — earlier
+	// versions always stamped it): the subject is personal data, and trace
+	// backends commonly have broader access than the audit trail, which
+	// carries the same identity under audit-grade access instead.
+	RecordPrincipal bool `json:"recordPrincipal,omitempty"`
 }
 
 // Upstream describes one MCP server folded into the gateway.

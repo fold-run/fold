@@ -3,8 +3,10 @@
 # passes the gateway's default host allowlist, so no allowedHosts config is
 # needed for local use.
 #
-# No healthcheck on the fold service: the image is distroless (no shell or
-# curl). Check from the host instead: curl -fsS http://localhost:8080/health
+# The fold healthcheck runs the binary's own self-probe (`fold
+# --healthcheck`) — the distroless image carries no shell or curl, so the
+# probe ships inside the binary. It answers "is the process serving", never
+# "are upstreams up" (that would restart fold at the worst moment).
 #
 # Optional shared-state Redis (only useful when running several gateway
 # instances): docker compose --profile redis up
@@ -55,6 +57,12 @@ services:
       - SHIM_TOKEN=${SHIM_TOKEN:-}
     #  - ML_SEARCH_API_KEY=${ML_SEARCH_API_KEY}
     #  - REDIS_URL=redis://redis:6379   # with: docker compose --profile redis up
+    healthcheck:
+      test: ["CMD", "/fold", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
 
   redis:

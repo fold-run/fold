@@ -327,7 +327,8 @@
       "properties": {
         "otlpEndpoint": { "type": "string", "format": "uri" },
         "serviceName": { "type": "string" },
-        "sampleRatio": { "type": "number", "minimum": 0, "maximum": 1 }
+        "sampleRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "recordPrincipal": { "type": "boolean" }
       }
     },
     "discovery": {
