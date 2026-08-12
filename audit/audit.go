@@ -47,9 +47,13 @@ type Event struct {
 	// Tenant is the group the principal resolved to, when tenancy is
 	// configured. Empty means no tenant matched — which is not an error, just
 	// a caller governed by the gateway-wide rules.
-	Tenant    string  `json:"tenant,omitempty"`
-	Decision  string  `json:"decision,omitempty"` // "allow" | "deny"
-	RuleID    string  `json:"ruleId,omitempty"`   // matching policy rule
+	Tenant string `json:"tenant,omitempty"`
+	// Decision is "allow" | "deny" for policy-gated invocations; for
+	// oauth/token events it carries the exchange outcome verbatim
+	// ("minted", "replayed", "invalid_grant", ...) so a detected replay is
+	// alertable on a structured field.
+	Decision  string  `json:"decision,omitempty"`
+	RuleID    string  `json:"ruleId,omitempty"` // matching policy rule
 	Outcome   Outcome `json:"outcome"`
 	Error     string  `json:"error,omitempty"`
 	LatencyMs int64   `json:"latencyMs"`

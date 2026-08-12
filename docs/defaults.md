@@ -36,7 +36,7 @@ implementation order. Verdict for all: **keep**.
 
 | Default | Value | Rationale |
 |---|---|---|
-| `timeouts` | connect 5 s, request 60 s, streamIdle 120 s | Request 60 s accommodates slow tools; connect 5 s fails over quickly (multi-endpoint upstreams try the next replica within the same attempt). |
+| `timeouts` | connect 5 s, request 60 s, streamIdle off | Request 60 s accommodates slow tools; connect 5 s fails over quickly (multi-endpoint upstreams try the next replica within the same attempt, bounded at three candidates per attempt). streamIdle was documented as "120 s" before v1.11 but implemented nowhere; v1.11 implements it as **opt-in**, which preserves every existing deployment's actual behavior. It is not defaulted on because the SDK client's reconnect budget only replenishes when events arrive — a default idle cut against an upstream that legitimately never notifies would cycle and eventually kill its session. |
 | `circuitBreaker` | 5 failures / 30 s half-open | Conventional values; also the endpoint pool's cooldown, by design (one "retry the unhealthy thing after" knob). |
 | `rateLimit` (global, per-upstream) | none | The gateway must never throttle by surprise; limits are an operator's policy, opted into. |
 | `budget` (server, per-upstream) | absent (no budget) | Added in v1.7. Same reasoning as `rateLimit`, and stronger: a default allowance is a default outage waiting for a busy month, and there is no number that is right for every federation. Opt in. |

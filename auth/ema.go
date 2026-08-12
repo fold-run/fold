@@ -37,6 +37,26 @@ type EMA struct {
 	jwks     *jwksCache
 	replay   state.Once
 	ttl      time.Duration
+
+	// OnExchange, when set, is told the outcome of every token exchange —
+	// including the refusals. The gateway wires it into the audit trail:
+	// this endpoint is an authorization server, and a detected ID-JAG
+	// replay, or an attacker fuzzing assertions under the rate limit, is
+	// exactly the traffic a SIEM exists to see. Set before serving; not
+	// synchronized after.
+	OnExchange func(TokenExchange)
+}
+
+// TokenExchange describes one terminal /oauth/token response.
+type TokenExchange struct {
+	// Outcome is "minted" for a successful exchange, "replayed" for an
+	// ID-JAG presented twice (the security event), or the OAuth error code
+	// returned otherwise ("invalid_request", "unsupported_grant_type",
+	// "invalid_grant", "server_error").
+	Outcome string
+	Detail  string // the error_description sent to the caller ("" when minted)
+	Subject string // the assertion's subject, when validation got that far
+	Issuer  string // the IdP issuer the assertion was verified against
 }
 
 // NewEMA loads the ES256 signing key named by signingKeyRef (a PKCS#8 PEM in
@@ -88,23 +108,32 @@ func (m *EMA) ServeJWKS(w http.ResponseWriter, _ *http.Request) {
 
 // ServeToken answers POST /oauth/token — the ID-JAG exchange. The caller is
 // unauthenticated by design (the assertion is the credential); the gateway
-// rate-limits this handler before it runs.
+// rate-limits this handler before it runs. Every terminal response reports
+// through OnExchange — refusals included — so the trail this endpoint
+// produces matches the single-exit-door rule the rest of the gateway obeys.
 func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
+	// subject is filled in once validation has extracted one, so even a
+	// refusal names who the assertion claimed to be when that is knowable.
+	subject := ""
+	refuse := func(status int, code, description string) {
+		m.report(TokenExchange{Outcome: code, Detail: description, Subject: subject, Issuer: m.cfg.IdpIssuer})
+		oauthError(w, status, code, description)
+	}
 	if r.Method != http.MethodPost {
-		oauthError(w, http.StatusMethodNotAllowed, "invalid_request", "POST only")
+		refuse(http.StatusMethodNotAllowed, "invalid_request", "POST only")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		oauthError(w, http.StatusBadRequest, "invalid_request", "malformed form body")
+		refuse(http.StatusBadRequest, "invalid_request", "malformed form body")
 		return
 	}
 	if r.PostForm.Get("grant_type") != idJAGGrant {
-		oauthError(w, http.StatusBadRequest, "unsupported_grant_type", fmt.Sprintf("only %s is supported", idJAGGrant))
+		refuse(http.StatusBadRequest, "unsupported_grant_type", fmt.Sprintf("only %s is supported", idJAGGrant))
 		return
 	}
 	assertion := r.PostForm.Get("assertion")
 	if assertion == "" {
-		oauthError(w, http.StatusBadRequest, "invalid_request", "missing assertion")
+		refuse(http.StatusBadRequest, "invalid_request", "missing assertion")
 		return
 	}
 
@@ -125,18 +154,19 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 		return m.jwks.key(r.Context(), jwksURI, kid)
 	})
 	if err != nil {
-		oauthError(w, http.StatusBadRequest, "invalid_grant", "ID-JAG validation failed")
+		refuse(http.StatusBadRequest, "invalid_grant", "ID-JAG validation failed")
 		return
 	}
 	sub, _ := claims.GetSubject()
 	if sub == "" {
-		oauthError(w, http.StatusBadRequest, "invalid_grant", "ID-JAG has no subject")
+		refuse(http.StatusBadRequest, "invalid_grant", "ID-JAG has no subject")
 		return
 	}
+	subject = sub
 	jti, _ := claims["jti"].(string)
 	exp, _ := claims.GetExpirationTime()
 	if jti == "" || exp == nil {
-		oauthError(w, http.StatusBadRequest, "invalid_grant", "ID-JAG missing jti or exp")
+		refuse(http.StatusBadRequest, "invalid_grant", "ID-JAG missing jti or exp")
 		return
 	}
 
@@ -145,6 +175,10 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 	// assertion expires and reject replays.
 	ttl := max(time.Until(exp.Time), time.Second)
 	if !m.replay.TryOnce(r.Context(), fmt.Sprintf("%x", sha256.Sum256([]byte(jti))), ttl) {
+		// Reported as "replayed", not folded into invalid_grant: a replay is
+		// a signed, valid assertion presented twice — possession by a second
+		// party is one of the readings, and the one the trail must surface.
+		m.report(TokenExchange{Outcome: "replayed", Detail: "ID-JAG already redeemed", Subject: subject, Issuer: m.cfg.IdpIssuer})
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "ID-JAG already redeemed")
 		return
 	}
@@ -171,10 +205,11 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 	tok.Header["kid"] = m.kid
 	signed, err := tok.SignedString(m.key)
 	if err != nil {
-		oauthError(w, http.StatusInternalServerError, "server_error", "token signing failed")
+		refuse(http.StatusInternalServerError, "server_error", "token signing failed")
 		return
 	}
 
+	m.report(TokenExchange{Outcome: "minted", Subject: subject, Issuer: m.cfg.IdpIssuer})
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -182,6 +217,13 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 		"token_type":   "Bearer",
 		"expires_in":   int(m.ttl.Seconds()),
 	})
+}
+
+// report delivers one exchange outcome to OnExchange, if wired.
+func (m *EMA) report(x TokenExchange) {
+	if m.OnExchange != nil {
+		m.OnExchange(x)
+	}
 }
 
 func oauthError(w http.ResponseWriter, status int, code, description string) {

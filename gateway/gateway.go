@@ -318,6 +318,34 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 				return nil, err
 			}
 			g.ema = ema
+			// The token endpoint is an authorization server surface; its
+			// terminal responses flow through audit like every other refusal
+			// or grant the gateway produces. A replayed ID-JAG is the event
+			// the trail most needs to carry — invisible here, an attacker
+			// replaying assertions under the rate limit left no record at all.
+			ema.OnExchange = func(x auth.TokenExchange) {
+				evt := audit.Event{
+					Method:    "oauth/token",
+					Principal: x.Subject,
+					Issuer:    x.Issuer,
+					Error:     x.Detail,
+					// The exchange outcome verbatim ("minted", "replayed",
+					// "invalid_grant", ...): a replay must be alertable on a
+					// structured field, not a substring of the error text.
+					Decision: x.Outcome,
+				}
+				switch x.Outcome {
+				case "minted":
+					evt.Outcome = audit.OutcomeOK
+				case "replayed", "invalid_grant":
+					// An assertion that does not verify — or verifies but was
+					// already redeemed — is a failed authentication.
+					evt.Outcome = audit.OutcomeUnauthenticated
+				default: // invalid_request, unsupported_grant_type, server_error
+					evt.Outcome = audit.OutcomeError
+				}
+				g.audit.Emit(evt)
+			}
 			g.emaTokenLimit = provider.Limiter("oauth-token", cfg.Auth.EMA.ResolvedTokenRateLimit())
 			// Tokens fold mints are presented back to fold: trust them via
 			// the local key, no JWKS round-trip.
@@ -1249,7 +1277,10 @@ func (g *Gateway) tokenRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ok, retry := g.emaTokenLimit.Allow(r.Context()); !ok {
 			g.metrics.reject("oauth_token_rate_limited")
-			g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeRateLimited, Error: "oauth token endpoint rate limit"})
+			// Method matches the exchange events ServeToken emits, so one
+			// SIEM query over method="oauth/token" sees this endpoint's
+			// whole story — the floods included.
+			g.audit.Emit(audit.Event{Method: "oauth/token", Outcome: audit.OutcomeRateLimited, Error: "oauth token endpoint rate limit"})
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 			w.WriteHeader(http.StatusTooManyRequests)

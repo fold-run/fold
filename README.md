@@ -125,7 +125,7 @@ A JSON Schema for the document ships with fold — [`config/fold.config.schema.j
 | `owner` | none | `{ org, team, contact }` — surfaces in audit and health. |
 | `labels` | none | Free-form string map for reporting. |
 | `auth` | `{"strategy":"none"}` | Upstream credential strategy — see below. |
-| `timeouts` | `5s/60s` | `connectMs`, `requestMs`. |
+| `timeouts` | `5s/60s/off` | `connectMs`, `requestMs`, `streamIdleMs`. The last, when set, bounds silence on the upstream's standalone SSE stream: a server that accepts the stream and then wedges — TCP alive, no bytes — is cut and reconnected instead of holding a dead notification channel open forever. Off by default, and set it only for upstreams that emit notifications or SSE keepalives: reconnects only count as progress when events arrive, so an idle bound against a legitimately quiet upstream would eventually exhaust the client's retry budget and kill the session. In-flight calls are governed by `requestMs`, not this. |
 | `circuitBreaker` | `5 / 30s` | `failureThreshold` consecutive failures open the circuit; a probe is admitted after `halfOpenAfterMs`. |
 | `rateLimit` | none | `{ requestsPerMinute }` for this upstream only. |
 | `budget` | none | `{ period, upstreamCalls }` — a consumption allowance that **accumulates** until the calendar period rolls over, unlike `rateLimit`, which smooths a burst and forgets it. `period` is `hour`, `day`, or `month` (default), aligned to UTC. Requires shared state to mean anything across a fleet; without it each instance enforces its own allowance and the gateway warns at startup. |

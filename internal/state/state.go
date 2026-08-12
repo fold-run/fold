@@ -6,7 +6,6 @@ package state
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/fold-run/fold/internal/bounded"
@@ -160,32 +159,32 @@ func (s *MemStore) SetMany(_ context.Context, entries map[string][]byte, ttl tim
 // Delete implements Store.
 func (s *MemStore) Delete(_ context.Context, key string) { s.m.Delete(key) }
 
+// maxOnceRecords bounds the in-process single-use store. Keys are
+// IdP-minted jtis with TTLs up to the assertion's lifetime — identifiers the
+// gateway does not choose, so like every such store (see internal/bounded)
+// it needs a ceiling. Eviction's worst case is a shortened replay window
+// for one jti that was pushed out by 100k fresher ones — and reaching that
+// through the token endpoint's rate limit takes hours of sustained flood,
+// which the audit trail now records.
+const maxOnceRecords = 100_000
+
 // MemOnce is the in-process single-use recorder. Exported so the Redis
 // provider can fall back to it during an outage.
 type MemOnce struct {
-	mu   sync.Mutex
-	seen map[string]time.Time // key → expiry
+	seen *bounded.Map[struct{}]
 }
 
 // NewMemOnce returns an in-process single-use recorder.
-func NewMemOnce() *MemOnce { return &MemOnce{seen: map[string]time.Time{}} }
+func NewMemOnce() *MemOnce { return &MemOnce{seen: bounded.New[struct{}](maxOnceRecords)} }
 
-// TryOnce reports whether key is fresh, recording it for ttl.
+// TryOnce reports whether key is fresh, recording it for ttl. Expired
+// records read as absent and are reclaimed by the bounded map itself —
+// no full scan per call. A non-positive ttl records the key until evicted
+// (bounded.Map semantics); callers wanting single-use enforcement pass the
+// credential's real remaining lifetime, as the EMA path does.
 func (o *MemOnce) TryOnce(_ context.Context, key string, ttl time.Duration) bool {
-	now := time.Now()
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	// Lazily drop expired records so the map tracks only live keys.
-	for k, exp := range o.seen {
-		if exp.Before(now) {
-			delete(o.seen, k)
-		}
-	}
-	if exp, ok := o.seen[key]; ok && exp.After(now) {
-		return false
-	}
-	o.seen[key] = now.Add(ttl)
-	return true
+	_, loaded := o.seen.LoadOrStore(key, struct{}{}, ttl)
+	return !loaded
 }
 
 type memLimiter struct{ l *ratelimit.Limiter }

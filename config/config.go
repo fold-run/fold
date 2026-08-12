@@ -219,9 +219,16 @@ type ClientAuth struct {
 
 // Timeouts bounds upstream I/O.
 type Timeouts struct {
-	ConnectMs    int `json:"connectMs,omitempty"`    // default 5000
-	RequestMs    int `json:"requestMs,omitempty"`    // default 60000
-	StreamIdleMs int `json:"streamIdleMs,omitempty"` // default 120000
+	ConnectMs int `json:"connectMs,omitempty"` // default 5000
+	RequestMs int `json:"requestMs,omitempty"` // default 60000
+	// StreamIdleMs, when set, cuts the upstream's standalone SSE stream
+	// after this much silence so a wedged stream (TCP alive, no bytes) is
+	// retried instead of held forever; the SDK client reconnects it. Off by
+	// default (0): the client's reconnect budget only replenishes when
+	// events actually arrive, so an idle bound against an upstream that
+	// legitimately never notifies would eventually kill its session. Set it
+	// only for upstreams that emit notifications or SSE keepalives.
+	StreamIdleMs int `json:"streamIdleMs,omitempty"`
 }
 
 // HealthCheck configures active endpoint probing.
@@ -782,6 +789,19 @@ func (c *Config) Validate() error {
 		}
 		if u.HealthCheck != nil && u.HealthCheck.IntervalMs <= 0 {
 			return fmt.Errorf("upstream %q: healthCheck.intervalMs must be positive", u.ID)
+		}
+		// Negative durations and thresholds were silently treated as "use
+		// the default", which the schema already forbids (minimum 0) — the
+		// two contracts now refuse the same documents.
+		if t := u.Timeouts; t != nil {
+			if t.ConnectMs < 0 || t.RequestMs < 0 || t.StreamIdleMs < 0 {
+				return fmt.Errorf("upstream %q: timeouts must not be negative", u.ID)
+			}
+		}
+		if cb := u.CircuitBreaker; cb != nil {
+			if cb.FailureThreshold < 0 || cb.HalfOpenAfterMs < 0 {
+				return fmt.Errorf("upstream %q: circuitBreaker values must not be negative", u.ID)
+			}
 		}
 		if err := u.Budget.validate(fmt.Sprintf("upstream %q", u.ID)); err != nil {
 			return err

@@ -63,6 +63,14 @@ func newDiscoverer(g *Gateway, cfg *config.Discovery) *discoverer {
 	interval := 30 * time.Second
 	if cfg.IntervalMs > 0 {
 		interval = time.Duration(cfg.IntervalMs) * time.Millisecond
+		// Floor, not rejection: a 1 ms typo turns the gateway into a flood
+		// source against its own discovery source, but an aggressive
+		// registration should still federate — the same posture as the
+		// health-probe clamps.
+		if interval < time.Second {
+			g.log.Warn("clamping discovery poll interval", "requestedMs", cfg.IntervalMs, "floor", "1s")
+			interval = time.Second
+		}
 	}
 	return &discoverer{
 		g:   g,
