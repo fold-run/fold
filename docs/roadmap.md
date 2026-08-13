@@ -221,7 +221,7 @@ config surface moved. Operator guide: [stdio.md](stdio.md). The reasoning, the
 argument that settled the shape, and the two proposals that did not survive
 implementation: [design-stdio.md](design-stdio.md).
 
-### 8. Policy depth
+### 8. Policy depth — **shipped**
 
 The engine is allow-only and first-match, matching on an exact server id, exact
 method names, and name globs. Three additions, in rough order of demand:
@@ -237,6 +237,16 @@ method names, and name globs. Three additions, in rough order of demand:
 
 Argument matching reads the request fold already parses to route, so it stays
 inside the invisibility rule — it decides, it does not rewrite.
+
+All three shipped, in that order. What the design record did not anticipate,
+and implementation had to decide: a `deny` carrying argument constraints
+cannot be evaluated at list time either, and hiding there would apply the rule
+far more broadly than written — "no deploys to production" would remove
+`deploy` entirely — so allow and deny make *opposite* choices about the same
+missing information, each in the direction that matches what the rule says.
+And there is no separate annotation index for `toolKind`: at list time fold
+already holds the tool, and at call time the cached list answers, so a second
+index would have been a third thing to invalidate in step with the cache.
 
 Designed in [design-policy-depth.md](design-policy-depth.md), which settles the
 question each part raises rather than leaving it to implementation. Deny wins

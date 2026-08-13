@@ -206,63 +206,65 @@ An assertion must be issued by `idpIssuer` for the `resource` audience and carry
 ```jsonc
 {
   "defaultDecision": "deny",
+  "serverInitiatedDecision": "deny",             // see "the reverse direction" below
   "rules": [
     {
       "id": "eng-github",
-      "subjects": { "groups": ["engineering"] },   // and/or "subs"; omit → any principal
+      "subjects": { "groups": ["engineering"] }, // and/or "subs"; omit → any principal
       "allow": [
         { "server": "github", "methods": ["tools/call"], "names": ["get_*", "create_pr"] },
-        { "server": "search" }                     // all methods/names on that upstream
-      ]
+        { "server": "search" },                  // all methods/names on that upstream
+        { "server": "deploy", "names": ["deploy"], "args": { "target.environment": "staging" } },
+        { "server": "*", "methods": ["tools/call"], "toolKind": "readOnly" }
+      ],
+      "deny": [ { "server": "billing", "names": ["refund_*"] } ],
+      "maxItems": 40
     }
   ]
 }
 ```
 
-Add `"maxItems": 40` to a rule to bound how many list items it may make visible in one response — a guardrail against handing an agent a thousand tools, which is context paid for on every turn. It is a bound, not a curation: fold drops whatever falls past the cap in merge order, because it has no notion of which tools matter, and acquiring one would be the semantic tool selection this project [declines](docs/roadmap.md#non-goals). A truncated list says so in the result's `_meta["run.fold/truncated"]`, in the audit event's `itemsCapped`, and in `fold_list_items_total{stage="capped"}` — a cap that hid capability silently would be worse than no cap. **The cap bounds visibility, not authority**: a name it withheld from a list is still callable if policy allows it.
+**How a decision is reached.** Any matching `deny` refuses, whatever the rule order; otherwise the first matching `allow` grants; otherwise `defaultDecision`. Policy governs named invocations (`tools/call`, `prompts/get`, `resources/read`), the completions and subscriptions derived from them (`completion/complete` is gated behind the prompt/resource it completes; `resources/subscribe` behind the resource), and it **filters list results per principal** — callers never see tools, prompts, or resources they cannot reach. Protocol plumbing (ping, the lists themselves) is not policy-gated; invisibility plus call-denial is the enforcement pair.
 
-A rule may also carry `"deny"`, shaped exactly like `allow` and matched the same way:
+A rule may carry `allow`, `deny`, or both, and at least one of them.
 
-```jsonc
-{ "id": "no-refunds", "subjects": { "groups": ["support"] },
-  "deny": [ { "server": "billing", "names": ["refund_*", "credit_*"] } ] }
-```
+#### Deny wins, globally
 
-**Any matching deny refuses the invocation, regardless of rule order** — an explicit deny is not overridable by an allow, as in IAM and in firewalls. Order-independence is the point: with first-match precedence, appending a broad allow at the bottom of a document would silently widen access, and a rule whose correctness depends on where it was pasted will eventually be pasted in the wrong place. A rule may carry `allow`, `deny`, or both, and at least one of them; a deny names its rule in the audit event's `ruleId`, which the default decision cannot.
+An explicit deny is not overridable by an allow, as in IAM and in firewalls, and **it does not matter where the rule sits in the document**. With first-match precedence, appending a broad allow at the bottom would silently widen access, and a rule whose correctness depends on where it was pasted will eventually be pasted in the wrong place. A deny names its rule in the audit event's `ruleId`, which the default decision cannot.
 
-Deny does not create a second enforcement mechanism: it participates in the same decision, so a carved-out name is invisible in lists *and* uncallable, together. The evaluation cost is confined to the documents that use it — the engine computes at construction whether any rule carries a deny, and when none does, evaluation is the first-match short-circuit it has always been, measurably unchanged.
+Deny is not a second enforcement mechanism: it participates in the same decision, so a carved-out name is invisible in lists *and* uncallable, together. Documents that use no deny evaluate on the first-match short-circuit they always have — the engine settles that at construction.
 
-A clause may constrain the invocation's arguments with `"args"` — a map of dotted JSON path to required value, all of which must match:
+#### Constraining arguments
 
-```jsonc
-{ "server": "deploy", "names": ["deploy"], "args": { "target.environment": "staging" } }
-```
+`"args"` is a map of dotted JSON path to required value, all of which must match — the difference between "may call `deploy`" and "may call `deploy` against staging". Values compare **type-exactly**, like subject claims: `"1"` and `1` are different, because a lenient comparison silently widens a grant. Paths have no wildcards and no array indexing; a matcher that starts narrow can widen later, whereas one that starts expressive cannot be narrowed.
 
-That is the difference between "may call `deploy`" and "may call `deploy` against staging". Values compare **type-exactly**, like subject claims: `"1"` and `1` are different, because a lenient comparison silently widens a grant. Paths have no wildcards and no array indexing — a matcher that starts narrow can widen later, whereas one that starts expressive cannot be narrowed.
-
-**A constrained tool is visible but conditionally callable.** There are no arguments at list time, so this cannot filter a list: the tool appears, and a call with non-matching arguments is denied. That is a genuine weakening of the invisibility pair, and the pair's guarantee becomes *a caller never sees a tool they cannot call at all* rather than *never sees anything they might be refused*. An operator who needs the stronger property grants by name. The mirror case is a `deny` carrying `args`, which for the same reason does **not** hide the tool — "no deploys to production" must not remove `deploy` entirely.
+**A constrained tool is visible but conditionally callable.** There are no arguments at list time, so this cannot filter a list: the tool appears, and a call with non-matching arguments is denied. That is a genuine weakening of the invisibility pair — its guarantee becomes *a caller never sees a tool they cannot call at all* rather than *never sees anything they might be refused* — and an operator who needs the stronger property grants by name. The mirror case is a `deny` carrying `args`, which for the same reason does **not** hide the tool: "no deploys to production" must not remove `deploy` entirely.
 
 The denial names the constraint path that failed and never the value the rule wanted, because that value is the operator's configuration and a refusal is a poor place to disclose a policy document one field at a time.
 
-fold forwards `arguments` as raw JSON and never parses them, so this is conditional: the engine knows at construction whether any rule carries `args`, and a document without them parses nothing and evaluates on the same path it always has.
+fold forwards `arguments` as raw JSON and never parses them, so this is conditional: a document without `args` parses nothing and evaluates on the path it always has.
 
-A clause may gate on the tool's own MCP annotations with `"toolKind"`, which is how one rule says "read anything, write nothing" without naming a tool:
+#### Gating on what a tool says it does
 
-```jsonc
-{ "server": "*", "methods": ["tools/call"], "toolKind": "readOnly" }
-```
+`"toolKind"` matches the MCP annotations an upstream publishes: `readOnly` requires `readOnlyHint`, `nonDestructive` additionally admits tools whose `destructiveHint` is false. That is how one rule says "read anything, write nothing" without naming a tool. Unlike `args`, annotations arrive *with* the list, so this filters lists as well as denying calls.
 
-`readOnly` requires `readOnlyHint`; `nonDestructive` additionally admits tools whose `destructiveHint` is false. Unlike `args`, annotations arrive *with* the list, so this filters lists as well as denying calls.
-
-**It is a hygiene control, not a security boundary — and the difference is not a nuance.** The annotations are declared by the very server being gated, so an upstream that labels `delete_everything` as `readOnlyHint: true` is believed. Use `toolKind` for federations your organization operates, where the risk is an operator forgetting to update an allowlist. Against an upstream you do not control — a vendor's server, anything arriving through discovery — **the boundary is `names`**, and no amount of `toolKind` substitutes for it.
+**It is a hygiene control, not a security boundary — and the difference is not a nuance.** The annotations are declared by the very server being gated, so an upstream that labels `delete_everything` as `readOnlyHint: true` is believed. Use it for federations your organization operates, where the risk is an operator forgetting to update an allowlist. Against an upstream you do not control — a vendor's server, anything arriving through discovery — **the boundary is `names`**, and no amount of `toolKind` substitutes for it.
 
 Two behaviours follow from taking the MCP spec at its word. `readOnlyHint` defaults to false and `destructiveHint` to true, so **an unannotated tool is neither read-only nor non-destructive** and fails both gates; fold does not "improve" those defaults, because the improvement would be admitting every unannotated tool. And **unknown annotations deny**: if fold cannot establish a tool's annotations from the list it holds, the call is refused. That includes upstreams whose list caching is disabled because their credential is caller-derived, so `toolKind` and `passthrough`/`token-exchange` do not compose — an operator wanting both grants by name.
 
-First matching rule allows; otherwise `defaultDecision`. Policy governs named invocations (`tools/call`, `prompts/get`, `resources/read`), the completions and subscriptions derived from them (`completion/complete` is gated behind the prompt/resource it completes; `resources/subscribe` behind the resource), and it **filters list results per principal** — callers never see tools, prompts, or resources they cannot reach. Protocol plumbing (ping, the lists themselves) is not policy-gated; invisibility plus call-denial is the enforcement pair.
+#### Bounding a list
 
-`"serverInitiatedDecision": "deny"` extends policy to the **reverse direction** — the `sampling/createMessage` and `elicitation/create` requests an upstream makes of the caller's client over a bridged session. Those spend something of the caller's (model budget, or a human's attention), so a rule grants them explicitly: `{ "server": "corpus", "methods": ["sampling/createMessage"] }`, server-and-method only, since neither request has a name. Enforcement is the invisibility pair pointed the other way: an upstream that may not ask is never told the caller can answer, so it does not ask — and a request arriving on a session whose grant a reload removed is refused with `-32042`, which a client is entitled to say. Those refusals, and every allowed exchange, carry `direction: "server_initiated"` in the audit trail; a capability withheld outright has no event, because nothing was asked.
+`"maxItems": 40` bounds how many list items one rule may make visible in a response — a guardrail against handing an agent a thousand tools, which is context paid for on every turn. It is a bound, not a curation: fold drops whatever falls past the cap in merge order, because it has no notion of which tools matter, and acquiring one would be the semantic tool selection this project [declines](docs/roadmap.md#non-goals). A truncated list says so in the result's `_meta["run.fold/truncated"]`, in the audit event's `itemsCapped`, and in `fold_list_items_total{stage="capped"}` — a cap that hid capability silently would be worse than no cap. **The cap bounds visibility, not authority**: a name it withheld from a list is still callable if policy allows it.
+
+#### The reverse direction
+
+`"serverInitiatedDecision": "deny"` extends policy to the `sampling/createMessage` and `elicitation/create` requests an upstream makes of the caller's client over a bridged session. Those spend something of the caller's — model budget, or a human's attention — so a rule grants them explicitly: `{ "server": "corpus", "methods": ["sampling/createMessage"] }`, server-and-method only, since neither request has a name.
+
+Enforcement is the invisibility pair pointed the other way: an upstream that may not ask is never told the caller can answer, so it does not ask — and a request arriving on a session whose grant a reload removed is refused with `-32042`, which a client is entitled to say. Those refusals, and every allowed exchange, carry `direction: "server_initiated"` in the audit trail; a capability withheld outright has no event, because nothing was asked.
 
 It is a separate knob from `defaultDecision`, and it defaults to `"allow"`, for compatibility rather than conviction: this traffic flowed ungoverned before the check existed, so folding it under the existing field would have broken working installs on upgrade. **Production deployments should set it to `"deny"`.** Content-level questions — refusing an elicitation that asks for a password — stay out of the gateway; that is the external decision hook's job. Reasoning: [design-server-initiated.md](docs/design-server-initiated.md).
+
+#### Matching principals
 
 Scope a rule to specific token issuers with `"subjects": { "issuers": ["https://corp.okta.com"], "groups": [...] }`. Subjects and group names are only unique within an issuer, so **when more than one issuer is trusted, pin rules to an issuer** — otherwise a lower-assurance IdP could mint a principal that matches a rule written for another.
 
