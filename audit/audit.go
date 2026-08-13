@@ -41,6 +41,11 @@ const (
 	// request succeeded, and an SLO that counted findings as failures would
 	// page someone for a working federation.
 	OutcomeWarned Outcome = "warned"
+	// OutcomeHookDenied is the external decision hook refusing a call, kept
+	// distinct from OutcomeDenied because an operator reading the trail needs
+	// to know whether their policy or their inspector said no — the remedies
+	// live in different systems, and often in different teams.
+	OutcomeHookDenied Outcome = "hook_denied"
 )
 
 // Event is one audit record.
@@ -88,6 +93,13 @@ type Event struct {
 	// one is a grant the caller does not have, the other a bound the operator
 	// set. The result's _meta says the same thing to the client.
 	ItemsCapped int `json:"itemsCapped,omitempty"`
+	// HookOutcome is what the external decision hook said: "allow", "deny",
+	// or "error". Present only when a hook inspected this request. The error
+	// case is the one worth alerting on: with onError "allow" it means the
+	// call proceeded uninspected, which a fail-open deployment would
+	// otherwise have no record of.
+	HookOutcome string `json:"hookOutcome,omitempty"`
+
 	// Usage carries counters an upstream published in its result `_meta`,
 	// verbatim. fold never synthesizes these; an absent field means the
 	// upstream reported nothing, not that nothing was consumed.

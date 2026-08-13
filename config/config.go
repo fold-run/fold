@@ -29,6 +29,51 @@ type Config struct {
 	// when a customer signs up, and requiring a restart for that would push
 	// operators toward a write control plane fold does not have.
 	Tenants []Tenant `json:"tenants,omitempty"`
+
+	// Hook is the external decision endpoint — fold's one out-of-process
+	// seam, and its answer to the plugin runtime it declines. Absent (the
+	// default) means nothing on the request path changes.
+	Hook *Hook `json:"hook,omitempty"`
+}
+
+// Hook configures the external decision endpoint. It decides, and cannot
+// rewrite: fold either forwards a request verbatim or refuses it, which is
+// what keeps the invisibility rule intact. See docs/design-decision-hook.md.
+type Hook struct {
+	// URL receives a JSON POST per inspected invocation.
+	URL string `json:"url"`
+
+	// TimeoutMs bounds one decision. Required, with no default: a hook
+	// without a bound is a gateway without one, and a slow hook is more
+	// dangerous than a broken one because failing open turns it into an
+	// invisible bypass.
+	TimeoutMs int `json:"timeoutMs"`
+
+	// OnError is the decision when the hook times out, refuses the
+	// connection, answers non-2xx, or returns something unparseable:
+	// "allow" or "deny". Required, with no default — both readings are
+	// legitimate (compliance wants traffic to stop when inspection stops;
+	// availability-first wants the gateway to keep serving), so fold refuses
+	// to guess on an operator's behalf and refuses to start without the
+	// choice.
+	OnError string `json:"onError"`
+
+	// Stages selects what is inspected: "ingress" (the invocation and its
+	// arguments). Nothing runs unless named.
+	Stages []string `json:"stages,omitempty"`
+
+	// Methods limits inspection to specific MCP methods. Absent means every
+	// named invocation policy governs.
+	Methods []string `json:"methods,omitempty"`
+
+	// Headers are sent with each decision request, verbatim — the same shape
+	// an audit webhook sink takes. Static values only.
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// BearerSecretRef names an environment variable holding a bearer token
+	// for the hook endpoint, so the credential is not in the config
+	// document. Same convention as discovery's.
+	BearerSecretRef string `json:"bearerSecretRef,omitempty"`
 }
 
 // Discovery enables dynamic upstream discovery: fold polls url for a JSON
@@ -346,6 +391,47 @@ type Tenant struct {
 	// all, by id. Evaluated before policy, which remains the authority on
 	// what may be invoked. Empty means every upstream.
 	Upstreams []string `json:"upstreams,omitempty"`
+}
+
+// validateHook checks the decision-hook section. Both bounds are required
+// rather than defaulted: the roadmap calls fail-open-or-closed a deliberate
+// configuration choice, and the way to make a choice deliberate is to refuse
+// to start without it.
+func (c *Config) validateHook() error {
+	h := c.Hook
+	if h == nil {
+		return nil
+	}
+	if err := requireSecureEndpoint("hook url", h.URL); err != nil {
+		return err
+	}
+	if h.TimeoutMs <= 0 {
+		return fmt.Errorf("hook: timeoutMs is required and must be positive — an unbounded decision is an unbounded request")
+	}
+	switch h.OnError {
+	case "allow", "deny":
+	default:
+		return fmt.Errorf("hook: onError is required and must be %q or %q — fold will not guess whether your deployment prefers to keep serving or to stop", "allow", "deny")
+	}
+	for _, s := range h.Stages {
+		if s != "ingress" {
+			return fmt.Errorf("hook: unknown stage %q", s)
+		}
+	}
+	for _, m := range h.Methods {
+		// Rejected rather than silently never matching: a method fold does
+		// not inspect is a hook an operator thinks is running and is not.
+		// resources/read is absent deliberately — its probe fallback tries
+		// several upstreams for one URI, so inspecting it would multiply one
+		// decision by the size of the federation. It joins when the egress
+		// stage lands, where a resource's content is what matters anyway.
+		switch m {
+		case "tools/call", "prompts/get":
+		default:
+			return fmt.Errorf("hook: methods entry %q is not inspectable; fold inspects %q and %q", m, "tools/call", "prompts/get")
+		}
+	}
+	return nil
 }
 
 // validateTenants checks tenant declarations.
@@ -948,6 +1034,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if err := c.validateTenants(); err != nil {
+		return err
+	}
+	if err := c.validateHook(); err != nil {
 		return err
 	}
 	if c.Server != nil && c.Server.Introspection != nil && len(c.Server.Introspection.Groups) > 0 {

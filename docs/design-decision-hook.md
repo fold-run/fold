@@ -205,7 +205,24 @@ guard fold has.
 
 1. **Ingress.** Config and validation (including the two required fields), the
    dedicated client, the wire contract, the decision, the audit outcome, the
-   metric, and the benchmark that documents the cost.
+   metric, and the benchmark that documents the cost. **Shipped**, with two
+   scope decisions this record did not make.
+
+   *`resources/read` is not inspectable yet, and says so.* Its probe fallback
+   tries several upstreams for one URI, so inspecting it would multiply one
+   decision by the size of the federation. Naming it in `methods` is a config
+   error rather than a silent no-op — a method fold does not inspect is a hook
+   an operator believes is running and is not. It joins with the egress stage,
+   where a resource's content is what mattered anyway.
+
+   *Opting in takes two acts.* Configuring an endpoint does not put it on the
+   request path; a stage must be named. That is deliberate for a feature whose
+   misconfiguration is either an outage or an unnoticed bypass.
+
+   The floor, measured against a local no-op endpoint: **~42 µs per decision**,
+   107 allocations. Real inspectors cost more, and the number worth publishing
+   is the one fold controls. The added-latency gate is unmoved at 181 µs,
+   because a deployment without a hook pays a nil check.
 2. **Egress.** The result stage, and the honest accounting of what it costs on
    large results.
 3. **The reverse path.** Sampling and elicitation as a hook stage, which is

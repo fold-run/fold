@@ -22,9 +22,30 @@
     "tenants": {
       "type": "array",
       "items": { "$ref": "#/definitions/tenant" }
-    }
+    },
+    "hook": { "$ref": "#/definitions/hook" }
   },
   "definitions": {
+    "hook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "timeoutMs", "onError"],
+      "properties": {
+        "url": { "type": "string" },
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "onError": { "enum": ["allow", "deny"] },
+        "stages": {
+          "type": "array",
+          "items": { "enum": ["ingress"] }
+        },
+        "methods": { "type": "array", "items": { "type": "string" } },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "bearerSecretRef": { "type": "string" }
+      }
+    },
     "upstream": {
       "type": "object",
       "additionalProperties": false,

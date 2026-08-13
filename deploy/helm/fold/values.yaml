@@ -211,6 +211,11 @@ metrics:
     # Per-second edge rejections (bad Host/Origin, unauthenticated) tripping
     # FoldIngressRejectionSpike.
     rejectionRateThreshold: 1
+    # p99 seconds for one decision-hook round trip, tripping
+    # FoldHookLatencyHigh. This is latency fold adds on purpose at your
+    # request, so set it from the hook's own timeoutMs rather than from any
+    # fold constant.
+    hookLatencyP99Seconds: 0.5
 
   # The Grafana dashboard, delivered as a ConfigMap for the Grafana sidecar.
   # The JSON itself is deploy/helm/fold/dashboards/fold-overview.json — import
