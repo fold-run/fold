@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/state"
 )
 
 // countingUpstreamServer runs a real SDK MCP server that counts the sessions
@@ -234,5 +235,35 @@ func TestEndpointPoolRotationAndCooldown(t *testing.T) {
 	p.markUp("a")
 	if s := p.snapshot(true); !s[0].Healthy || s[1].Healthy {
 		t.Errorf("snapshot after markUp(a) = %+v, want a healthy, b not", s)
+	}
+}
+
+// TestConnectBoundsFailoverWalk: one connect attempt walks at most three
+// candidates, so a K-replica upstream that is entirely down costs a bounded
+// wait per caller rather than K×connectTimeout.
+func TestConnectBoundsFailoverWalk(t *testing.T) {
+	provider := state.NewMemory()
+	t.Cleanup(func() { _ = provider.Close() })
+	u := newUpstream(config.Upstream{
+		ID: "wide",
+		URLs: []string{
+			"http://127.0.0.1:1", "http://127.0.0.1:2", "http://127.0.0.1:3",
+			"http://127.0.0.1:4", "http://127.0.0.1:5",
+		},
+		Timeouts: &config.Timeouts{ConnectMs: 200},
+	}, provider)
+	t.Cleanup(u.Close)
+
+	if _, err := u.connect(context.Background(), nil); err == nil {
+		t.Fatal("connect against five dead endpoints should fail")
+	}
+	down := 0
+	for _, ep := range u.endpoints.snapshot(true) {
+		if !ep.Healthy {
+			down++
+		}
+	}
+	if down != maxConnectCandidates {
+		t.Fatalf("endpoints ejected by one connect walk = %d, want %d", down, maxConnectCandidates)
 	}
 }

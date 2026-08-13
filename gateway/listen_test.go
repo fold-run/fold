@@ -102,3 +102,61 @@ func TestNotificationFanIn(t *testing.T) {
 		t.Errorf("resources/updated URI = %q, want %q (URIs are opaque and must not be rewritten)", got, uri)
 	}
 }
+
+// TestOrphanedSubscriptionReleased proves the gateway does not hold an
+// upstream subscription forever when the subscribing client disconnects
+// without unsubscribing.
+func TestOrphanedSubscriptionReleased(t *testing.T) {
+	const uri = "file:///watched.txt"
+	var subscribed, unsubscribed atomic.Int64
+	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1.0"}, &mcp.ServerOptions{
+		Capabilities: &mcp.ServerCapabilities{Resources: &mcp.ResourceCapabilities{Subscribe: true}},
+		SubscribeHandler: func(context.Context, *mcp.SubscribeRequest) error {
+			subscribed.Add(1)
+			return nil
+		},
+		UnsubscribeHandler: func(context.Context, *mcp.UnsubscribeRequest) error {
+			unsubscribed.Add(1)
+			return nil
+		},
+	})
+	server.AddResource(&mcp.Resource{URI: uri, Name: "watched"},
+		func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: uri, Text: "x"}}}, nil
+		})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	up := httptest.NewServer(handler)
+	t.Cleanup(up.Close)
+
+	ts, gw := startGateway(t, &config.Config{Upstreams: []config.Upstream{{ID: "u", URL: up.URL}}})
+
+	session := connect(t, ts.URL, nil)
+	if err := session.Subscribe(context.Background(), &mcp.SubscribeParams{URI: uri}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if subscribed.Load() != 1 {
+		t.Fatalf("upstream did not receive the subscription: %d", subscribed.Load())
+	}
+	// Disconnect without unsubscribing — exactly what a crashed or
+	// impatient client does.
+	_ = session.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		gw.reapSubscribers()
+		if unsubscribed.Load() == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("orphaned subscription was never released upstream")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	gw.subMu.Lock()
+	remaining := len(gw.subscribers)
+	gw.subMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("subscriber ref-count table still holds %d entries", remaining)
+	}
+}

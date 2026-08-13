@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -248,4 +249,48 @@ func TestReloadPreservesDiscovered(t *testing.T) {
 			t.Errorf("upstream %q missing after base reload (have %d upstreams)", id, len(rt.upstreams))
 		}
 	}
+}
+
+// TestDiscoveryRefusesRedirect proves a discovery source cannot redirect the
+// gateway — and its bearer credential — to a host of its choosing.
+func TestDiscoveryRefusesRedirect(t *testing.T) {
+	var attackerHits atomic.Int64
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerHits.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"upstreams": []any{}})
+	}))
+	t.Cleanup(attacker.Close)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, attacker.URL+"/doc", http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+
+	up, _ := newUpstreamServer(t, "echo")
+	gw, err := New(&config.Config{Upstreams: []config.Upstream{{ID: "u", URL: up.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gw.Close)
+
+	d := newDiscoverer(gw, &config.Discovery{URL: source.URL})
+	if _, err := d.fetch(); err == nil {
+		t.Fatal("discovery followed a redirect; it must refuse")
+	}
+	if n := attackerHits.Load(); n != 0 {
+		t.Fatalf("redirect target was contacted %d times", n)
+	}
+}
+
+// TestDiscoveryIntervalClamped: a poll-interval typo cannot turn the gateway
+// into a flood source against its own discovery source.
+func TestDiscoveryIntervalClamped(t *testing.T) {
+	up, _ := newUpstreamServer(t, "echo")
+	_, gw := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "a", Namespace: "a", URL: up.URL}},
+	})
+	d := newDiscoverer(gw, &config.Discovery{URL: "https://registry.example/mcp.json", IntervalMs: 1})
+	if d.interval != time.Second {
+		t.Fatalf("interval = %v, want the 1s floor", d.interval)
+	}
+	close(d.stop)
 }

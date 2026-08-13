@@ -3,8 +3,10 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,4 +63,58 @@ func TestHangingStandaloneSSE(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
 		t.Errorf("call took %s; the hanging GET should have been cut at %s", elapsed, sseHeaderTimeout)
 	}
+}
+
+// TestIdleTimeoutBody: silence beyond the idle bound cuts the stream with a
+// recognizable error; a stream that keeps delivering stays open across
+// several idle windows.
+func TestIdleTimeoutBody(t *testing.T) {
+	t.Run("hung stream is cut", func(t *testing.T) {
+		pr, _ := io.Pipe() // no writer: permanent silence
+		body := newIdleTimeoutBody(pr, 100*time.Millisecond)
+		defer body.Close()
+		done := make(chan error, 1)
+		go func() {
+			_, err := body.Read(make([]byte, 64))
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "idle") {
+				t.Fatalf("expected an idle-timeout error, got %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("read never unblocked")
+		}
+	})
+
+	t.Run("active stream survives", func(t *testing.T) {
+		pr, pw := io.Pipe()
+		body := newIdleTimeoutBody(pr, 300*time.Millisecond)
+		defer body.Close()
+		stop := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if _, err := pw.Write([]byte("data: x\n\n")); err != nil {
+						return
+					}
+				case <-stop:
+					_ = pw.Close()
+					return
+				}
+			}
+		}()
+		deadline := time.Now().Add(1 * time.Second) // > 3 idle windows
+		buf := make([]byte, 64)
+		for time.Now().Before(deadline) {
+			if _, err := body.Read(buf); err != nil {
+				t.Fatalf("active stream was cut: %v", err)
+			}
+		}
+		close(stop)
+	})
 }
