@@ -171,11 +171,12 @@ asynchronous and batched, never adding request latency). Fields:
 |---|---|
 | `time` | UTC timestamp. |
 | `principal`, `issuer` | Verified subject and token issuer; absent when auth is disabled. |
-| `method` | MCP method (`tools/call`, …) or `http` for pre-MCP rejections. |
+| `method` | MCP method (`tools/call`, …), `http` for pre-MCP rejections, `oauth/token` for the EMA endpoint, or `upstream/definitionChanged` for pinned-definition drift. |
 | `name` | Namespaced tool/prompt name or resource URI. |
 | `upstream` | Routed upstream id. |
-| `decision`, `ruleId` | Policy outcome (`allow`/`deny`) and the matching rule. |
-| `outcome` | `ok`, `error`, `denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`. |
+| `decision`, `ruleId` | Policy outcome (`allow`/`deny`) and the matching rule. An explicit `deny` rule names itself here; a refusal that fell through to `defaultDecision` has no `ruleId`, which is how you tell "a rule refused this" from "nothing granted it". |
+| `outcome` | `ok`, `error`, `denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`, `warned`. The last is a finding rather than a request outcome — fold noticed something an operator should see and served the request anyway. |
+| `direction` | `server_initiated` on the reverse path — a sampling or elicitation request an upstream made of the caller's client. Absent means the ordinary client-to-upstream direction, so every event predating the field reads unchanged. |
 | `tenant` | The tenant the principal resolved to, when `tenants` is configured. Empty means no tenant matched — not an error, just a caller governed by the gateway-wide rules. |
 | `upstreamCalls` | Upstream invocations this request cost — the fan-out. Not always 1. |
 | `itemsServed` | Items a list returned **after** per-principal policy filtering and pagination: the surface this caller was handed, not the federation's total. |
