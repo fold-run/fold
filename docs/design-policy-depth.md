@@ -227,7 +227,24 @@ reason would make clients handle distinctions they cannot act on.
    `allow` stopped being required.
 2. **Argument constraints.** Config, conditional parsing, call-path enforcement,
    the visible-but-conditional asymmetry documented in the README's policy
-   section, and `make bench` on a document that uses them.
+   section, and `make bench` on a document that uses them. **Shipped**, with
+   two things this record did not settle.
+
+   *A deny carrying `args` does not hide.* The asymmetry above was written for
+   allow clauses; the deny case is the mirror and needed the opposite choice
+   for the same missing information. Hiding on an unevaluable deny would apply
+   the rule far more broadly than written — "no deploys to production" would
+   remove `deploy` entirely — so an argument-carrying deny stays invisible at
+   list time and refuses at call time.
+
+   *Preserving the old path took keeping the old matcher.* Folding the
+   arg-aware logic into the existing matcher behind a mode flag cost ~4% on
+   the per-item decide path, which is measurable because policy is evaluated
+   once per item of every list it filters. The two matchers are therefore
+   separate, and a document with no `args` anywhere runs the original one:
+   76.8 ns against a 75.2 ns baseline (the residual is the wider `Decision`
+   struct), zero allocations, versus 94.3 ns for a document that constrains
+   arguments and walks a dotted path.
 3. **Destructive gating.** The annotation index on the snapshot, `toolKind`
    matching, unknown-denies, and the honest documentation of what the gate is
    and is not.

@@ -95,3 +95,43 @@ func BenchmarkDecideWithDeny(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkDecideWithArgs is what a document that constrains arguments pays,
+// including the walk of one dotted path. The arguments themselves are already
+// parsed here: the unmarshal happens once per call in the gateway, and only
+// for calls whose policy actually asks — see rawArgs.
+//
+//	go test ./policy -run '^$' -bench 'BenchmarkDecide' -benchmem
+func BenchmarkDecideWithArgs(b *testing.B) {
+	var rules []config.PolicyRule
+	for i := range 8 {
+		rules = append(rules, config.PolicyRule{
+			ID:       fmt.Sprintf("rule-%d", i),
+			Subjects: &config.PolicySubjects{Groups: []string{fmt.Sprintf("group-%d", i)}},
+			Allow: []config.PolicyAllow{{
+				Server:  "*",
+				Methods: []string{"tools/call"},
+				Names:   []string{"*-tool-*", "admin-*", "search-*"},
+			}},
+		})
+	}
+	rules = append(rules, config.PolicyRule{
+		ID:       "match",
+		Subjects: &config.PolicySubjects{Groups: []string{"eng"}},
+		Allow: []config.PolicyAllow{{
+			Server: "up", Methods: []string{"tools/call"}, Names: []string{"up-tool-*"},
+			Args: map[string]any{"target.environment": "staging"},
+		}},
+	})
+	e := New(&config.Policy{DefaultDecision: "deny", Rules: rules})
+	p := &auth.Principal{Issuer: "https://idp", Subject: "u1", Groups: []string{"eng"}}
+	parsed := map[string]any{"target": map[string]any{"environment": "staging"}}
+	args := func() (map[string]any, bool) { return parsed, true }
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if !e.DecideCall(p, "up", "tools/call", "up-tool-042", args).Allowed {
+			b.Fatal("expected allow")
+		}
+	}
+}
