@@ -1143,7 +1143,20 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession, u *upstream) *mcp.ClientO
 	// and trust. Both are policy-gated against the in-flight invocation's
 	// principal; logging and progress above are notifications that cost the
 	// caller nothing to receive and carry no answer to authorize.
-	if caps != nil && caps.Sampling != nil {
+	//
+	// The invisibility half of the pair: setting a handler is what advertises
+	// the capability to the upstream (SDK semantics), so an upstream policy
+	// will never let ask is not told the client can answer, and does not ask.
+	// The handler check below remains the boundary — this decision is made
+	// once, at connect, and a bridged session outlives the call that opened
+	// it. The staleness runs one way only: a grant added by a later reload
+	// waits for a new session, while a denial added by one takes effect on the
+	// next request, because the handler asks again every time.
+	mayAsk := func(method string) bool {
+		ictx := g.invocationCtx(context.Background(), key)
+		return g.rt().policy.DecideServerInitiated(auth.PrincipalFromContext(ictx), u.cfg.ID, method).Allowed
+	}
+	if caps != nil && caps.Sampling != nil && mayAsk("sampling/createMessage") {
 		opts.CreateMessageHandler = func(ctx context.Context, req *mcp.CreateMessageRequest) (res *mcp.CreateMessageResult, err error) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -1162,7 +1175,7 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession, u *upstream) *mcp.ClientO
 			return res, err
 		}
 	}
-	if caps != nil && caps.Elicitation != nil {
+	if caps != nil && caps.Elicitation != nil && mayAsk("elicitation/create") {
 		opts.ElicitationHandler = func(ctx context.Context, req *mcp.ElicitRequest) (res *mcp.ElicitResult, err error) {
 			defer func() {
 				if r := recover(); r != nil {
