@@ -155,19 +155,20 @@ func BenchmarkBridgeOptions(b *testing.B) {
 	}
 	b.Cleanup(g.Close)
 	ss := &mcp.ServerSession{}
+	u := g.rt().upstreams[0]
 
 	// What every named invocation pays now: just the thunk.
 	b.Run("deferred", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			sink = func() *mcp.ClientOptions { return g.bridgeOptions(ss) }
+			sink = func() *mcp.ClientOptions { return g.bridgeOptions(ss, u) }
 		}
 	})
 	// What only a bridged-session connect pays.
 	b.Run("built", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			_ = g.bridgeOptions(ss)
+			_ = g.bridgeOptions(ss, u)
 		}
 	})
 }

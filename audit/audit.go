@@ -44,6 +44,11 @@ type Event struct {
 	Method    string    `json:"method"`             // MCP method, e.g. "tools/call"
 	Name      string    `json:"name,omitempty"`     // namespaced tool/prompt name
 	Upstream  string    `json:"upstream,omitempty"` // routed upstream id
+	// Direction is set only on the reverse path — "server_initiated", for the
+	// sampling and elicitation requests an upstream makes of the caller's
+	// client. Its absence means the ordinary client-to-upstream direction, so
+	// every event fold emitted before this field existed reads unchanged.
+	Direction string `json:"direction,omitempty"`
 	// Tenant is the group the principal resolved to, when tenancy is
 	// configured. Empty means no tenant matched — which is not an error, just
 	// a caller governed by the gateway-wide rules.

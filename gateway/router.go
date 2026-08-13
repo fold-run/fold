@@ -302,7 +302,7 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 	if len(params.Arguments) > 0 {
 		args = params.Arguments
 	}
-	key, opts := g.bridgeFor(req)
+	key, opts := g.bridgeFor(req, u)
 	defer g.pushCallCtx(ctx, key)()
 	before := g.bridgeActivity(key)
 	out, err := u.callTool(ctx, key, opts, &mcp.CallToolParams{
@@ -372,7 +372,7 @@ func (g *Gateway) getPrompt(ctx context.Context, rt *routes, req mcp.Request, ev
 	if res, err := g.authorize(ctx, evt, rt, u, "prompts/get", bare); err != nil {
 		return res, err
 	}
-	key, opts := g.bridgeFor(req)
+	key, opts := g.bridgeFor(req, u)
 	defer g.pushCallCtx(ctx, key)()
 	before := g.bridgeActivity(key)
 	out, err := u.getPrompt(ctx, key, opts, &mcp.GetPromptParams{
@@ -537,12 +537,24 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 // The thunk may run more than once (once per upstream that must connect on a
 // logging/setLevel fan-out); each call builds an equivalent value, since the
 // options depend only on the downstream session.
-func (g *Gateway) bridgeFor(req mcp.Request) (string, bridgeOpts) {
+func (g *Gateway) bridgeFor(req mcp.Request, u *upstream) (string, bridgeOpts) {
 	ss, ok := req.GetSession().(*mcp.ServerSession)
 	if !ok || ss.ID() == "" {
 		return "", nil
 	}
-	return ss.ID(), func() *mcp.ClientOptions { return g.bridgeOptions(ss) }
+	return ss.ID(), func() *mcp.ClientOptions { return g.bridgeOptions(ss, u) }
+}
+
+// bridgeKey is the downstream session a bridged session would be keyed by, or
+// "" when this request has none. Split out for the one caller that bridges to
+// several upstreams at once and needs the key before it has an upstream: the
+// options differ per upstream now that they carry a policy decision about it.
+func bridgeKey(req mcp.Request) string {
+	ss, ok := req.GetSession().(*mcp.ServerSession)
+	if !ok {
+		return ""
+	}
+	return ss.ID()
 }
 
 // complete routes completion/complete to the upstream owning the reference:
@@ -596,12 +608,13 @@ func (g *Gateway) complete(ctx context.Context, rt *routes, req mcp.Request, evt
 // the SDK server record it for the downstream session.
 func (g *Gateway) setLevel(ctx context.Context, rt *routes, req mcp.Request, next mcp.MethodHandler) (mcp.Result, error) {
 	params, _ := req.GetParams().(*mcp.SetLoggingLevelParams)
-	key, opts := g.bridgeFor(req)
+	key := bridgeKey(req)
 	if params != nil && key != "" {
 		// Only the tenant's own upstreams: propagating a level to one it
 		// cannot see would open a bridged session to it on this client's
 		// behalf, which is the thing the subset exists to prevent.
 		for _, u := range visibleUpstreams(ctx, rt.upstreams) {
+			_, opts := g.bridgeFor(req, u)
 			_ = u.setLoggingLevel(ctx, key, opts, params.Level) // best effort per upstream
 		}
 	}
@@ -632,6 +645,59 @@ func (g *Gateway) authorize(ctx context.Context, evt *audit.Event, rt *routes, u
 		Code:    codeDenied,
 		Message: fmt.Sprintf("policy denied %s %q", method, evt.Name),
 	}
+}
+
+// directionServerInitiated marks the audit events that describe the reverse
+// path. Absent means client-to-upstream — see audit.Event.Direction.
+const directionServerInitiated = "server_initiated"
+
+// authorizeServerInitiated is authorize's reverse-path twin: it decides
+// whether u may ask the caller's client for something (sampling, elicitation)
+// and returns a func that records how the exchange ended.
+//
+// Two differences from the forward path are structural rather than
+// incidental. The refusal is answered to the upstream, not to the caller — the
+// caller sees only whatever the tool does about being told no — which makes
+// the audit event the one place this exchange is legible. And the event is
+// built here rather than in the middleware, because the middleware wraps
+// client requests and this is not one: it arrives on an SDK client goroutine,
+// inside a call the middleware is already in the middle of.
+func (g *Gateway) authorizeServerInitiated(ctx context.Context, u *upstream, method string) (func(error), error) {
+	start := time.Now()
+	evt := audit.Event{
+		Method:    method,
+		Direction: directionServerInitiated,
+		Upstream:  u.cfg.ID,
+	}
+	p := auth.PrincipalFromContext(ctx)
+	if p != nil {
+		evt.Principal, evt.Issuer = p.Subject, p.Issuer
+	}
+	evt.Tenant = tenantFrom(ctx).id()
+	d := g.rt().policy.DecideServerInitiated(p, u.cfg.ID, method)
+	evt.RuleID = d.RuleID
+	if !d.Allowed {
+		evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
+		evt.LatencyMs = time.Since(start).Milliseconds()
+		g.audit.Emit(evt)
+		return nil, &jsonrpc.Error{
+			Code:    codeDenied,
+			Message: fmt.Sprintf("policy denied %s", method),
+		}
+	}
+	evt.Decision = "allow"
+	// The event waits for the answer: an allowed request is not a terminal
+	// response until the client has given one, and how long the caller's
+	// human took is the most interesting number on an elicitation.
+	return func(err error) {
+		evt.LatencyMs = time.Since(start).Milliseconds()
+		if err != nil {
+			evt.Error, evt.Outcome = err.Error(), classify(err)
+		} else {
+			evt.Outcome = audit.OutcomeOK
+		}
+		g.audit.Emit(evt)
+	}, nil
 }
 
 func tagUpstream(meta *mcp.Meta, u *upstream) {

@@ -73,6 +73,30 @@ is still per-instance — in both cases the task falls through to the
 locate-by-probe path and becomes reachable by any caller, exactly as it
 does for a task fold never saw minted.
 
+## The reverse direction is governed separately, and opts in
+
+Bridged sessions let an upstream reach the caller's client: sampling borrows
+the caller's model, elicitation asks the caller's human a question. Both are
+legitimate protocol features and both spend something that belongs to the
+caller, so `policy.serverInitiatedDecision: "deny"` puts them behind the same
+engine — matched on server and method, decided against the principal whose
+in-flight call the request arrived under, and recorded with
+`direction: "server_initiated"` in the audit trail.
+
+Two properties to hold in mind. **It defaults to allow**, because this traffic
+flowed before the check existed and tightening it silently on upgrade would
+break working installs; a hardened deployment sets it explicitly, and the
+[production checklist](deploy.md#production-checklist) says so. And the
+refusal is answered to the *upstream*, not the caller — the caller sees only
+what the tool does about being declined — which makes the audit event the only
+place the exchange is visible to an operator.
+
+What this is not: fold does not read the sampling messages or the elicitation
+prompt. An upstream allowed to elicit can ask the human anything, including
+for a secret. That is a content question, and the answer is the external
+decision hook rather than a scanner in the gateway — see
+[the roadmap](roadmap.md#9-the-external-decision-hook).
+
 ## Credentials never travel further than configured
 
 Upstream credentials (API keys, exchanged tokens, passthrough bearers)

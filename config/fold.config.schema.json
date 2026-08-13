@@ -188,6 +188,7 @@
       "additionalProperties": false,
       "properties": {
         "defaultDecision": { "enum": ["deny", "allow"] },
+        "serverInitiatedDecision": { "enum": ["allow", "deny"] },
         "rules": { "type": "array", "items": { "$ref": "#/definitions/policyRule" } }
       }
     },
