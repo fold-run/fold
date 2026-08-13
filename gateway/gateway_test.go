@@ -447,3 +447,91 @@ func TestHostValidation(t *testing.T) {
 		t.Errorf("want 403 for forbidden host, got %d", resp.StatusCode)
 	}
 }
+
+// annotatedUpstream serves one read-only tool, one explicitly non-destructive
+// tool, one destructive tool, and one carrying no annotations at all — the
+// case the MCP spec says to treat as destructive.
+func annotatedUpstream(t *testing.T) string {
+	t.Helper()
+	server := mcp.NewServer(&mcp.Implementation{Name: "annotated", Version: "1.0"}, nil)
+	add := func(name string, anno *mcp.ToolAnnotations) {
+		server.AddTool(&mcp.Tool{
+			Name:        name,
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			Annotations: anno,
+		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+		})
+	}
+	no := false
+	add("search", &mcp.ToolAnnotations{ReadOnlyHint: true})
+	add("draft", &mcp.ToolAnnotations{DestructiveHint: &no})
+	add("delete", &mcp.ToolAnnotations{DestructiveHint: nil})
+	add("mystery", nil)
+
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	up := httptest.NewServer(handler)
+	t.Cleanup(up.Close)
+	return up.URL
+}
+
+// TestToolKindThroughTheGateway drives "read anything, write nothing" against
+// a real upstream that publishes its own annotations — including the
+// unannotated tool, which the spec's defaults make destructive and which the
+// gate must therefore refuse rather than wave through.
+func TestToolKindThroughTheGateway(t *testing.T) {
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: annotatedUpstream(t)}},
+		Policy: &config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID:    "read-anything",
+				Allow: []config.PolicyAllow{{Server: "u", Methods: []string{"tools/call"}, ToolKind: "readOnly"}},
+			}},
+		},
+	})
+	session := connect(t, ts.URL, nil)
+
+	res, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if got := strings.Join(toolNames(res), ","); got != "search" {
+		t.Errorf("list = %q, want only search — annotations arrive with the list, so the gate filters it", got)
+	}
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "search"}); err != nil {
+		t.Errorf("read-only call refused: %v", err)
+	}
+	for _, name := range []string{"delete", "mystery"} {
+		if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name}); err == nil {
+			t.Errorf("%s was callable under a readOnly grant", name)
+		}
+	}
+}
+
+// TestToolKindDeniesWhenListCachingIsOff pins the composition the design
+// record calls out. An upstream whose credential is caller-derived has its
+// list cache disabled — one caller's list must never serve another — and this
+// reaches that same state directly, without the auth wiring. With no cached
+// list there are no annotations to consult, and fold will not make a per-call
+// round trip to invent them, so the gate refuses. Documented behaviour, not a
+// bug: toolKind and passthrough/token-exchange do not compose.
+func TestToolKindDeniesWhenListCachingIsOff(t *testing.T) {
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{
+			ID: "u", URL: annotatedUpstream(t),
+			CacheTTLMs: -1,
+		}},
+		Policy: &config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID:    "read-anything",
+				Allow: []config.PolicyAllow{{Server: "u", Methods: []string{"tools/call"}, ToolKind: "readOnly"}},
+			}},
+		},
+	})
+	session := connect(t, ts.URL, nil)
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "search"}); err == nil {
+		t.Error("toolKind admitted a call it could not establish annotations for")
+	}
+}

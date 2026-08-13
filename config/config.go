@@ -555,6 +555,26 @@ type PolicyAllow struct {
 	// callable**: there are no arguments at list time, so this cannot filter
 	// a list. An operator who needs the stronger guarantee grants by name.
 	Args map[string]any `json:"args,omitempty"`
+
+	// ToolKind gates on the MCP tool annotations an upstream publishes:
+	// "readOnly" requires readOnlyHint, "nonDestructive" additionally admits
+	// tools whose destructiveHint is false. It is what lets a rule say "read
+	// anything, write nothing" without naming every tool.
+	//
+	// **A hygiene control, not a security boundary.** The annotations are
+	// declared by the very server being gated, so an upstream that labels
+	// delete_everything as read-only is believed. Use it for federations your
+	// organization operates; against an upstream you do not control, the
+	// boundary is Names.
+	//
+	// The MCP spec's defaults apply as written and are fail-safe:
+	// readOnlyHint defaults to false, destructiveHint to true, so an
+	// unannotated tool is neither read-only nor non-destructive. A tool whose
+	// annotations fold cannot establish is denied — which includes upstreams
+	// whose list caching is disabled because their credential is
+	// caller-derived, so toolKind and passthrough/token-exchange do not
+	// compose.
+	ToolKind string `json:"toolKind,omitempty"`
 }
 
 // Audit configures audit event emission.
@@ -1049,6 +1069,11 @@ func (c *Config) Validate() error {
 			for _, a := range slices.Concat(r.Allow, r.Deny) {
 				if a.Server != "" && a.Server != "*" && !seenID[a.Server] {
 					return fmt.Errorf("policy rule %q: unknown server %q", r.ID, a.Server)
+				}
+				switch a.ToolKind {
+				case "", "readOnly", "nonDestructive":
+				default:
+					return fmt.Errorf("policy rule %q: toolKind must be %q or %q", r.ID, "readOnly", "nonDestructive")
 				}
 				for path, v := range a.Args {
 					if path == "" {

@@ -130,7 +130,7 @@ func BenchmarkDecideWithArgs(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		if !e.DecideCall(p, "up", "tools/call", "up-tool-042", args).Allowed {
+		if !e.DecideCall(p, "up", "tools/call", "up-tool-042", Evidence{Args: args}).Allowed {
 			b.Fatal("expected allow")
 		}
 	}

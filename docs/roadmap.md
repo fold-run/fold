@@ -63,7 +63,7 @@ coherent, so it comes first. None of these are "not yet" — they are decisions.
 |---|---|---|---|
 | **Security and access control** | The strongest surface. Deny-by-default ABAC policy with the invisibility-plus-denial enforcement pair, first-class tenants (a visibility subset evaluated before policy, a shared bucket, an allowance, and the tenant in every record), five upstream credential strategies including RFC 8693 brokering, EMA, RFC 9728 metadata, host validation, and audit as the single exit door. | Depth, not parity: deny rules, argument-level constraints, destructive-operation gating, and the external decision hook. | Inline content inspection. Structural enforcement instead. |
 | **Cost and consumption** | Accumulating calendar budgets at three scopes (server, upstream, tenant) alongside the sliding-window limits, metering of fan-out and items served, and per-tenant consumption series — so "what did this customer spend this month" is a query. (This row read "effectively nothing" before the Horizon 1 work below.) | The headline theme: accumulating quotas and budgets, consumption metering, and making the context-cost win fold already has legible. | Billing and monetization. fold measures; something else bills. |
-| **Developer and agent experience** | A read-only console (dashboard plus an MCP test console that is a plain client against `/mcp`), and pull-based discovery for registration. | A searchable federated catalog and an effective-permissions view — both reads. | The write registry, the self-serve storefront, and monetization. |
+| **Developer and agent experience** | A read-only console (dashboard plus an MCP test console that is a plain client against `/mcp`), and pull-based discovery for registration. | A searchable federated catalog and an effective-permissions view — both reads — and MCP Apps parity, which is a downgrade to remove rather than a feature to add. | The write registry, the self-serve storefront, and monetization. |
 | **Observability and automation** | Good instrumentation, no interpretation: frozen Prometheus metric names, OTel server and client spans, an opt-in `ServiceMonitor` in the chart, and audit to stdout or a webhook. | Packaged dashboards, alert rules, and SLOs; audit sinks with retry and reach; CRDs and a config-diff CLI. | — |
 
 ## Horizon 1 — the next minors
@@ -377,6 +377,44 @@ blocking needs a way to adopt a new definition, and every candidate either
 invents a write path into running state or hands operators a hand-copying
 chore. That choice belongs to whoever needs prevention, not to the design.
 
+### 15. MCP Apps
+
+The [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
+(SEP-1865) lets a tool carry a pointer to an interactive HTML interface that
+the host sandboxes and renders in place of text. It is shipping in Claude,
+Claude Desktop, VS Code Copilot, Microsoft 365 Copilot and Goose, and fold has
+no awareness of it at all.
+
+That is not a feature gap, it is an invisibility-rule violation. The extension
+is client-declared, fold's shared upstream sessions declare nothing, and a
+server following the spec's advice therefore registers its text-only fallbacks
+— so the same upstream renders an app on a direct connection and returns plain
+text through the gateway, with nothing in the trail saying why.
+
+Closing it is small and additive: declare the extension upward per upstream,
+and shape each list downward by what the client in hand declared — dropping
+app-only tools and stripping `_meta.ui` for a client that never asked for
+either, which is both the parity fix and the one `visibility` rule a gateway is
+positioned to enforce for hosts that have never heard of it. Alongside it,
+harvest `ui://` ownership from the tool metadata, which removes a per-upstream
+probe from every app's first render and makes URI collisions — likely, because
+the extension requires uniqueness only within one server — visible instead of
+silent.
+
+Designed in [design-mcp-apps.md](design-mcp-apps.md), which is as clear about
+what fold should not do here. It recommends declaring the extension **on** by
+default, the rare default that is not opt-in in this repo, because it restores
+what a direct connection produces rather than adding a control. It declines
+minting fold-scoped `ui://` URIs for now, because chasing the rewrite into
+embedded resources inside tool results is response rewriting. And it refuses to
+paper over app-initiated calls with a bare-name fallback, which would weaken
+the namespace contract for every caller to fix a case that may never reach the
+gateway — the next step there is standing a real app behind fold and reading
+the wire, not writing code.
+
+The two gaps that remain after all of that are the specification's, and they
+are in the gated horizon below.
+
 ## Horizon 3 — gated
 
 Not scheduled. Each is blocked on something outside fold's control, or waiting
@@ -386,6 +424,7 @@ on demand that has not appeared.
 |---|---|
 | SEP-2575 `subscriptions/listen` fan-in | The Go SDK serves the 2026-07-28 protocol only on stateless HTTP servers, which session-keyed bridging cannot use. The drift canary in `gateway/listen_test.go` fails when that lifts — the gap is instrumented, not merely noted. |
 | Typed task API | The SDK does not yet model the task lifecycle, so `tasks/*` are forwarded as opaque JSON against fold's documented contract. Swaps to typed wire types when they ship; routing is unchanged. |
+| MCP Apps: app-initiated calls and cross-server app isolation | The extension gives an app no way to learn the name its host knows a tool by, so an app that hardcodes one cannot call it through a namespace; and it defines no marker distinguishing an app-initiated `tools/call` from a model-initiated one, so the host's cross-server block has no analogue behind a gateway where every upstream shares one connection. Both need answers in the extension specification — every aggregator has the second hole and none can close it alone. Parity is item 15 above and is not gated on either. |
 | `roots` | Not implemented, no position taken. Demand-gated. |
 | mTLS and API-key inbound auth, RFC 7591 dynamic client registration | JWKS bearer is the only inbound credential today. Demand-gated. |
 | `state.Provider` implementations beyond memory and Redis | The interface exists and is the right seam; nothing has asked for a third. |

@@ -263,7 +263,9 @@ func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, ev
 		// namespaced one; the two lists are index-aligned.
 		public := u.namespacedTools(lists[i])
 		for j, t := range lists[i] {
-			if !filter.visible(u.cfg.ID, t.Name) {
+			// The tool is in hand here, so a toolKind gate costs a field read
+			// rather than a lookup — annotations arrive with the list.
+			if !filter.visibleTool(u.cfg.ID, t) {
 				continue
 			}
 			out.Tools = append(out.Tools, public[j])
@@ -295,7 +297,13 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 		return nil, err
 	}
 	evt.Upstream = u.cfg.ID
-	if res, err := g.authorizeCall(ctx, evt, rt, u, "tools/call", bare, rawArgs(rt, params.Arguments)); err != nil {
+	ev := policy.Evidence{Args: rawArgs(rt, params.Arguments)}
+	if rt.policy.NeedsAnnotations() {
+		// Lazy: a call that never reaches a toolKind rule never resolves this,
+		// and a document with no such rule never builds it at all.
+		ev.Tool = func() (policy.ToolAnnotations, bool) { return u.annotationsFor(ctx, bare) }
+	}
+	if res, err := g.authorizeCall(ctx, evt, rt, u, "tools/call", bare, ev); err != nil {
 		return res, err
 	}
 	// A missing arguments field must stay missing — a nil RawMessage would
@@ -648,10 +656,10 @@ func rawArgs(rt *routes, raw json.RawMessage) policy.ArgSource {
 }
 
 func (g *Gateway) authorize(ctx context.Context, evt *audit.Event, rt *routes, u *upstream, method, bare string) (mcp.Result, error) {
-	return g.authorizeCall(ctx, evt, rt, u, method, bare, nil)
+	return g.authorizeCall(ctx, evt, rt, u, method, bare, policy.Evidence{})
 }
 
-func (g *Gateway) authorizeCall(ctx context.Context, evt *audit.Event, rt *routes, u *upstream, method, bare string, args policy.ArgSource) (mcp.Result, error) {
+func (g *Gateway) authorizeCall(ctx context.Context, evt *audit.Event, rt *routes, u *upstream, method, bare string, ev policy.Evidence) (mcp.Result, error) {
 	// The tenant's subset is evaluated before policy: it bounds which
 	// upstreams exist for this caller at all, and policy then decides what
 	// may be invoked among them. Nothing outside the subset reaches the
@@ -661,7 +669,7 @@ func (g *Gateway) authorizeCall(ctx context.Context, evt *audit.Event, rt *route
 		evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
 		return nil, errOutsideSubset(tn, method, evt.Name, u.cfg.ID)
 	}
-	d := rt.policy.DecideCall(auth.PrincipalFromContext(ctx), u.cfg.ID, method, bare, args)
+	d := rt.policy.DecideCall(auth.PrincipalFromContext(ctx), u.cfg.ID, method, bare, ev)
 	evt.RuleID = d.RuleID
 	if d.Allowed {
 		evt.Decision = "allow"

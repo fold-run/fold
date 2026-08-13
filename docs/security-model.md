@@ -55,6 +55,16 @@ match subjects, groups, issuers, and verified token claims (ABAC); subjects,
 groups, and claim names are only meaningful within an issuer, so rules
 should pin `issuers` whenever more than one IdP is trusted.
 
+Two of the newer matchers weaken the pair in ways worth knowing before relying
+on them. An **argument constraint** cannot filter a list, because there are no
+arguments at list time: a constrained tool is visible and only conditionally
+callable, and the pair's guarantee narrows to *a caller never sees a tool they
+cannot call at all*. A **`toolKind` gate** does filter lists, but it reads
+annotations supplied by the very upstream being gated — it is a hygiene
+control for federations you operate, and against a server you do not control
+the boundary is naming the tools. Unknown annotations deny, so the gate fails
+in the direction the rest of the engine fails.
+
 Task ownership follows the same principle: a task minted through the
 gateway is bound to the minting principal, and another caller's requests
 for it answer exactly like an unknown id — no existence leak.

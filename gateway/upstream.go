@@ -21,6 +21,7 @@ import (
 	"github.com/fold-run/fold/auth"
 	"github.com/fold-run/fold/config"
 	"github.com/fold-run/fold/internal/state"
+	"github.com/fold-run/fold/policy"
 )
 
 // Gateway-minted JSON-RPC error codes, documented in the README.
@@ -1074,6 +1075,35 @@ func (u *upstream) namespacedPrompts(bare []*mcp.Prompt) []*mcp.Prompt {
 	}
 	u.publicPrompts = publicView[mcp.Prompt]{from: bare, items: items}
 	return items
+}
+
+// annotationsFor resolves one tool's annotations for a toolKind rule, from
+// the list this upstream caches. It reports false when they cannot be
+// established, which policy treats as a denial.
+//
+// Two ways that happens, both deliberate. An upstream whose credential is
+// caller-derived has list caching disabled — one caller's list must never
+// serve another — so there is nothing to consult and no per-call round trip
+// will be made to invent one: toolKind and passthrough/token-exchange do not
+// compose, and the refusal says so by happening. And a tool the upstream does
+// not list cannot be judged, which is the same answer for the same reason.
+//
+// The scan is linear over a cached, already-decoded slice, on a path that is
+// about to make a network call to the upstream anyway.
+func (u *upstream) annotationsFor(ctx context.Context, bare string) (policy.ToolAnnotations, bool) {
+	if u.cacheTTL <= 0 {
+		return policy.ToolAnnotations{}, false
+	}
+	tools, err := u.listTools(ctx)
+	if err != nil {
+		return policy.ToolAnnotations{}, false
+	}
+	for _, t := range tools {
+		if t != nil && t.Name == bare {
+			return toolAnnotations(t)
+		}
+	}
+	return policy.ToolAnnotations{}, false
 }
 
 // listTools returns the upstream's full (un-namespaced) tool list, cached.

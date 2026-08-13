@@ -247,7 +247,18 @@ reason would make clients handle distinctions they cannot act on.
    arguments and walks a dotted path.
 3. **Destructive gating.** The annotation index on the snapshot, `toolKind`
    matching, unknown-denies, and the honest documentation of what the gate is
-   and is not.
+   and is not. **Shipped**, with one shape change: there is no separate
+   annotation index. At list time fold is already holding the tool, so the
+   annotations are read from the item itself; at call time they are resolved
+   from the same cached list the egress path decodes, by a lookup that runs
+   only when a rule actually gates on kind. A second index keyed by upstream
+   and name would have been a third thing to invalidate in step with the
+   cache, for a linear scan of an already-decoded slice on a path that is
+   about to make a network call anyway.
+
+   Unknown-denies covers more than the caller-derived case this record
+   anticipated: a tool the upstream does not list cannot be judged either, and
+   both answer the same way.
 4. **Docs.** README policy section, `docs/security-model.md` (the enforcement
    pair's revised statement), `defaults.md`.
 
