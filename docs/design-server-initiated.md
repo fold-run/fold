@@ -240,6 +240,11 @@ should instead become a **call site for the external decision hook**
 elicitation review gets it out-of-process, latency-budgeted, with its own audit
 outcome, like every other content question.
 
+**Shipped as designed**: the hook's `serverInitiated` stage runs after this
+policy check, sees what the upstream is asking for, and refuses *this* request
+without becoming a scanner in the gateway. The deferral held — the case that
+named it is now a passing test rather than a promise.
+
 **Logging and progress notifications.** They are fire-and-forget, carry no
 response, and have no decision to make — an allow/deny surface for them would
 be ceremony. The real risk they carry is volume, and volume is the limiter's

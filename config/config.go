@@ -59,7 +59,8 @@ type Hook struct {
 	OnError string `json:"onError"`
 
 	// Stages selects what is inspected: "ingress" (the invocation and its
-	// arguments) and "egress" (the result). Nothing runs unless named.
+	// arguments), "egress" (the result), and "serverInitiated" (what an
+	// upstream asks of the caller's client). Nothing runs unless named.
 	//
 	// The two are not interchangeable. By egress the upstream has already
 	// acted, so a denial there withholds the disclosure and not the effect:
@@ -420,7 +421,7 @@ func (c *Config) validateHook() error {
 	}
 	for _, s := range h.Stages {
 		switch s {
-		case "ingress", "egress":
+		case "ingress", "egress", "serverInitiated":
 		default:
 			return fmt.Errorf("hook: unknown stage %q", s)
 		}
@@ -433,9 +434,9 @@ func (c *Config) validateHook() error {
 		// decision by the size of the federation. It joins when the egress
 		// stage lands, where a resource's content is what matters anyway.
 		switch m {
-		case "tools/call", "prompts/get":
+		case "tools/call", "prompts/get", "sampling/createMessage", "elicitation/create":
 		default:
-			return fmt.Errorf("hook: methods entry %q is not inspectable; fold inspects %q and %q", m, "tools/call", "prompts/get")
+			return fmt.Errorf("hook: methods entry %q is not inspectable; fold inspects tools/call, prompts/get, sampling/createMessage, and elicitation/create", m)
 		}
 	}
 	return nil

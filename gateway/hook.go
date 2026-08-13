@@ -277,6 +277,72 @@ func (g *Gateway) hookIngress(ctx context.Context, evt *audit.Event, rt *routes,
 	return nil
 }
 
+// stageServerInitiated inspects what an upstream asks of the caller's client.
+// It is the content question design-server-initiated.md declined to answer
+// structurally: policy decides whether an upstream may elicit at all, and this
+// decides whether *this* elicitation is acceptable — "refuse one that asks for
+// a password" is the case that named this stage.
+const stageServerInitiated = "serverInitiated"
+
+// hookServerInitiated runs the reverse-path stage against what an upstream is
+// asking the caller's client for. A denial refuses the upstream, exactly as a
+// policy denial on this path does.
+//
+// Unlike egress, refusing here prevents the thing: the client is never asked,
+// so no model tokens are spent and no human is shown the prompt.
+func (g *Gateway) hookServerInitiated(ctx context.Context, evt *audit.Event, u *upstream, method string, params any) error {
+	h := g.rt().hook
+	if !h.inspects(stageServerInitiated, method) {
+		return nil
+	}
+	req := hookRequest{
+		Version:  hookWireVersion,
+		Stage:    stageServerInitiated,
+		Method:   method,
+		Upstream: u.cfg.ID,
+		Tenant:   evt.Tenant,
+	}
+	if p := auth.PrincipalFromContext(ctx); p != nil {
+		req.Principal = &hookPrincipal{Sub: p.Subject, Issuer: p.Issuer, Groups: p.Groups}
+	}
+
+	start := time.Now()
+	var (
+		outcome hookOutcome
+		reason  string
+	)
+	// The upstream's own params carry the content worth judging: an
+	// elicitation's message and requested schema, a sampling request's
+	// messages. They ride in `arguments` rather than a fourth field — this is
+	// what the upstream is asking for, which is the same role arguments play
+	// on the forward path.
+	body, err := json.Marshal(params)
+	switch {
+	case err != nil || len(body) > hookMaxResultBytes:
+		outcome = h.onError()
+	default:
+		req.Arguments = body
+		outcome, reason = h.decide(ctx, req)
+	}
+	g.metrics.observeHook(stageServerInitiated, string(outcome), time.Since(start))
+	evt.HookOutcome = string(outcome)
+
+	switch outcome {
+	case hookDenied:
+		evt.Outcome = audit.OutcomeHookDenied
+		evt.Decision = "deny"
+		msg := fmt.Sprintf("decision hook denied %s", method)
+		if reason != "" {
+			msg += ": " + reason
+		}
+		return &jsonrpc.Error{Code: codeDenied, Message: msg}
+	case hookErrored:
+		g.log.Warn("decision hook unavailable; proceeding per onError",
+			"stage", stageServerInitiated, "method", method, "upstream", u.cfg.ID)
+	}
+	return nil
+}
+
 // hookEgress runs the egress stage against a result the upstream has already
 // produced. It returns a wire error when the result must not be disclosed.
 //

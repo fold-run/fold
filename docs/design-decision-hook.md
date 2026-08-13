@@ -243,9 +243,19 @@ guard fold has.
 3. **The reverse path.** Sampling and elicitation as a hook stage, which is
    what [design-server-initiated.md](design-server-initiated.md) defers here —
    "refuse an elicitation that asks for a password" is the case it names.
+   **Shipped**, and it is the stage with the strongest guarantee of the three:
+   unlike egress it *prevents* rather than withholds, because the client is
+   never asked — no model tokens are spent and no human sees the prompt. The
+   upstream's own params ride in `arguments` rather than earning a fourth
+   envelope field, since "what is being asked for" is the role arguments
+   already play on the forward path.
 4. **Docs.** README (the non-goal paragraph has promised this endpoint since
    v1.0 and should now point at it), security-model (the hook is a new trust
    boundary and a new data-egress path), deploy checklist, operations.
+   **Shipped** alongside each phase rather than saved for the end, which is
+   why this entry is short: what remained was pointing the v1.0 non-goal
+   paragraph at the thing it promised, and closing the loop in
+   design-server-initiated.md, whose deferral is now a passing test.
 
 ## The question this record does not settle
 
