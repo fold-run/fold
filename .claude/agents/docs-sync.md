@@ -15,20 +15,25 @@ as already accurate.
 
 - **README.md** — the primary doc. Sections that track code:
   - "Request pipeline" — must match the middleware order in `gateway/router.go`
-  - "Configuration" (+ per-section subheads) — must match `config/config.go`
-    and `config/fold.config.schema.json` (a drift test enforces schema
-    lockstep; the prose is on you)
-  - "Error codes" — exactly the four minted codes (-32040..-32043) plus
+  - "Configuration" — a summary table only; it changes when a whole
+    top-level section is added or removed. Field-level prose lives in
+    `docs/configuration.md`.
+  - "Error codes" — exactly the six minted codes (-32040..-32044, -32002) plus
     pass-through semantics
   - "Not implemented" — deliberate gaps; update if a change closes or widens
     one
   - "API stability" — the v1 compatibility contract; new config fields and
     flags must be compatible with it
-  - "Changelog" — release-time only; do not add entries for unreleased work
-- **docs/** — `operations.md`, `deploy.md`, `security-model.md`,
-  `embedding.md`, `defaults.md`. Check whichever the change touches
-  (new config → defaults.md; new endpoint/metric → operations.md; auth/policy
-  → security-model.md; embedding API → embedding.md).
+  - "Changelog" — a pointer to `CHANGELOG.md`; the history itself lives there
+    and is release-time only
+- **CHANGELOG.md** — release-time only; do not add entries for unreleased work.
+- **docs/** — `configuration.md`, `operations.md`, `deploy.md`,
+  `security-model.md`, `embedding.md`, `defaults.md`. Check whichever the
+  change touches (config field → configuration.md, then defaults.md for the
+  default's rationale; new endpoint/metric → operations.md; auth/policy →
+  security-model.md; embedding API → embedding.md). `configuration.md` must
+  match `config/config.go` and `config/fold.config.schema.json` — a drift
+  test enforces schema lockstep, the prose is on you.
 - **fold.config.example.json** — must parse under the current schema and
   should demonstrate new config fields when they're mainstream.
 - **CLAUDE.md** — update only if the change alters an architectural invariant

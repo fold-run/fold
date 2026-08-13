@@ -3,8 +3,8 @@
 Day-2 reference: the endpoints a running gateway serves, every metric and
 audit field it emits, what the error codes mean to client teams, and how to
 observe reloads and discovery. Deployment shapes (Docker, Helm, systemd,
-TLS, Redis) are in [deploy.md](deploy.md); configuration reference is in the
-[README](../README.md#configuration).
+TLS, Redis) are in [deploy.md](deploy.md); the configuration reference is
+[configuration.md](configuration.md).
 
 ## HTTP endpoints
 
@@ -168,7 +168,8 @@ fold's genuinely paging condition is "no upstream is reachable", which
 ## Audit events
 
 One JSON event per terminal response — including 401s, 403-equivalents, and
-429s — to the configured sinks (`stdout`, `webhook`; delivery is
+429s — to the configured sinks (`stdout`, `file`, `webhook`, `otlp-logs`;
+delivery is
 asynchronous and batched, never adding request latency). Fields:
 
 | Field | Meaning |

@@ -4,7 +4,7 @@
 team ships an MCP server, labels its Service, and the tools appear behind
 the gateway — no fold config change, no operator involvement.
 
-It is the producer half of fold's [discovery](../README.md#discovery)
+It is the producer half of fold's [discovery](configuration.md#discovery)
 mechanism: it lists Services matching a label selector on an interval
 (default 15 s), maps them to upstream entries via annotations, validates
 each entry with fold's own `config` package, and serves the

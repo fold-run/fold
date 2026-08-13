@@ -1,0 +1,199 @@
+# Changelog
+
+Release history for [fold](README.md), newest first. The compatibility
+contract these entries are written against is
+[API stability](README.md#api-stability).
+
+## v1.12.0 — 2026-08-13
+
+Governance in both directions, and one seam for judgement fold does not make itself.
+
+- **Deny-by-default now applies to the reverse direction.** Bridged sessions let an upstream reach the caller's client — sampling borrows the caller's model, elicitation asks the caller's human a question — and nothing governed either: a server could spend a caller's model budget in a loop, or put an arbitrary prompt in front of a human, and fold forwarded both without an opinion or a record. `policy.serverInitiatedDecision: "deny"` puts them behind the same engine, matched on server and method, decided against the principal whose in-flight call the request arrived under. Enforcement is the invisibility pair pointed the other way: an upstream that may not ask is never told the caller can answer. It defaults to `allow` for compatibility rather than conviction — that traffic flowed before the check existed — so production deployments set it explicitly.
+- **Policy learned depth: deny rules, argument constraints, and annotation gating.** `deny[]` refuses regardless of rule order, because a rule whose correctness depends on where it was pasted will eventually be pasted in the wrong place. `args` constrains a grant by the invocation's own arguments — "may deploy, but only to staging" — with the honest consequence written down: there are no arguments at list time, so a constrained tool is visible and only conditionally callable. And `toolKind` gates on the MCP annotations fold had been ignoring, so one rule can say "read anything, write nothing" — a hygiene control for federations you operate, not a security boundary, since the annotations are declared by the server being gated. Documents using none of it evaluate on exactly the path they did before, measured rather than asserted.
+- **fold notices when an upstream rewrites what it advertises.** A tool's description and input schema are the instruction set a model acts on, and fold re-read them on every cache refill and compared them to nothing — so the approval that mattered, a human reading a tool list and accepting the federation, was pinned to nothing. `upstream.pinDefinitions: "warn"` records the digest of every tool and prompt definition and reports a change through the audit trail, a metric, and an alert. It is arithmetic, not judgement: fold never asks whether a description is malicious, only whether it is the same one it served before.
+- **The external decision hook, promised since v1.0, exists.** One out-of-process seam — a wire contract rather than a code-loading mechanism — which is what makes declining a plugin runtime honest. It inspects three stages: the invocation (`ingress`), the result (`egress`), and what an upstream asks of the caller's client (`serverInitiated`), the last being where "refuse an elicitation that asks the human for an API key" finally lives. **It decides and cannot rewrite**, which is what keeps the invisibility rule intact. `timeoutMs` and `onError` are required with no defaults, because fold will not guess whether your deployment prefers to stop serving or to keep serving uninspected — and when it fails open, the calls that went uninspected say so in the audit trail. Egress denies *disclosure* rather than effect: by then the upstream has already acted, and the error message says so.
+
+## v1.11.0 — 2026-08-12
+
+The hardening release: two independent production audits, cross-checked, every finding closed.
+
+- **A panic no longer ends the process.** The SDK dispatches each request on its own goroutine with nothing above it to recover, and fold's own fan-out workers, background loops, and notification handlers were equally bare — one nil-dereference triggered by a malformed upstream response took down every session of every tenant, and a trigger in an upstream's steady-state output crash-looped the gateway. Every such site now recovers: the request path answers a generic `-32603` and still exits through audit, loops drop the poisoned tick and continue, and the audit delivery worker reports through the same accounting instead of masquerading as a sink failure. Recoveries count in `fold_panics_total{site}` with a packaged alert, because surviving a panic does not make it not a bug.
+- **Abandoned sessions expire.** Ending a session with `DELETE` is optional in the protocol and clients routinely reconnect without it; each abandoned session held gateway state — and the upstream subscriptions it pinned — forever, and the subscription sweeper read the zombies as live. `server.sessionIdleTimeoutMs` (default 30 minutes) is the backstop, and `fold_downstream_sessions` / `fold_upstream_bridged_sessions` make the population watchable.
+- **What you deploy is provable.** The three release images and the Helm chart now carry BuildKit provenance, an SBOM, and a sigstore attestation per digest — the binaries had all three since v1.9; the images, the artifact deployments actually run, had none. `checksums.txt` additionally gets a keyless cosign signature for operators outside the `gh` toolchain, every workflow action is pinned to a commit SHA, and base images are pinned by digest — a moved tag on any of them was code execution inside jobs holding release-signing permissions. Verification commands live in [docs/deploy.md](docs/deploy.md).
+- **The token endpoint joins the audit trail.** `/oauth/token` is an authorization server, and it produced no audit events: a detected ID-JAG replay — the security event that endpoint exists to catch — was invisible to the SIEM, along with every invalid assertion an attacker fuzzed under the rate limit. Every terminal response now emits one event under `method: "oauth/token"`, with the exchange outcome verbatim in the `decision` field so a replay is alertable on a structured field rather than a substring.
+- **JWKS fetches are bounded and straight-line.** The verifier and the EMA exchange ran on `http.DefaultClient` — no timeout, redirects followed — so a wedged IdP could pin verification goroutines forever and whoever answered the JWKS URI could redirect the fetch elsewhere. They now use a dedicated client with the same posture as every other trust-path fetch: 10 s bound, redirects refused. Found by a second, independent audit; the first had recorded these fetches as bounded, which is why cross-checks earn their keep.
+- **A Redis outage degrades every primitive to per-instance enforcement — now including rate limits and breakers.** Both failed open to no enforcement at all while budgets, replay protection, and task ownership fell back to local mirrors, and the security model claimed the mirror behavior for everything. Limiters and breakers now keep mirrors fed on every healthy decision, so an outage starts warm; degraded decisions count in `fold_state_degraded_total` with a `FoldStateDegraded` alert. The docs now say exactly what happens.
+- **Fold-minted errors stopped narrating internals.** A `-32041` carried the raw transport error — internal endpoint URLs, and on a credential failure the *name* of a secret env var — the same strings `/health` already redacts for untrusted callers. Clients now get `upstream "x" unavailable (details in gateway logs)`; the details are where the message says. And an oversized *chunked* body, which trips the cap mid-read rather than at the Content-Length check, now exits through the same `body_too_large` metric and audit event as everything else.
+- **`timeouts.streamIdleMs` exists now — opt-in, not the documented default.** The knob was schema-validated and documented as "120 s" since v1.0 and implemented nowhere. It now cuts a standalone SSE stream that has gone silent so a wedged upstream is retried; it ships opt-in because the SDK client's reconnect budget only replenishes when events arrive, and the documented default would have cycled and eventually killed sessions to upstreams that legitimately never notify. [docs/defaults.md](docs/defaults.md) records the correction.
+- **Spans carry no personal data by default.** `enduser.id` was stamped on every server span; trace backends commonly have broader access than the audit trail, which carries the same identity under audit-grade access. `tracing.recordPrincipal: true` opts back in — a deliberate default change, on record in defaults.md.
+- **The distroless image can health-check itself.** `fold --healthcheck` probes the local `/health` and exits by result — no shell, no curl needed — and counts *any* HTTP response as healthy on purpose: it answers "is the process serving", and a 503 from every upstream being down must never read as "restart the container".
+- **The chart deploys like the checklist says.** An opt-in NetworkPolicy template (the metrics listener's documented security model *is* network scope; optional egress lockdown bounds where a pod holding every upstream credential may connect), PodDisruptionBudget on by default when it protects more than one replica, soft zone/host spread, no service-account token mounted, and NOTES that warn about the two deployments that look fine and are not: multiple replicas without Redis, and discovery without credential allowlists (the gateway now also warns at startup). compose binds loopback — the anonymous-admin Grafana included — and [docs/deploy.md](docs/deploy.md) gains the credential-rotation runbook, whose headline is that hot reload does **not** re-read env vars.
+- Smaller bounds, all from the audits: one connect attempt walks at most 3 endpoint candidates instead of every replica; negative timeout/breaker values are rejected (the schema always said minimum 0); poll intervals are floored at 1 s; the in-process jti replay store is size-bounded like every other identifier-keyed store; the public listener gets an `IdleTimeout`; shutdown severs streams that outlive the drain.
+
+## v1.10.1 — 2026-08-11
+
+A gateway installed from the module proxy knows its own version.
+
+- **`go run github.com/fold-run/fold/cmd/fold@latest` reported `dev`.** goreleaser stamps the version with `-ldflags`, and the module proxy path cannot — so the install this README leads with produced a binary whose `/api/federation`, `/health`, startup log and MCP `clientInfo` all claimed to be a development build. Not cosmetic: the console gates its own surfaces on that string and treats an unparseable one as current, so every operator on that path silently lost version-skew detection and got unversioned documentation links. Go already records the resolved module version in the binary, so the gateway now reads it when nothing stamped one. A release keeps its stamp, and a build from a working tree still says `dev` — that one is a developer's, and it is honest about being one.
+- **The stamp target moved to `gateway.ldflagsVersion`.** `-X` only writes a string variable whose initialiser is a constant, and `version` now has to be computed, so leaving the flag pointed at it would have silently reverted every release to `dev`. `.goreleaser.yaml`, the Dockerfile, and the release runbook move together; a unit test covers each build route rather than only the one this machine happens to produce.
+
+## v1.10.0 — 2026-08-11
+
+The console is rewritten, and the field that takes your Bearer token starts working.
+
+No Go code changed in this release. Everything below is the embedded console, which is vendored from [fold-run/fold-console](https://github.com/fold-run/fold-console) at a pinned commit — now `v2.0.0`.
+
+- **The token field never applied what you typed.** On any gateway with `auth.required`, pasting a Bearer token into the console authenticated nothing: the field discarded its own keystrokes and every subsequent read went out unauthenticated, so the dashboard sat on `Unauthorized` with no way forward short of disabling auth. It has been broken since the assets were extracted at v1.9.0, and it is the reason to take this release rather than wait. Nothing static caught it — the page rendered, the types checked, and the field is hidden entirely on a gateway with auth off, which is how every local test run is configured. An end-to-end suite found it on its first execution.
+- **A drawing of the federation**, at `/console/#/upstreams?view=map`. One gateway node fanning out to every upstream, with each route carrying that upstream's actual state: Live where the breaker is closed, Down where the connect failed, and the neutral ramp for half-open, which is neither. It exists because two things about a federation cannot be put in a table — the fan itself, which is the whole proposition, and the governed boundary every route crosses. Generated from `/api/federation` rather than authored, which makes it the first fold diagram that is not hand-drawn.
+- **The page is a routed application rather than one scrolling document.** Overview, upstreams, an upstream in full, a searchable catalog, and the test console, with filters, sort and selection in the URL — so "the upstream that is down" is a link rather than a description. Deep links route on the fragment because this gateway serves the assets from an embedded `http.FileServer` with no SPA fallback, and that is not something the console can fix from its own repo.
+- **The embedded assets are 41 KiB smaller than at v1.9.0**, at 252,505 bytes, despite gaining a framework and a fifth view. The `-400` and `-600` font subsets had been byte-identical since v1.2: both were the variable font, so nothing in the console had ever actually rendered bold while every binary carried each face twice. Instancing them at their declared weights returned 71 KiB, more than the framework cost.
+- **The wordmark is the current one.** The console had been serving the stroked geometric lockup that fold.run's 2026-08-10 identity revision replaced. `console/fonts/OFL.txt` now also names Black Ops One, whose outlines the mark derives from: outlines are a derivative of the Font Software even where no font binary ships.
+- **`scripts/sync-console.sh` vendors from upstream's `dist/`,** not `console/`, and its error names the case when a pin predates that move. A bump whose pin and path disagree fails the sync loudly rather than vendoring stale bytes.
+
+## v1.9.0 — 2026-08-11
+
+The console's source leaves the repo; its API gets a name of its own.
+
+**Breaking.** This release renames config fields and endpoint paths with no aliases — the only release that does, and the reason is on record under [API stability](README.md#api-stability). Migration:
+
+| Was (≤ v1.8) | Now (v1.9) |
+| --- | --- |
+| `GET /console/api/state` | `GET /api/federation` |
+| `GET /console/api/auth` | `GET /api/auth-hint` |
+| `GET /healthz` | `GET /health` (the alias is removed; a probe left on the old path now 404s) |
+| `server.console.groups` | `server.introspection.groups` |
+| `server.console.enabled` alone | `server.console.enabled` **plus** `server.introspection.enabled` |
+| `fold_http_rejections_total{reason="console_viewer"}` | `…{reason="introspection_viewer"}` — a dashboard or alert selecting the old value stops matching **silently**, with no error anywhere |
+| audit denial `error: "principal not in console viewer allowlist"` | `"principal not in introspection viewer allowlist"` — update any SIEM rule matching that string |
+
+- **The console's assets move to [fold-run/fold-console](https://github.com/fold-run/fold-console).** A hand-written browser app was living in a Go repo whose review discipline is built for a proxy path, released on that proxy's cadence. The source now has its own repo, its own contributors, and its own cadence; `gateway/console/` is vendored output pinned to a commit, verified by CI, and still embedded — so what a fold binary serves is exactly what it served before. The assets stay checked in rather than fetched at build time because the Go module proxy is fold's distribution channel: `go run github.com/fold-run/fold/cmd/fold@latest` must build from the proxy zip alone, which runs no generators and carries no submodules.
+- **`server.introspection`** — the read APIs are no longer the console's private detail. `/api/federation` reports configuration truth that `/metrics` structurally cannot: the effective policy default and rule count, audit sink types, whether shared state and tracing are on, discovery's last sync, and the viewer's tenant governance. It is separately configurable because an operator scripting against the federation snapshot should not have to serve a browser page to get it. `introspection.groups` is the viewer allowlist, unchanged in meaning and moved to where it belongs — it gates the API, and the API now has more than one consumer. The response shape joins the frozen wire surface.
+- **`server.mcpPath` is validated against the gateway's own paths.** Serving MCP at `/api/federation` or `/health` used to register a duplicate mux pattern and panic the process at startup with no useful message; it now fails `fold --validate` and the chart's config-validating init container instead.
+- **The embedded fonts ship with their licence.** The four woff2 subtypes have been in every binary since v1.2 with no OFL text anywhere in the tree; OFL 1.1 requires the licence accompany the Font Software, so the omission travelled with each release. `console/fonts/OFL.txt` now ships with them, and the embed-manifest test keeps it there.
+- **`/healthz` is removed from the gateway.** It was the health path through v1.4 and a deprecated alias since v1.5.0. Leaving it while declining to cut a major would have meant an alias with no removal date at all. `fold-discovery` **keeps** its alias for now: there, the path does not 404 when removed but falls through to the document handler, so a stale probe would quietly start scraping the upstreams document and reporting 200 — retiring it safely needs an explicit 404 rather than a deletion.
+
+## v1.8.0 — 2026-08-10
+
+Tenancy: the customer becomes an object instead of an assembly.
+
+- **`tenants[]`** — a named set of principals plus the governance that applies to them as a group, matched from the same verified claims policy already matches on. Before this, "team A sees these tools, gets this allowance, and appears separately in audit" was assembled from four unrelated mechanisms and the word *tenant* appeared nowhere in the config, the audit stream, or the metrics. The line the design holds above all: **a tenant groups principals; it does not authenticate them** — it is derived from the verified `auth.Principal`, never presented alongside a token, and policy remains the authority on what may be invoked. Reloadable, unlike `server.budget`: tenants change when a customer signs up. Additive by construction — declare none and nothing changes.
+- **One allowance and one bucket per team.** `tenants[].budget` is the dimension consumption governance actually wanted: `perPrincipalPerMinute` gives each *person* a bucket, so ten agents on one team hold ten allowances, while a tenant shares one — which is what "team A cannot flood team B" means. Budgets charge narrowest-first (upstream → tenant → server) so a refusal never spends a wider allowance, and buckets check widest-first (global → tenant → per-principal) so a flood is refused before it costs any routing work.
+- **`tenants[].upstreams` bounds what a tenant can see**, evaluated *before* policy. It filters the **fan-out**, not the result: an upstream outside the subset is never asked, so it costs no request, no budget, and no partial-failure entry when it is down. Named invocations against it are refused ahead of the policy engine with `-32042` — except `tasks/*`, which answer "no upstream owns that id", the posture that path already takes for another principal's task, because there a refusal must not reveal existence.
+- **A principal resolves to at most one tenant, and ambiguity is refused rather than guessed.** Assigning by precedence would hand a caller another customer's allowance and visibility the day someone reorders a list. Selector overlap cannot be decided statically — it is only decidable against a real principal — so validation catches what is genuinely checkable and the rest is caught at request time.
+- **Resolution is flat in the number of tenants.** The two selector shapes a per-customer document repeats — one claim equalling one value, or one group — are indexed at snapshot time, keyed from opposite sides: the claim index by what the tenant requires, the group index by what the principal holds. Ten thousand tenants resolve in **97 ns, zero allocations**, the same as ten; a scan cost 450 µs at that size ([benchmarks](docs/benchmarks.md#tenant-resolution-cardinality)). Compound selectors still scan, so keep those in the tens.
+- **In the record** — `tenant` on every audit event its principals produce, denials included, plus `fold_tenant_requests_total{tenant,outcome}` and `fold_tenant_upstream_calls_total{tenant}`, the second counting the unit a budget is charged in. These are new metric *names* rather than a `tenant` label on the existing ones: label sets are frozen by the compatibility contract, and a new label would break every dashboard built on them. The console's federation view is now the *viewer's* — a tenant with a subset sees its own upstreams and its own limits, closing the one place a dashboard could show a customer the topology its own traffic is refused.
+- **Helm: `appVersion` is the image users actually get.** `values.yaml` ships `image.tag: ""` and the deployment falls back to `Chart.AppVersion`, which had not moved since v0.4.0 — so a default `helm install` deployed a pre-1.0 gateway. Fixed, and the release flow now bumps it, verified by re-rendering the chart rather than by inspecting the edit.
+- **The console adopts the current fold.run design system.** Its tokens still carried the previous identity: a mint accent on every button, three radii, and the mark-plus-text lockup the drawn wordmark replaced. Live (`#D6FF00`) is now licensed to proof alone — status-up and the focus ring — while actions run the neutral ramp on a Signal-white fill, and every corner is machined at 2px. Two deliberate departures from the marketing spec, both recorded at the token: controls are 34px rather than 44px, because a console stacks a token field, a picker, and three mode buttons above a table; and a half-open breaker reads on the neutral ramp rather than in amber, because the palette has no third hue and a half-open breaker is not proof of anything. Landed in `a474025`, whose message describes only the Helm fix above.
+
+## v1.7.0 — 2026-08-08
+
+Consumption governance: what was spent, by whom, and a ceiling on it.
+
+- **Budgets** — `server.budget` and `upstreams[].budget` cap consumption over a calendar period (`hour`/`day`/`month`, UTC-aligned) that **accumulates** until it rolls over. This is the question `rateLimit` cannot answer: a sliding window smooths a burst and forgets it, a budget remembers. Absent by default — a default allowance is a default outage waiting for a busy month. `server.budget` is construction-wired like the rest of that section, so an allowance cannot be widened under a running gateway by editing config.
+- **The unit is upstream invocations, not client requests.** One `tools/list` fans out to every upstream, so counting client requests would price a list the same as a ping. The new `upstreamCalls` audit field and `fold_request_upstream_calls` histogram make that fan-out visible in its own right.
+- **Exhaustion mints `-32044`** and the `budget_exhausted` audit outcome, distinct from `-32040` because the remedies differ: a rate limit clears in seconds, a budget not until the period rolls. The message names the reset instant rather than a retry delay — a client backing off by a monthly reset would sleep for a fortnight.
+- **Budgets are checked where the invocation really happens**, after the session is in hand, so a rate limit, an open circuit, or a failed connect never spends the allowance. Without that, an upstream down for a month would burn tens of thousands of units on calls nobody served.
+- **Metering** — additive audit fields recording what fold observed and nothing it did not: `upstreamCalls`, `itemsServed` (what a list handed *this* caller, after policy filtering), and `usage` carried verbatim from an upstream's result `_meta`. There is no tokenizer in the gateway; fold governs MCP consumption, not model spend, and an installation needing both runs both. The reasoning is on record in [docs/design-consumption.md](docs/design-consumption.md).
+- **Fail-open, but loud** — a budget check that cannot reach shared state degrades to per-instance enforcement rather than to none, and says so via `fold_budget_degraded_total`. Alert on any non-zero rate: it means the fleet is not enforcing one allowance. The gateway also warns at startup when a budget is configured without shared state.
+
+## v1.6.0 — 2026-08-08
+
+Local MCP servers join the federation, and the list path stops rebuilding what it already holds.
+
+- **`fold-stdio`, the shim for local servers** — fold federates HTTP endpoints, but most MCP servers are stdio processes. The shim runs one of them and serves it over streamable HTTP, so it joins the federation as an ordinary `url` upstream: credential strategies, health checks, load balancing, breakers, timeouts, policy, pagination, and audit all apply with no special case, and nothing in the config document changed. Ships as its own binary, image (`ghcr.io/fold-run/fold-stdio`), and compose profile — see [docs/stdio.md](docs/stdio.md), and [docs/design-stdio.md](docs/design-stdio.md) for why process supervision lives in a sidecar rather than in the gateway.
+- **The command never comes from the network** — it is fixed at the shim's argv, never taken from a request, a config document, or discovery. A `command` field in the config would hand whoever controls the discovery document an `exec` on the gateway host, reducing `allowedSecretRefs` and `allowedCredentialHosts` to formalities. The child's environment is an explicit allowlist rather than an inheritance, one process serves one session (a stdio connection carries exactly one MCP session, so sharing one would share a JSON-RPC id space), children run in their own process group so a wrapper's grandchildren cannot survive teardown, and a non-loopback bind without `--bearer-env` is refused at startup.
+- **Warm list hits stop re-decoding** — `cachedList` ran `json.Unmarshal` over the full serialized list on every warm hit, per upstream, and the egress namespace rewrite copied every tool and rebuilt every name per request. Both are now memoized against the identity of the cached bytes, which makes the memo self-invalidating and keeps it off for upstreams whose caching is disabled because their credential is caller-derived. A warm hit is **~55 ns and one allocation regardless of list size**.
+- **Policy filtering allocates nothing** — `globMatch` re-split its pattern on `*` for every evaluation, one allocation per item on every `tools/list`. Patterns come from config and never change for the life of an engine, so they compile when the engine is built. Filtering 1,000 tools per principal is now CPU only.
+- **Federation cost is measured** — the added-latency gate uses one upstream with one trivial tool, so nothing in CI observed the work that scales with federation size. `BenchmarkFederatedListTools` covers the merge path directly: a 20 × 50 federation merges 1,000 tools in **25 µs**. Methodology and the full table in [docs/benchmarks.md](docs/benchmarks.md).
+- **A roadmap** — [docs/roadmap.md](docs/roadmap.md) records what fold intends to build and, more usefully, what it declines to build and why.
+- Dockerfiles move to [`deploy/docker/`](deploy/docker); `azure/setup-helm` bumped off deprecated Node 20.
+
+## v1.5.0 — 2026-08-07
+
+Hardening, and task ownership the whole fleet agrees on.
+
+- **Fleet-wide task ownership** — the `taskId → (upstream, minting principal)` index moves out of process memory into a shared-state primitive, so with `REDIS_URL` (or `server.redisUrl`) set every instance reads the same ownership: a caller can no longer reach another principal's task by landing on an instance that did not serve the mint, and the binding survives a rolling restart. Redis is authoritative on reads, every write is mirrored locally, and an outage falls back to that mirror rather than to no records. Entries key on a digest of the task id and hold a digest of the owning principal; `tasks/list` resolves a whole page in one batch read. Records expire after 24 hours and a gateway without Redis is still per-instance — both fall through to the existing locate-by-probe path.
+- **`/health` replaces `/healthz`** — the health path is now `/health`. `/healthz` answers identically as a deprecated alias (`Deprecation: true`, plus one log line on its first use so you can find what still probes it) and is removed no sooner than the next major; point probes at `/health`. Applies to `fold-discovery` too, where the old path would otherwise have fallen through to its document handler.
+- **`/health` is no longer a load amplifier** — every call used to fan a live MCP ping to every upstream, unauthenticated and outside the rate limiter. The fan-out is now single-flighted and reused for a second, invalidated immediately by a reload or discovery sync, so polling it in a loop costs at most one collection per second.
+- **Subscriptions are released when their client goes away** — `resources/unsubscribe` was the only path that decremented the ref count, so a client that subscribed and disconnected left the gateway holding an upstream subscription indefinitely. The idle sweeper now reaps them and drops the shared upstream subscription with the last live subscriber.
+- **Credential paths hardened** — the token endpoint's response body is bounded and its fetches are single-flighted per identity (a burst of first-time callers for one principal became a burst of grant requests, each carrying the client secret and that caller's own bearer token); the discovery poller and the audit webhook now refuse redirects, as the token-endpoint client has since v1.0.1.
+- **Stricter host matching, bounded stores** — a non-numeric port in `Host` or `Origin` is rejected rather than split at the last colon, closing a rebinding bypass where `localhost:8080.evil.com` read as the allowed host `localhost`; and the per-instance affinity caches (resource-URI ownership, the per-principal limiter memo) are size-bounded.
+
+## v1.4.1 — 2026-08-06
+
+The console wears the brand.
+
+- **fold.run design system** — the console adopts the site's stardust tokens (dark-only, IBM Plex Sans + Geist Mono) with the fonts embedded in the binary as self-hosted OFL latin subsets (~127 KB), so the CSP's no-external-fetches rule holds for typography too. Status facts render as a uniform four-across card grid, the header carries the brandmark, and a footer links to fold.run, docs, GitHub, and status. No wire, config, or API change.
+- **Honest client version** — the test console's `initialize` now reports the gateway's stamped version in `clientInfo` instead of a hardcoded `"1"`, so upstream and audit trails see which console called.
+
+## v1.4.0 — 2026-08-06
+
+Console sign-in.
+
+- **`server.console.oauth`** — the console signs users in with Authorization Code + PKCE against a trusted direct-mode issuer, replacing the pasted token (which remains the fallback, and the path for EMA deployments). The console is a public client: no secret exists, the S256 verifier is the proof, the access token lives in page memory only, and tokens are requested with the gateway as RFC 8707 resource — what the flow mints is exactly what `/mcp` verifies and audits. A deliberately unauthenticated `/console/api/auth` hint serves the public client configuration, and the asset CSP admits exactly the configured issuer's origin in `connect-src` — config-derived, never a wildcard. Register `{origin}/console/` as the redirect URI at the IdP.
+
+## v1.3.0 — 2026-08-04
+
+Console refinements and the viewer allowlist.
+
+- **`server.console.groups`** — the console's viewer allowlist: when set, the state API answers an audited 403 to any authenticated principal not carrying an allowlisted group, closing the "any valid token holder sees the topology" caveat for multi-tenant deployments. Requires `auth.mode: "required"`; static assets stay open (they carry no data).
+- **Test console covers the full invocable surface** — tools, prompts, *and* resources, with cursor-paginated lists; `resources/read` shows URIs passing through un-rewritten.
+- **Deeper dashboard** — each upstream's source (static vs discovered) and credential-strategy name, plus deployment facts: shared-state backend, audit sink types, tracing and EMA enablement, rate budgets, routing settings. Secret values and the Redis URL never appear.
+- **UI polish** — breaker-state color coding, contrast and focus-state fixes, empty states, label chips, and the token field hides itself when auth is off.
+
+## v1.2.0 — 2026-08-04
+
+The fold console.
+
+- **`server.console`** — an embedded, read-only console at `/console` (default off): an observability dashboard — federation health, breaker and per-endpoint rotation state, discovery sync status — plus an MCP test console. The test console is a plain MCP client against the gateway's own `/mcp`, so policy filters what it lists, denials answer `-32042`, rate limits apply, and every call is audited; there is no privileged path. Assets are hand-written and embedded in the binary (no build step, no external fetches — CSP-pinned). The state API authenticates like `/mcp` and shares its rate budgets; with auth on, any valid principal sees the federation topology while raw connect errors are reduced to a category (decision on record in [docs/security-model.md](docs/security-model.md)).
+
+## v1.1.0 — 2026-08-04
+
+Self-serve federation on Kubernetes. Includes the v1.0.1 security fix.
+
+- **`fold-discovery`** — the producer half of dynamic discovery: label a Service `fold.run/upstream: "true"` and its tools appear behind the gateway, no fold config change. It lists Services over the plain Kubernetes API with the pod's service account (no client-go dependency), maps them via `fold.run/*` annotations, and serves the document the gateway already polls. Ships as its own binary, image (`ghcr.io/fold-run/fold-discovery`), and manifest — see [docs/discovery-controller.md](docs/discovery-controller.md).
+- **Registration bounds** — labeling rights are registration rights, so both sides bound them: the producer is default-deny on credentialed strategies and secret references, identities are namespace-prefixed, and contested claims drop every claimant. The gateway independently enforces `discovery.allowedAuthStrategies`, `allowedSecretRefs`, and `allowedCredentialHosts`, rejecting a violating document whole.
+- **Security fix (also in v1.0.1)** — the token-endpoint client no longer follows redirects; see below.
+
+## v1.0.1 — 2026-08-04
+
+**Security fix**, released from the `release-1.0` branch as a drop-in patch. The token-endpoint client followed HTTP redirects, and Go replays POST bodies on 307/308 — so a redirecting token endpoint handed the grant to the redirect target: the client secret under `client_secret_post`, and the caller's own bearer token as `subject_token` under `token-exchange`. Affects any upstream using `client-credentials` or `token-exchange` whose token endpoint can be made to redirect. The client now refuses every redirect and the grant fails closed.
+
+## v1.0.0 — 2026-08-04
+
+The compatibility contract is in force. No behavior changes from v0.8.0 — this release is the promise: the config document (schema-verified), CLI, wire surface (error codes, endpoints, metric names, audit shape), and embedder Go API are frozen; breaking changes now require a new major version. See [API stability](README.md#api-stability) for the contract and [SECURITY.md](SECURITY.md) for the support policy.
+
+## v0.8.0 — 2026-08-04
+
+The 1.0 readiness release — hardening and documentation, no behavior changes.
+
+- **Hardening** — fuzzers for the untrusted parsers (pagination cursors, discovery documents; ~1M exploratory execs, clean) and a churn test interleaving reloads, discovery flapping, health probes, and concurrent traffic under the race detector.
+- **Decisions on record** — the defaults review ([docs/defaults.md](docs/defaults.md)); supported-versions and deprecation policy in [SECURITY.md](SECURITY.md) and README.
+- **Guides** — new [operations](docs/operations.md), [security-model](docs/security-model.md), and [embedding](docs/embedding.md) docs (embedding examples compile in CI), plus a deploy-guide accuracy pass with hot-reload coverage.
+
+## v0.7.0 — 2026-08-04
+
+The road to v1.0.
+
+- **Config JSON Schema** — [`config/fold.config.schema.json`](config/fold.config.schema.json) is the machine-readable structural contract for the config document, printed by `fold --schema`, shipped in release archives, and kept in lockstep with the code by test. Point your editor at it for completion and validation.
+- **The v1 compatibility contract** — README "API stability" now states exactly what v1.0 will freeze (config document, CLI, wire surface, embedder Go API) and what remains internal wiring.
+
+## v0.6.0 — 2026-08-04
+
+Self-serve federation.
+
+- **Dynamic upstream discovery** — fold polls `discovery.url` for an upstreams document and hot-swaps the discovered set into the federation alongside the static config: a team ships an MCP server, the registry lists it, and it appears behind the gateway. Fail-safe (a bad document or dead source keeps the last good set) and composable with base config reloads.
+- **`tasks/list` pagination** — the merged federated task list now pages with the same principal-bound snapshot-offset cursors as the typed lists, in deterministic id order.
+
+## v0.5.0 — 2026-08-04
+
+Running a federation in production: balancing, live reconfiguration, and deeper observability.
+
+- **Load-balanced upstreams** — an upstream can list replica `urls`; new sessions balance round-robin with connect failover, and optional active health probes (`healthCheck.intervalMs`) eject dead replicas before client traffic hits them.
+- **Hot config reload** — `SIGHUP`, `--watch`, or `Gateway.Reload` apply a new config without dropping the listener; unchanged upstreams keep their live sessions, and clients are nudged to refetch via `list_changed`.
+- **First-party OpenTelemetry tracing** — `tracing.otlpEndpoint` adds a server span per request and a client span per upstream call, carrying the same fields as the audit event; W3C trace propagation remains always-on.
+- **ABAC policy** — rules can gate on verified token claims (`subjects.claims`), composing with groups/subjects or standing alone.
+- **Composite federated pagination** — merged lists serve in pages with principal-bound snapshot cursors (`routing.pageSize`).
+- **Deployment assets** — Helm chart, compose file, and a deployment guide.
+
+Full history: [releases](https://github.com/fold-run/fold/releases).

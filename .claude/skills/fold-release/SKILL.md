@@ -30,8 +30,9 @@ Never batch commit+push+tag on a single approval.
    break (which needs its own conversation). Confirm the number with the
    user.
 
-3. **Write the changelog entry** at the top of README `## Changelog`:
-   `### vX.Y.Z — YYYY-MM-DD`, leading with a one-line theme, then feature
+3. **Write the changelog entry** at the top of `CHANGELOG.md`, directly
+   below the intro paragraph: `## vX.Y.Z — YYYY-MM-DD` (an H2 — the file's
+   only H1 is its title), leading with a one-line theme, then feature
    bullets. Match the register of existing entries. This lands in the
    release commit, before the tag.
 

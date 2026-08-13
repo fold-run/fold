@@ -10,7 +10,7 @@ same guardrails.
 | Skill | Use |
 | --- | --- |
 | `/preflight` | Run the local merge gate in order (`make check`, plus bench / conformance / helm-check when the diff warrants) and interpret failures. |
-| `/fold-release` | The release workflow: verify → per-step-approved commit/push → CI watch → tag (goreleaser) → README changelog entry. |
+| `/fold-release` | The release workflow: verify → per-step-approved commit/push → CI watch → tag (goreleaser) → CHANGELOG.md entry. |
 | `/reloadable-state` | Checklist for adding config/state that must survive hot reload: snapshot placement, schema lockstep, reload/churn test matrix. |
 | `/conformance` | Run, debug, or deliberately bump the pinned MCP conformance suite. |
 | `/update-docs` | Map the working diff to the doc surfaces that track it and fix drift via the docs-sync agent. The Stop hook nudges toward this when code changes without doc changes. |

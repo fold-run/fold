@@ -21,10 +21,10 @@ Map changed code to the surfaces that track it:
 | Changed | Doc surface that must keep up |
 | --- | --- |
 | `gateway/router.go` middleware order | README "Request pipeline" |
-| `config/config.go` fields | `config/fold.config.schema.json` (drift test), README "Configuration", `docs/defaults.md`, `fold.config.example.json` |
+| `config/config.go` fields | `config/fold.config.schema.json` (drift test), `docs/configuration.md`, `docs/defaults.md`, `fold.config.example.json`, and the README's config summary table if a whole section is added or removed |
 | Minted error codes | README "Error codes" |
 | New/changed endpoints, metrics | README "Operational endpoints" / "Observability", `docs/operations.md` |
-| Auth, policy, EMA | `docs/security-model.md`, README auth/policy sections |
+| Auth, policy, EMA | `docs/security-model.md`, `docs/configuration.md` auth/policy sections |
 | Embedding API (`gateway.New`/`Reload`/`Handler`) | `docs/embedding.md`, README "API stability" |
 | Deploy artifacts (`Dockerfile`, `deploy/`, compose) | `docs/deploy.md`, README "Deploying" |
 | Closing/widening a deliberate gap | README "Not implemented" |
@@ -45,7 +45,7 @@ Trivial single-surface fixes (one README line) may be done inline.
 ## 3. Verify
 
 - Schema or example config touched → `go test ./config`.
-- README "Changelog" is release-time only — never add entries here for
+- `CHANGELOG.md` is release-time only — never add entries there for
   unreleased work (that happens in `/fold-release` step 3).
 - Report: surfaces updated, surfaces checked-and-already-accurate, and
   anything deliberately deferred (e.g. changelog).
