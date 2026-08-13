@@ -232,6 +232,43 @@ func TestPolicyFilteringAndDenial(t *testing.T) {
 	}
 }
 
+// TestDenyRuleKeepsTheEnforcementPair: a deny does not deny listing separately
+// from invoking. It participates in the same decision, so a carved-out name is
+// invisible and uncallable together — one pair, not two mechanisms that could
+// disagree.
+func TestDenyRuleKeepsTheEnforcementPair(t *testing.T) {
+	up, _ := newUpstreamServer(t, "get_thing", "refund_order", "refund_batch")
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "billing", URL: up.URL, Namespace: "billing"}},
+		Policy: &config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{
+				// A broad grant, carved by a deny that appears *after* it —
+				// the order that first-match precedence would get wrong.
+				{ID: "support", Allow: []config.PolicyAllow{{Server: "billing"}}},
+				{ID: "no-refunds", Deny: []config.PolicyAllow{{Server: "billing", Names: []string{"refund_*"}}}},
+			},
+		},
+	})
+	session := connect(t, ts.URL, nil)
+
+	res, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if got := strings.Join(toolNames(res), ","); got != "billing__get_thing" {
+		t.Errorf("list = %q, want only billing__get_thing — a denied name must be invisible", got)
+	}
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "billing__refund_order"}); err == nil {
+		t.Error("denied tool was callable by name")
+	} else if !strings.Contains(err.Error(), "policy denied") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "billing__get_thing"}); err != nil {
+		t.Errorf("the carve-out swallowed the grant: %v", err)
+	}
+}
+
 func TestPartialFailure(t *testing.T) {
 	up, _ := newUpstreamServer(t, "alive")
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -494,7 +495,17 @@ type Policy struct {
 type PolicyRule struct {
 	ID       string          `json:"id"`
 	Subjects *PolicySubjects `json:"subjects,omitempty"` // omit → any principal
-	Allow    []PolicyAllow   `json:"allow"`
+	Allow    []PolicyAllow   `json:"allow,omitempty"`
+
+	// Deny is shaped exactly like Allow and matches the same way, but any
+	// match refuses the invocation **regardless of rule order** — an explicit
+	// deny is not overridable by an allow, the way it works in IAM and in
+	// firewalls. Order-independence is the point: a rule whose correctness
+	// depends on where it was pasted will eventually be pasted in the wrong
+	// place.
+	//
+	// A rule may carry allow, deny, or both, and at least one of them.
+	Deny []PolicyAllow `json:"deny,omitempty"`
 
 	// MaxItems caps how many list items this rule may make visible in one
 	// response — a guardrail against handing an agent a thousand tools, which
@@ -1016,13 +1027,13 @@ func (c *Config) Validate() error {
 			if r.ID == "" {
 				return fmt.Errorf("policy: every rule needs an id")
 			}
-			if len(r.Allow) == 0 {
-				return fmt.Errorf("policy rule %q: allow must not be empty", r.ID)
+			if len(r.Allow) == 0 && len(r.Deny) == 0 {
+				return fmt.Errorf("policy rule %q: needs allow or deny", r.ID)
 			}
 			if r.MaxItems < 0 {
 				return fmt.Errorf("policy rule %q: maxItems must not be negative", r.ID)
 			}
-			for _, a := range r.Allow {
+			for _, a := range slices.Concat(r.Allow, r.Deny) {
 				if a.Server != "" && a.Server != "*" && !seenID[a.Server] {
 					return fmt.Errorf("policy rule %q: unknown server %q", r.ID, a.Server)
 				}

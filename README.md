@@ -221,6 +221,17 @@ An assertion must be issued by `idpIssuer` for the `resource` audience and carry
 
 Add `"maxItems": 40` to a rule to bound how many list items it may make visible in one response — a guardrail against handing an agent a thousand tools, which is context paid for on every turn. It is a bound, not a curation: fold drops whatever falls past the cap in merge order, because it has no notion of which tools matter, and acquiring one would be the semantic tool selection this project [declines](docs/roadmap.md#non-goals). A truncated list says so in the result's `_meta["run.fold/truncated"]`, in the audit event's `itemsCapped`, and in `fold_list_items_total{stage="capped"}` — a cap that hid capability silently would be worse than no cap. **The cap bounds visibility, not authority**: a name it withheld from a list is still callable if policy allows it.
 
+A rule may also carry `"deny"`, shaped exactly like `allow` and matched the same way:
+
+```jsonc
+{ "id": "no-refunds", "subjects": { "groups": ["support"] },
+  "deny": [ { "server": "billing", "names": ["refund_*", "credit_*"] } ] }
+```
+
+**Any matching deny refuses the invocation, regardless of rule order** — an explicit deny is not overridable by an allow, as in IAM and in firewalls. Order-independence is the point: with first-match precedence, appending a broad allow at the bottom of a document would silently widen access, and a rule whose correctness depends on where it was pasted will eventually be pasted in the wrong place. A rule may carry `allow`, `deny`, or both, and at least one of them; a deny names its rule in the audit event's `ruleId`, which the default decision cannot.
+
+Deny does not create a second enforcement mechanism: it participates in the same decision, so a carved-out name is invisible in lists *and* uncallable, together. The evaluation cost is confined to the documents that use it — the engine computes at construction whether any rule carries a deny, and when none does, evaluation is the first-match short-circuit it has always been, measurably unchanged.
+
 First matching rule allows; otherwise `defaultDecision`. Policy governs named invocations (`tools/call`, `prompts/get`, `resources/read`), the completions and subscriptions derived from them (`completion/complete` is gated behind the prompt/resource it completes; `resources/subscribe` behind the resource), and it **filters list results per principal** — callers never see tools, prompts, or resources they cannot reach. Protocol plumbing (ping, the lists themselves) is not policy-gated; invisibility plus call-denial is the enforcement pair.
 
 `"serverInitiatedDecision": "deny"` extends policy to the **reverse direction** — the `sampling/createMessage` and `elicitation/create` requests an upstream makes of the caller's client over a bridged session. Those spend something of the caller's (model budget, or a human's attention), so a rule grants them explicitly: `{ "server": "corpus", "methods": ["sampling/createMessage"] }`, server-and-method only, since neither request has a name. Enforcement is the invisibility pair pointed the other way: an upstream that may not ask is never told the caller can answer, so it does not ask — and a request arriving on a session whose grant a reload removed is refused with `-32042`, which a client is entitled to say. Those refusals, and every allowed exchange, carry `direction: "server_initiated"` in the audit trail; a capability withheld outright has no event, because nothing was asked.

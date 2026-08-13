@@ -31,6 +31,13 @@ type Engine struct {
 	rules        []compiledRule
 	enabled      bool
 
+	// hasDeny is whether any rule carries a deny clause, computed once at
+	// construction. Deny-wins means evaluation cannot stop at the first
+	// matching allow — every rule must be checked for a matching deny first —
+	// and this is what keeps that cost off the documents that use none, which
+	// is every document written before deny existed.
+	hasDeny bool
+
 	// serverInitiatedAllow is the posture for the reverse direction — the
 	// requests an upstream makes of the caller's client. It is a separate
 	// default from defaultAllow, and it defaults the other way, because this
@@ -48,6 +55,7 @@ type compiledRule struct {
 	id       string
 	subjects *config.PolicySubjects
 	allow    []compiledAllow
+	deny     []compiledAllow
 	maxItems int
 }
 
@@ -74,19 +82,50 @@ func New(cfg *config.Policy) *Engine {
 		cr := compiledRule{
 			id:       r.ID,
 			subjects: r.Subjects,
-			allow:    make([]compiledAllow, 0, len(r.Allow)),
+			allow:    compileClauses(r.Allow),
+			deny:     compileClauses(r.Deny),
 			maxItems: r.MaxItems,
 		}
-		for _, a := range r.Allow {
-			ca := compiledAllow{server: a.Server, methods: a.Methods}
-			for _, pattern := range a.Names {
-				ca.names = append(ca.names, compileGlob(pattern))
-			}
-			cr.allow = append(cr.allow, ca)
+		if len(cr.deny) > 0 {
+			e.hasDeny = true
 		}
 		e.rules = append(e.rules, cr)
 	}
 	return e
+}
+
+// compileClauses pre-splits the name globs of one rule's allow or deny list.
+func compileClauses(in []config.PolicyAllow) []compiledAllow {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]compiledAllow, 0, len(in))
+	for _, a := range in {
+		ca := compiledAllow{server: a.Server, methods: a.Methods}
+		for _, pattern := range a.Names {
+			ca.names = append(ca.names, compileGlob(pattern))
+		}
+		out = append(out, ca)
+	}
+	return out
+}
+
+// matches reports whether any clause covers this invocation.
+func matches(clauses []compiledAllow, upstreamID, method, name string) bool {
+	for j := range clauses {
+		a := &clauses[j]
+		if a.server != "*" && a.server != upstreamID {
+			continue
+		}
+		if len(a.methods) > 0 && !contains(a.methods, method) {
+			continue
+		}
+		if len(a.names) > 0 && !globAny(a.names, name) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // Decide checks whether principal may invoke method (e.g. "tools/call") with
@@ -97,22 +136,31 @@ func (e *Engine) Decide(p *auth.Principal, upstreamID, method, name string) Deci
 	if !e.enabled {
 		return Decision{Allowed: true}
 	}
+	// Deny wins, and it wins globally rather than by document order: a rule
+	// whose correctness depends on where it was pasted will eventually be
+	// pasted in the wrong place. So every rule is checked for a matching deny
+	// before any allow is honoured — but only when the document contains one,
+	// which is what keeps this free for the documents that do not.
+	if e.hasDeny {
+		for i := range e.rules {
+			r := &e.rules[i]
+			if len(r.deny) == 0 || !subjectsMatch(r.subjects, p) {
+				continue
+			}
+			if matches(r.deny, upstreamID, method, name) {
+				// The denying rule is named so the audit event says which one,
+				// which an explicit refusal owes an operator in a way the
+				// default decision does not.
+				return Decision{Allowed: false, RuleID: r.id}
+			}
+		}
+	}
 	for i := range e.rules {
 		r := &e.rules[i]
 		if !subjectsMatch(r.subjects, p) {
 			continue
 		}
-		for j := range r.allow {
-			a := &r.allow[j]
-			if a.server != "*" && a.server != upstreamID {
-				continue
-			}
-			if len(a.methods) > 0 && !contains(a.methods, method) {
-				continue
-			}
-			if len(a.names) > 0 && !globAny(a.names, name) {
-				continue
-			}
+		if matches(r.allow, upstreamID, method, name) {
 			return Decision{Allowed: true, RuleID: r.id, MaxItems: r.maxItems}
 		}
 	}
