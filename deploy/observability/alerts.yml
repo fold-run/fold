@@ -112,6 +112,22 @@ groups:
             instance's local mirror. Service continues and per-instance enforcement still
             applies, but the fleet is not enforcing one limit. Check Redis.
 
+      - alert: FoldDefinitionDrift
+        expr: increase(fold_definition_drift_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.upstream }} rewrote a {{ $labels.kind }} definition"
+          description: >-
+            An upstream changed a definition fold had already served — a description,
+            schema, or annotation rewritten after the federation was approved. This is
+            not evidence of an attack: a team shipping a better description trips it too.
+            It is evidence that what a model is being instructed to do changed without
+            anyone reviewing it. The audit event `upstream/definitionChanged` names the
+            tool and carries both digests. Confirm the change with whoever runs that
+            upstream; the new definition is already the baseline, so this fires once
+            per change.
+
       - alert: FoldDiscoverySyncFailing
         expr: increase(fold_discovery_syncs_total{outcome=~"rejected|error"}[15m]) > 0
         labels:

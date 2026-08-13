@@ -411,6 +411,9 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
       hardened deployment has to opt into: without it, an upstream can spend
       the caller's model budget or put a prompt in front of the caller's
       human, and deny-by-default governs only the other direction
+- [ ] `pinDefinitions: "warn"` on upstreams you do not operate yourself, with
+      `FoldDefinitionDrift` routed somewhere a human reads — otherwise a tool
+      can acquire new instructions after you approved it and nothing says so
 - [ ] Discovery: `allowedAuthStrategies`, `allowedSecretRefs`, and
       `allowedCredentialHosts` set whenever the registry is not operated by
       the gateway's own operators (the gateway warns at startup when all

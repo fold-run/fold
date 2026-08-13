@@ -52,6 +52,12 @@ type metricsSet struct {
 	// survives them by design, but every one is a bug — alert on non-zero.
 	panics *prometheus.CounterVec
 
+	// drift counts definitions an upstream rewrote after fold had already
+	// served them. Labelled by upstream and list kind only: the tool name is
+	// upstream-chosen and therefore unbounded, so it belongs in the audit
+	// event rather than in a label set.
+	drift *prometheus.CounterVec
+
 	// stateDegr counts rate-limit/breaker decisions made per-instance
 	// because Redis was unreachable — the limiter/breaker peer of
 	// fold_budget_degraded_total, and the same posture: fail open, loudly.
@@ -114,6 +120,10 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_tenant_upstream_calls_total",
 			Help: "Upstream invocations attributed to a tenant — the same unit a tenant budget is charged in, so this is what a budget is spent on, live.",
 		}, []string{"tenant"}),
+		drift: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_definition_drift_total",
+			Help: "Definitions an upstream rewrote after fold had served them, by upstream and list kind. Non-zero means a tool's instructions or annotations changed after the federation was approved — legitimate or not, it is a change nobody reviewed.",
+		}, []string{"upstream", "kind"}),
 		panics: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fold_panics_total",
 			Help: "Panics recovered by the gateway, by site. The process survives them by design, but every one is a bug — alert on non-zero.",
@@ -125,7 +135,7 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
-		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems, m.panics,
+		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems, m.panics, m.drift,
 		m.stateDegr,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -274,6 +284,11 @@ func (m *metricsSet) observeListShaping(method string, offered, served, capped i
 	if capped > 0 {
 		m.listItems.WithLabelValues(method, "capped").Add(float64(capped))
 	}
+}
+
+// observeDrift counts one definition an upstream rewrote after fold served it.
+func (m *metricsSet) observeDrift(upstream, kind string) {
+	m.drift.WithLabelValues(upstream, kind).Inc()
 }
 
 // observeStateDegraded counts a limiter/breaker decision taken without
