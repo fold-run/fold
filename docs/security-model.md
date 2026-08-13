@@ -168,11 +168,15 @@ records the exchanges that reach fold: those it allowed, and those it refused
 on a session whose grant had been taken away. An operator reading no
 sampling events under a deny posture is reading success, not silence.
 
-What this is not: fold does not read the sampling messages or the elicitation
-prompt. An upstream allowed to elicit can ask the human anything, including
-for a secret. That is a content question, and the answer is the external
-decision hook rather than a scanner in the gateway — see
-[the roadmap](roadmap.md#9-the-external-decision-hook).
+What the policy check does not do: fold does not read the sampling messages or
+the elicitation prompt. An upstream allowed to elicit can ask the human
+anything, including for a secret — structurally, that grant is all-or-nothing.
+
+The content question has an answer now, and it is the one this model always
+pointed at: the decision hook's `serverInitiated` stage, which sees what the
+upstream is asking for and can refuse *this* request while allowing the next.
+Refusing there prevents rather than withholds — the client is never asked — and
+it is still not a scanner in the gateway, which is the point.
 
 ## Credentials never travel further than configured
 

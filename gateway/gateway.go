@@ -1179,7 +1179,7 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession, u *upstream) *mcp.ClientO
 			}()
 			g.bumpBridgeActivity(key)
 			ictx := g.invocationCtx(ctx, key)
-			done, err := g.authorizeServerInitiated(ictx, u, "sampling/createMessage")
+			done, err := g.authorizeServerInitiated(ictx, u, "sampling/createMessage", req.Params)
 			if err != nil {
 				return nil, err
 			}
@@ -1198,7 +1198,7 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession, u *upstream) *mcp.ClientO
 			}()
 			g.bumpBridgeActivity(key)
 			ictx := g.invocationCtx(ctx, key)
-			done, err := g.authorizeServerInitiated(ictx, u, "elicitation/create")
+			done, err := g.authorizeServerInitiated(ictx, u, "elicitation/create", req.Params)
 			if err != nil {
 				return nil, err
 			}

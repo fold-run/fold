@@ -378,3 +378,60 @@ func TestHookEgressOversizeTakesTheErrorPath(t *testing.T) {
 		t.Error("an uninspectable result was disclosed under onError deny")
 	}
 }
+
+// TestHookRefusesAnElicitationThatAsksForASecret is the case
+// design-server-initiated.md deferred to this feature by name. Policy decides
+// whether an upstream may elicit at all; the hook decides whether *this*
+// elicitation is acceptable — and unlike egress, refusing here prevents the
+// thing rather than withholding it: the human is never shown the prompt.
+func TestHookRefusesAnElicitationThatAsksForASecret(t *testing.T) {
+	url, last := hookServer(t, func(req hookRequest) (int, string) {
+		if strings.Contains(string(req.Arguments), "API key") {
+			return 200, `{"decision":"deny","reason":"an upstream may not ask a human for credentials"}`
+		}
+		return 200, `{"decision":"allow"}`
+	})
+	upURL := borrowingUpstream(t)
+	auditCfg, snapshot := collectAudit(t)
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: upURL}},
+		Audit:     auditCfg,
+		Hook: &config.Hook{
+			URL: url, TimeoutMs: 2000, OnError: "deny",
+			Stages: []string{"serverInitiated"},
+		},
+	})
+	session, sampled, elicited := lendingClient(t, ts.URL)
+
+	// borrowingUpstream's tool samples (benign) and then elicits, asking for
+	// an API key.
+	out, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "borrow",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if got, want := out.Content[0].(*mcp.TextContent).Text, "sampling=allowed elicitation=refused"; got != want {
+		t.Errorf("upstream saw %q, want %q", got, want)
+	}
+	if !sampled.Load() {
+		t.Error("the benign sampling request was refused")
+	}
+	if elicited.Load() {
+		t.Error("the human was shown a prompt the hook refused — this stage must prevent, not withhold")
+	}
+	if got := last(); got.Stage != "serverInitiated" || got.Method != "elicitation/create" {
+		t.Errorf("last envelope = %+v", got)
+	}
+
+	evt := awaitEvent(t, snapshot, func(e audit.Event) bool {
+		return e.Method == "elicitation/create" && e.Outcome == audit.OutcomeHookDenied
+	})
+	if evt.Direction != "server_initiated" {
+		t.Errorf("direction = %q, want server_initiated", evt.Direction)
+	}
+	if evt.HookOutcome != "deny" {
+		t.Errorf("hookOutcome = %q, want deny", evt.HookOutcome)
+	}
+}

@@ -717,7 +717,7 @@ const directionServerInitiated = "server_initiated"
 // built here rather than in the middleware, because the middleware wraps
 // client requests and this is not one: it arrives on an SDK client goroutine,
 // inside a call the middleware is already in the middle of.
-func (g *Gateway) authorizeServerInitiated(ctx context.Context, u *upstream, method string) (func(error), error) {
+func (g *Gateway) authorizeServerInitiated(ctx context.Context, u *upstream, method string, params any) (func(error), error) {
 	start := time.Now()
 	evt := audit.Event{
 		Method:    method,
@@ -741,6 +741,14 @@ func (g *Gateway) authorizeServerInitiated(ctx context.Context, u *upstream, met
 		}
 	}
 	evt.Decision = "allow"
+	// Policy has allowed it structurally; the hook is where a content
+	// question gets asked, which is what design-server-initiated.md deferred
+	// here. "Refuse an elicitation that asks for a password" is this call.
+	if err := g.hookServerInitiated(ctx, &evt, u, method, params); err != nil {
+		evt.LatencyMs = time.Since(start).Milliseconds()
+		g.audit.Emit(evt)
+		return nil, err
+	}
 	// The event waits for the answer: an allowed request is not a terminal
 	// response until the client has given one, and how long the caller's
 	// human took is the most interesting number on an elicitation.
