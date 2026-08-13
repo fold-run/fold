@@ -83,13 +83,22 @@ engine — matched on server and method, decided against the principal whose
 in-flight call the request arrived under, and recorded with
 `direction: "server_initiated"` in the audit trail.
 
+Enforcement is the invisibility pair again, pointed the other way: an upstream
+policy will never let ask is not told the caller can answer, so it does not
+ask, and a request that arrives anyway on a session whose grant was revoked is
+refused on the spot. The decision is re-read per request, so a reload that
+*removes* a grant bites immediately; one that *adds* a grant waits for a new
+bridged session.
+
 Two properties to hold in mind. **It defaults to allow**, because this traffic
 flowed before the check existed and tightening it silently on upgrade would
 break working installs; a hardened deployment sets it explicitly, and the
-[production checklist](deploy.md#production-checklist) says so. And the
-refusal is answered to the *upstream*, not the caller — the caller sees only
-what the tool does about being declined — which makes the audit event the only
-place the exchange is visible to an operator.
+[production checklist](deploy.md#production-checklist) says so. And a withheld
+capability is refused by the upstream's own SDK before a request is sent,
+which means **there is no audit event for it** — nothing was asked. The trail
+records the exchanges that reach fold: those it allowed, and those it refused
+on a session whose grant had been taken away. An operator reading no
+sampling events under a deny posture is reading success, not silence.
 
 What this is not: fold does not read the sampling messages or the elicitation
 prompt. An upstream allowed to elicit can ask the human anything, including

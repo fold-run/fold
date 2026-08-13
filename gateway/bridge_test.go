@@ -144,6 +144,28 @@ func borrowingUpstream(t *testing.T) string {
 		text := fmt.Sprintf("sampling=%s elicitation=%s", reached(sampleErr), reached(elicitErr))
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil
 	})
+	// advertised reports the capabilities fold declared when it opened this
+	// bridged session — the upstream's own view of what the caller can answer,
+	// which is what the invisibility half of the pair is about.
+	server.AddTool(&mcp.Tool{
+		Name:        "advertised",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var caps *mcp.ClientCapabilities
+		if init := req.Session.InitializeParams(); init != nil {
+			caps = init.Capabilities
+		}
+		has := func(present bool) string {
+			if present {
+				return "yes"
+			}
+			return "no"
+		}
+		text := fmt.Sprintf("sampling=%s elicitation=%s",
+			has(caps != nil && caps.Sampling != nil),
+			has(caps != nil && caps.Elicitation != nil))
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil
+	})
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 	up := httptest.NewServer(handler)
 	t.Cleanup(up.Close)
@@ -269,6 +291,70 @@ func TestServerInitiatedWithPolicyGrant(t *testing.T) {
 	}
 }
 
+// TestServerInitiatedCapabilityWithheld is the invisibility half of the pair.
+// Denial alone still tells an upstream the caller can sample — it asks, it is
+// refused, and it has learned something. Withholding the capability means it
+// never learns there is anything to ask for.
+func TestServerInitiatedCapabilityWithheld(t *testing.T) {
+	upURL := borrowingUpstream(t)
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: upURL}},
+		Policy: &config.Policy{
+			DefaultDecision:         "deny",
+			ServerInitiatedDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID:    "calls-only",
+				Allow: []config.PolicyAllow{{Server: "*", Methods: []string{"tools/call"}, Names: []string{"*"}}},
+			}},
+		},
+	})
+	session, _, _ := lendingClient(t, ts.URL)
+
+	out, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "advertised",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if got, want := out.Content[0].(*mcp.TextContent).Text, "sampling=no elicitation=no"; got != want {
+		t.Errorf("upstream was told %q, want %q", got, want)
+	}
+}
+
+// TestServerInitiatedCapabilityAdvertised is its counterpart: a grant is
+// visible, or the upstream has no way to know the feature is available and the
+// grant buys nothing.
+func TestServerInitiatedCapabilityAdvertised(t *testing.T) {
+	upURL := borrowingUpstream(t)
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: upURL}},
+		Policy: &config.Policy{
+			DefaultDecision:         "deny",
+			ServerInitiatedDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID: "calls-and-borrowing",
+				Allow: []config.PolicyAllow{
+					{Server: "*", Methods: []string{"tools/call"}, Names: []string{"*"}},
+					{Server: "u", Methods: []string{"sampling/createMessage", "elicitation/create"}},
+				},
+			}},
+		},
+	})
+	session, _, _ := lendingClient(t, ts.URL)
+
+	out, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "advertised",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if got, want := out.Content[0].(*mcp.TextContent).Text, "sampling=yes elicitation=yes"; got != want {
+		t.Errorf("upstream was told %q, want %q", got, want)
+	}
+}
+
 // TestServerInitiatedDefaultFlows is the compatibility guarantee, and it is
 // the reason serverInitiatedDecision is its own field: a deny-by-default
 // policy written before the reverse path was governed keeps working exactly as
@@ -306,24 +392,39 @@ func TestServerInitiatedDefaultFlows(t *testing.T) {
 }
 
 // TestServerInitiatedDenialIsAudited holds the exit door open in the reverse
-// direction. The refusal is answered to the upstream and the caller never sees
+// direction: the refusal is answered to the upstream and the caller never sees
 // it, so if it is not in the trail it happened nowhere an operator can look.
+//
+// It has to revoke a live grant to get there, and that is not contrivance —
+// it is the only path on which fold refuses this traffic itself. Once the
+// capability is withheld the upstream's own SDK refuses before anything
+// leaves it, so there is no exchange to record. What remains auditable is
+// exactly the case the design calls out as the boundary: a session opened
+// under a grant, a reload that takes the grant away, and the handler saying
+// no on the next request.
 func TestServerInitiatedDenialIsAudited(t *testing.T) {
 	upURL := borrowingUpstream(t)
 	auditCfg, snapshot := collectAudit(t)
-	ts, _ := startGateway(t, &config.Config{
+	granted := &config.Config{
 		Upstreams: []config.Upstream{{ID: "u", URL: upURL}},
 		Audit:     auditCfg,
 		Policy: &config.Policy{
 			DefaultDecision:         "deny",
 			ServerInitiatedDecision: "deny",
 			Rules: []config.PolicyRule{{
-				ID:    "calls-only",
-				Allow: []config.PolicyAllow{{Server: "*", Methods: []string{"tools/call"}, Names: []string{"*"}}},
+				ID: "calls-and-borrowing",
+				Allow: []config.PolicyAllow{
+					{Server: "*", Methods: []string{"tools/call"}, Names: []string{"*"}},
+					{Server: "u", Methods: []string{"sampling/createMessage", "elicitation/create"}},
+				},
 			}},
 		},
-	})
+	}
+	ts, gw := startGateway(t, granted)
 	session, _, _ := lendingClient(t, ts.URL)
+
+	// Open the bridged session while the grant stands, so the capability is
+	// advertised and the handlers are installed.
 	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "borrow",
 		Arguments: map[string]any{},
@@ -331,22 +432,58 @@ func TestServerInitiatedDenialIsAudited(t *testing.T) {
 		t.Fatalf("CallTool: %v", err)
 	}
 
+	revoked := *granted
+	revoked.Policy = &config.Policy{
+		DefaultDecision:         "deny",
+		ServerInitiatedDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID:    "calls-only",
+			Allow: []config.PolicyAllow{{Server: "*", Methods: []string{"tools/call"}, Names: []string{"*"}}},
+		}},
+	}
+	if err := gw.Reload(&revoked); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// Same session, same advertised capability — and now refused, because the
+	// handler asks policy again on every request.
+	out, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "borrow",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool after revoke: %v", err)
+	}
+	if got, want := out.Content[0].(*mcp.TextContent).Text, "sampling=refused elicitation=refused"; got != want {
+		t.Errorf("after revoke upstream saw %q, want %q", got, want)
+	}
+
+	// Both calls are in the trail, so match the refusal rather than the first
+	// event for the method: the allowed exchange from before the reload is
+	// also there, and is also the record it should be.
 	evt := awaitEvent(t, snapshot, func(e audit.Event) bool {
-		return e.Method == "sampling/createMessage"
+		return e.Method == "sampling/createMessage" && e.Decision == "deny"
 	})
 	if evt.Direction != "server_initiated" {
 		t.Errorf("direction = %q, want server_initiated", evt.Direction)
 	}
-	if evt.Decision != "deny" || evt.Outcome != audit.OutcomeDenied {
-		t.Errorf("decision/outcome = %q/%q, want deny/denied", evt.Decision, evt.Outcome)
+	if evt.Outcome != audit.OutcomeDenied {
+		t.Errorf("outcome = %q, want denied", evt.Outcome)
 	}
 	if evt.Upstream != "u" {
 		t.Errorf("upstream = %q, want u", evt.Upstream)
 	}
 	// The elicitation is a second exchange and earns its own record.
 	if e := awaitEvent(t, snapshot, func(e audit.Event) bool {
-		return e.Method == "elicitation/create"
+		return e.Method == "elicitation/create" && e.Decision == "deny"
 	}); e.Outcome != audit.OutcomeDenied {
 		t.Errorf("elicitation outcome = %q, want denied", e.Outcome)
+	}
+	// And the grant that stood before the reload is a record too — an allowed
+	// borrow is an exchange, not a non-event.
+	if e := awaitEvent(t, snapshot, func(e audit.Event) bool {
+		return e.Method == "sampling/createMessage" && e.Decision == "allow"
+	}); e.Outcome != audit.OutcomeOK {
+		t.Errorf("allowed sampling outcome = %q, want ok", e.Outcome)
 	}
 }

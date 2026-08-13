@@ -1,6 +1,6 @@
 # Design: governing server-initiated requests
 
-Status: **phase 1 shipped**, the rest proposed. This records the design for governing the traffic that
+Status: **phases 1–2 shipped**, the rest proposed. This records the design for governing the traffic that
 flows *from* an upstream *to* the caller — `sampling/createMessage` and
 `elicitation/create` — which fold bridges today and does not govern. It settles
 the questions that surface raises before any of it is built.
@@ -147,9 +147,33 @@ cannot probe for a capability it was not granted.
 The honest weakening, written down rather than discovered: capabilities are
 declared once, at initialize, and a bridged session outlives the request that
 created it. A policy reload during that session's life leaves the declared
-capability stale. So the mirror is a hint, not the boundary — **the handler
-check is the boundary**, and it is evaluated per request against the current
-snapshot. Both halves ship together or neither means anything.
+capability stale. The staleness runs one way only, which is the safe way — a
+grant added by a later reload waits for a new session, while a denial added by
+one takes effect on the next request, because the handler asks again every
+time.
+
+### What withholding costs, discovered in implementation
+
+Handler and capability are one thing, not two: in the Go SDK, *setting* the
+handler is what advertises the capability, and there is no way to install one
+without the other. So withholding is implemented by not installing the
+handler — and that means a refused request never reaches fold's code at all.
+A well-behaved upstream's own SDK refuses before anything leaves it; a
+hostile one that sends the request anyway gets "method not found" from fold's
+SDK client, below the gate.
+
+**The consequence is that a withheld capability produces no audit event.**
+Phase 1 recorded every refusal; phase 2 makes most refusals stop happening,
+which is better security and worse telemetry. That is a real trade and it is
+worth being explicit about which way it was taken: an upstream that cannot see
+the capability cannot probe it, and an operator reading the trail sees
+nothing because nothing was asked, not because something was hidden from them.
+
+What remains auditable is the boundary case above — a session opened under a
+grant that a reload took away — and that is now the case the audit test
+exercises. If the signal "this upstream keeps trying" turns out to matter more
+than not advertising, the fix is to install the handler and refuse in it
+(phase 1's behaviour), not to add a second refusal path.
 
 ## 6. Rate limits and budgets
 
@@ -183,7 +207,29 @@ Metrics arrive as **new series names**, not new labels on existing ones — the
 label sets are frozen by the v1 contract, and tenancy already set the precedent
 of paying for a new dimension with new names.
 
-## 8. What stays out
+One event per exchange, and only for exchanges that reach fold: with the
+capability withheld there is nothing to record, per the phase 2 note above.
+
+## 8. Shelf life: sampling is deprecated, elicitation is not
+
+Noticed while reading the SDK rather than known when this was designed, and it
+belongs on the record because it bounds half of it. Sampling is **deprecated
+as of protocol version 2026-07-28** — SEP-2577, which deprecates roots,
+sampling, and logging together. The SDK marks `CreateMessageHandler`
+deprecated and points servers at calling model APIs directly; the window is at
+least twelve months and the feature stays functional throughout.
+`ElicitationHandler` carries no such notice.
+
+This does not change the decision. Sampling is what upstreams use today, an
+ungoverned deprecated feature is still ungoverned, and the window outlasts any
+release this will land in. But it sets expectations for the phases after this
+one: the elicitation half is the durable half, the sampling half governs
+traffic that should decline, and the reverse limiter is worth sizing for
+elicitation rather than for sampling volume. If SEP-2577 lands the way it
+reads, the long-run shape of this feature is *govern what upstreams ask of
+humans*, with model borrowing a historical footnote.
+
+## 9. What stays out
 
 **Elicitation content.** The obvious next ask is "refuse an elicitation that
 asks for a password," and the obvious implementation reads `requestedSchema`
@@ -234,7 +280,11 @@ exactly as it does today.
    number is how long the human took.
 2. **The pair** — intersect declared capabilities with policy at session
    connect; test that a denied upstream sees no sampling capability *and* is
-   refused if it asks anyway.
+   refused if it asks anyway. **Shipped**, with the correction above: handler
+   and capability are the same switch in the SDK, so "refused if it asks
+   anyway" is answered below fold rather than by it, and the audit event goes
+   with it. The audit test moved to the revoked-grant path, which is now the
+   only one on which fold itself refuses.
 3. **Volume** — the reverse limiter and its metric, notifications counted.
 4. **Docs** — security-model trust boundaries, the deploy checklist line that
    tells operators to set `serverInitiatedDecision: "deny"`, and the README
