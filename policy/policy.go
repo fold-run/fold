@@ -30,6 +30,13 @@ type Engine struct {
 	defaultAllow bool
 	rules        []compiledRule
 	enabled      bool
+
+	// serverInitiatedAllow is the posture for the reverse direction — the
+	// requests an upstream makes of the caller's client. It is a separate
+	// default from defaultAllow, and it defaults the other way, because this
+	// traffic flowed ungoverned before the check existed; see
+	// config.Policy.ServerInitiatedDecision.
+	serverInitiatedAllow bool
 }
 
 // compiledRule is one configured rule with its name patterns pre-split.
@@ -57,9 +64,10 @@ func New(cfg *config.Policy) *Engine {
 		return &Engine{defaultAllow: true}
 	}
 	e := &Engine{
-		defaultAllow: cfg.DefaultDecision == "allow",
-		rules:        make([]compiledRule, 0, len(cfg.Rules)),
-		enabled:      true,
+		defaultAllow:         cfg.DefaultDecision == "allow",
+		serverInitiatedAllow: cfg.ServerInitiatedDecision != "deny",
+		rules:                make([]compiledRule, 0, len(cfg.Rules)),
+		enabled:              true,
 	}
 	for i := range cfg.Rules {
 		r := &cfg.Rules[i]
@@ -109,6 +117,25 @@ func (e *Engine) Decide(p *auth.Principal, upstreamID, method, name string) Deci
 		}
 	}
 	return Decision{Allowed: e.defaultAllow}
+}
+
+// DecideServerInitiated checks whether upstreamID may make a server-initiated
+// request — "sampling/createMessage", "elicitation/create" — of principal's
+// client over a bridged session. It is the reverse of Decide: the upstream is
+// asking, and the principal is who would pay for the answer.
+//
+// There is nothing to name in either request, so the rule matched is
+// server-and-method only. A rule that grants every method on a server does
+// cover these too: an empty name matches the "*" glob, which is the reading a
+// blanket grant deserves.
+func (e *Engine) DecideServerInitiated(p *auth.Principal, upstreamID, method string) Decision {
+	// Unlike the forward path there is no configured-but-silent state to
+	// worry about: an operator who has not opted in keeps yesterday's
+	// behaviour, which is that this traffic flows.
+	if !e.enabled || e.serverInitiatedAllow {
+		return Decision{Allowed: true}
+	}
+	return e.Decide(p, upstreamID, method, "")
 }
 
 // Visible reports whether a listed item (a tool for "tools/call", a prompt

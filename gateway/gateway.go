@@ -1115,7 +1115,7 @@ func (g *Gateway) invocationCtx(fallback context.Context, key string) context.Co
 // progress) back to the downstream client session, mirroring the
 // capabilities that client declared. Forwarded traffic uses the in-flight
 // invocation's context so it rides that call's stream.
-func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
+func (g *Gateway) bridgeOptions(ss *mcp.ServerSession, u *upstream) *mcp.ClientOptions {
 	key := ss.ID()
 	// All four handlers run on SDK client goroutines with no recovery above
 	// them (see rescue.go): notifications swallow a panic, request handlers
@@ -1138,6 +1138,11 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
 	if init := ss.InitializeParams(); init != nil {
 		caps = init.Capabilities
 	}
+	// Sampling and elicitation are the two requests an upstream can make that
+	// spend something of the caller's — model budget, or a human's attention
+	// and trust. Both are policy-gated against the in-flight invocation's
+	// principal; logging and progress above are notifications that cost the
+	// caller nothing to receive and carry no answer to authorize.
 	if caps != nil && caps.Sampling != nil {
 		opts.CreateMessageHandler = func(ctx context.Context, req *mcp.CreateMessageRequest) (res *mcp.CreateMessageResult, err error) {
 			defer func() {
@@ -1147,7 +1152,14 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
 				}
 			}()
 			g.bumpBridgeActivity(key)
-			return ss.CreateMessage(g.invocationCtx(ctx, key), req.Params)
+			ictx := g.invocationCtx(ctx, key)
+			done, err := g.authorizeServerInitiated(ictx, u, "sampling/createMessage")
+			if err != nil {
+				return nil, err
+			}
+			res, err = ss.CreateMessage(ictx, req.Params)
+			done(err)
+			return res, err
 		}
 	}
 	if caps != nil && caps.Elicitation != nil {
@@ -1159,7 +1171,14 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession) *mcp.ClientOptions {
 				}
 			}()
 			g.bumpBridgeActivity(key)
-			return ss.Elicit(g.invocationCtx(ctx, key), req.Params)
+			ictx := g.invocationCtx(ctx, key)
+			done, err := g.authorizeServerInitiated(ictx, u, "elicitation/create")
+			if err != nil {
+				return nil, err
+			}
+			res, err = ss.Elicit(ictx, req.Params)
+			done(err)
+			return res, err
 		}
 	}
 	return opts

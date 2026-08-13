@@ -321,6 +321,35 @@ document fold already polls, and add two subcommands to a CLI that today has
 `--validate` and stops there: `fold diff`, comparing a running gateway's config
 against a file, and `fold lint`.
 
+### 13. Governing server-initiated requests
+
+Deny-by-default currently applies to one direction. Every client→upstream
+invocation is authenticated, limited, tenanted, policy-checked, and audited;
+the traffic bridged back the other way — `sampling/createMessage` and
+`elicitation/create` — passes none of it. An upstream can spend the caller's
+model budget in a loop, or put an arbitrary prompt in front of the caller's
+human, and fold forwards both without an opinion or a record.
+
+Closing it is depth in the direction fold already went alone: the reverse path
+exists only because of per-client bridged sessions, so a gateway without
+session bridging has nothing here to govern.
+
+Designed in [design-server-initiated.md](design-server-initiated.md), which
+settles the three questions it raises. The new decision defaults to **allow**,
+because sampling flows today in every deny-by-default deployment and folding it
+under the existing knob would break working installs on upgrade — the frozen
+defaults are not negotiable, so the tightening is opt-in and the checklist is
+where operators are told to take it. The enforcement pair has a reverse
+analogue worth taking: an upstream that may not sample is never shown that the
+client can, with the per-request handler check as the actual boundary because a
+capability declared at initialize goes stale on reload. And budgets count
+requests rather than tokens, since fold cannot see the model call the client
+makes — the same line [design-consumption.md](design-consumption.md) drew for
+the forward path.
+
+Content questions — "refuse an elicitation that asks for a password" — stay out
+and become a call site for the decision hook above.
+
 ## Horizon 3 — gated
 
 Not scheduled. Each is blocked on something outside fold's control, or waiting

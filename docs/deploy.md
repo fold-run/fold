@@ -405,6 +405,12 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
       have no per-principal policy or rate limits)
 - [ ] `policy.defaultDecision: "deny"` with explicit allow rules (an absent
       `policy` block is an allow-all engine)
+- [ ] `policy.serverInitiatedDecision: "deny"` with explicit grants for any
+      upstream that legitimately needs sampling or elicitation. This one
+      defaults to `"allow"` for upgrade compatibility, so it is the check a
+      hardened deployment has to opt into: without it, an upstream can spend
+      the caller's model budget or put a prompt in front of the caller's
+      human, and deny-by-default governs only the other direction
 - [ ] Discovery: `allowedAuthStrategies`, `allowedSecretRefs`, and
       `allowedCredentialHosts` set whenever the registry is not operated by
       the gateway's own operators (the gateway warns at startup when all

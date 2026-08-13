@@ -465,6 +465,19 @@ func (e *EMAConfig) ResolvedTokenRateLimit() int {
 type Policy struct {
 	DefaultDecision string       `json:"defaultDecision,omitempty"` // "deny" (default) | "allow"
 	Rules           []PolicyRule `json:"rules,omitempty"`
+
+	// ServerInitiatedDecision governs the reverse direction — the
+	// sampling/createMessage and elicitation/create requests an upstream
+	// makes of the caller's client over a bridged session. "allow" (the
+	// default) | "deny".
+	//
+	// It is a separate knob from DefaultDecision, and defaults to allow, for
+	// a compatibility reason rather than a security one: this traffic flows
+	// today in every deployment, including deny-by-default ones, so folding
+	// it under the existing field would break working installs on upgrade.
+	// Production deployments should set it to "deny" and grant the reverse
+	// methods explicitly — see docs/design-server-initiated.md.
+	ServerInitiatedDecision string `json:"serverInitiatedDecision,omitempty"`
 }
 
 // PolicyRule allows a set of principals a set of invocations.
@@ -978,6 +991,11 @@ func (c *Config) Validate() error {
 		case "", "deny", "allow":
 		default:
 			return fmt.Errorf("policy: defaultDecision must be %q or %q", "deny", "allow")
+		}
+		switch c.Policy.ServerInitiatedDecision {
+		case "", "deny", "allow":
+		default:
+			return fmt.Errorf("policy: serverInitiatedDecision must be %q or %q", "deny", "allow")
 		}
 		for _, r := range c.Policy.Rules {
 			if r.ID == "" {
