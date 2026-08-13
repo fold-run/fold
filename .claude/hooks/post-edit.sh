@@ -12,7 +12,7 @@ file=$(jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
 case "$file" in
   */config/config.go)
     command -v gofmt >/dev/null 2>&1 && [[ -f "$file" ]] && gofmt -w "$file"
-    echo "config surface touched: config/config.go and config/fold.config.schema.json must stay in lockstep (the schema drift test enforces it), and new fields fall under the v1 compatibility contract (README 'API stability'). Update both sides plus README config docs." >&2
+    echo "config surface touched: config/config.go and config/fold.config.schema.json must stay in lockstep (the schema drift test enforces it), and new fields fall under the v1 compatibility contract (README 'API stability'). Update both sides plus docs/configuration.md." >&2
     exit 2
     ;;
   */scripts/conformance.sh)
@@ -20,7 +20,7 @@ case "$file" in
     exit 2
     ;;
   */config/fold.config.schema.json)
-    echo "config surface touched: config/config.go and config/fold.config.schema.json must stay in lockstep (the schema drift test enforces it), and new fields fall under the v1 compatibility contract (README 'API stability'). Update both sides plus README config docs." >&2
+    echo "config surface touched: config/config.go and config/fold.config.schema.json must stay in lockstep (the schema drift test enforces it), and new fields fall under the v1 compatibility contract (README 'API stability'). Update both sides plus docs/configuration.md." >&2
     exit 2
     ;;
   *.go)

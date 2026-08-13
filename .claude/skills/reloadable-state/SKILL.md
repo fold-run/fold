@@ -31,9 +31,13 @@ checklist.
   fails otherwise.
 - It falls under the v1 compatibility contract (README "API stability"):
   new fields must be optional with a safe default.
-- Document: README config section (state the default and unit — `Ms`
+- Document: `docs/configuration.md` (state the default and unit — `Ms`
   suffix convention), `docs/defaults.md`, and
-  `fold.config.example.json` if it's mainstream.
+  `fold.config.example.json` if it's mainstream. A whole new top-level
+  section also needs a row in the README's config summary table.
+- If the field is construction-wired, say so in its `docs/configuration.md`
+  row **and** check README "Configuration hot-reloads", which enumerates the
+  non-reloadable sections — the two must agree.
 
 ## 3. Reload semantics
 

@@ -4,5 +4,6 @@
 fold
 deploy/docker
 README.md
+CHANGELOG.md
 LICENSE
 scripts

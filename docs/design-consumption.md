@@ -2,7 +2,8 @@
 
 Status: **implemented** across four phases. This recorded the design before
 implementation and now serves as the decision record; the operator-facing
-documentation lives in the README and [operations.md](operations.md). It
+documentation lives in [configuration.md](configuration.md) and
+[operations.md](operations.md). It
 covers the [roadmap](roadmap.md)'s Horizon 1 headline — the one governance
 pillar where fold had nothing.
 
@@ -234,7 +235,8 @@ noted above still waits on the tenant object.
    not retry shortly), so it earns **`-32044`** and an entry in the README's
    error-code registry.
 4. **Metering** — audit fields and metrics, including the fan-out ratio.
-5. **Docs** — README config and error-code sections, `operations.md` for the
+5. **Docs** — `configuration.md` and the README's error-code section,
+   `operations.md` for the
    new fields and metrics, `defaults.md` for the no-budget default, and a
    roadmap update.
 

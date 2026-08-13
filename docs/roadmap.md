@@ -2,7 +2,7 @@
 
 Direction, not dates. This document says what fold intends to build, in what
 order, and — more usefully — what it does not intend to build and why. The
-[changelog](../README.md#changelog) is the record of what shipped; this is the
+[changelog](../CHANGELOG.md) is the record of what shipped; this is the
 record of what is being aimed at.
 
 Everything here is bound by the v1 compatibility contract. Within v1, config

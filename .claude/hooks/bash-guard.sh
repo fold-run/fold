@@ -27,7 +27,7 @@ fi
 # explicit approval prompt, even if a broader Bash permission would allow it.
 if grep -Eq '(^|[[:space:];&|])git +tag( |$)' <<<"$cmd" \
    || grep -Eq 'git +push[^|;&]*(--tags|[[:space:]]v[0-9])' <<<"$cmd"; then
-  jq -n '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: "Release step: creating or pushing a vX.Y.Z tag triggers the goreleaser release workflow. Each release step needs explicit approval, with the README changelog entry already in place."}}'
+  jq -n '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: "Release step: creating or pushing a vX.Y.Z tag triggers the goreleaser release workflow. Each release step needs explicit approval, with the CHANGELOG.md entry already in place."}}'
   exit 0
 fi
 

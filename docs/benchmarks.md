@@ -89,7 +89,7 @@ Two things the table does not show, both by construction: the index **narrows bu
 
 Read this table with care. The direct column serves *one* upstream's tools while fold serves the merged page, so the two columns encode different payloads and their ratio is not a retention figure — at 20 × 50, fold is returning a 200-tool page against direct's 50. The gateway's own share of that work is the 25 µs in the table above; the rest is JSON encoding and transport on both sides. The one honest cross-shape statement: fold's `tools/list` throughput falls ~22× as the federation grows from 1 tool to 1,000, and it is the response size doing that.
 
-Fold exceeding direct in the 1 × 1 row is the [list cache](../README.md#configuration) absorbing reads inside its TTL, not proxy throughput. Earlier versions of this page quoted a single `tools/list` figure measured at that shape; it never generalized, and it has been replaced by the table.
+Fold exceeding direct in the 1 × 1 row is the [list cache](configuration.md#upstreams) absorbing reads inside its TTL, not proxy throughput. Earlier versions of this page quoted a single `tools/list` figure measured at that shape; it never generalized, and it has been replaced by the table.
 
 ## Reading the numbers honestly
 

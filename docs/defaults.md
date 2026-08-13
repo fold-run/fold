@@ -5,6 +5,10 @@ breaking change even though no field name moves. This is the pre-1.0 review
 of every resolved default — each is a decision on record, not an accident of
 implementation order. Verdict for all: **keep**.
 
+The fields themselves — types, shapes, and what each one does — are in
+[configuration.md](configuration.md); this file is only the *why* behind
+each resolved value.
+
 ## Security posture
 
 | Default | Value | Rationale |

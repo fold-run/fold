@@ -53,10 +53,13 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
+      - CHANGELOG.md
       - LICENSE
       - fold.config.example.json
       - src: config/fold.config.schema.json
         dst: fold.config.schema.json
+      - src: docs/configuration.md
+        dst: configuration.md
 
   - id: fold-discovery
     ids: [fold-discovery]
