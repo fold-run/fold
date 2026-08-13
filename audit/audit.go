@@ -34,6 +34,13 @@ const (
 	// until the period rolls over. Collapsing them would make "we are being
 	// throttled" and "we have spent the month" the same line in a SIEM.
 	OutcomeBudgetExhausted Outcome = "budget_exhausted"
+	// OutcomeWarned is a finding rather than a request outcome: fold noticed
+	// something an operator should see and did not change what it served.
+	// Definition drift is the first of these — see
+	// docs/design-definition-pinning.md. It is deliberately not an error: the
+	// request succeeded, and an SLO that counted findings as failures would
+	// page someone for a working federation.
+	OutcomeWarned Outcome = "warned"
 )
 
 // Event is one audit record.

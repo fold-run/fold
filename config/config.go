@@ -189,6 +189,16 @@ type Upstream struct {
 	// resources) for this upstream. 0 uses the gateway default (30s);
 	// negative disables caching.
 	CacheTTLMs int `json:"cacheTtlMs,omitempty"`
+
+	// PinDefinitions notices when this upstream changes what it advertises —
+	// a tool's description, schema, or annotations rewritten after the
+	// federation was approved. "off" (the default) | "warn".
+	//
+	// It is a comparison, not an inspection: fold records the digest of each
+	// definition it serves and reports a difference. It never judges the
+	// content, which is why this is not the inline scanning fold declines.
+	// See docs/design-definition-pinning.md.
+	PinDefinitions string `json:"pinDefinitions,omitempty"`
 }
 
 // Owner records which organization runs an upstream. Surfaces in audit and health.
@@ -782,6 +792,11 @@ func (c *Config) Validate() error {
 		seenID[u.ID] = true
 		if u.URL != "" && len(u.URLs) > 0 {
 			return fmt.Errorf("upstream %q: set url or urls, not both", u.ID)
+		}
+		switch u.PinDefinitions {
+		case "", "off", "warn":
+		default:
+			return fmt.Errorf("upstream %q: pinDefinitions must be %q or %q", u.ID, "off", "warn")
 		}
 		eps := u.Endpoints()
 		if len(eps) == 0 {

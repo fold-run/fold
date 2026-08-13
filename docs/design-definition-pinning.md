@@ -1,7 +1,8 @@
 # Design: pinning upstream definitions
 
-Status: **proposed**, and one question in it is the operator's rather than
-mine — see "The adoption problem" below. This records the design for noticing
+Status: **phase 1 (detection) shipped**; blocking deliberately unbuilt, and
+that question is the operator's rather than mine — see "The adoption problem"
+below. This records the design for noticing
 when an upstream changes what it advertises: the rug pull, in the vocabulary
 the ecosystem has settled on.
 
@@ -195,7 +196,17 @@ default, and nothing new on the proxy path.
 
 1. **Detection** — the digest, the `state.Store` baseline, `warn` mode, the
    audit event and metric, and integration tests with a real SDK upstream that
-   changes a tool's description between list refreshes.
+   changes a tool's description between list refreshes. **Shipped.** Three
+   notes from implementation. The check hangs off the *fetch* closure inside
+   `listTools`/`listPrompts` rather than off `cachedList` itself, because
+   `cachedList` is generic and the alternative was a type switch on `any`. The
+   audit event carries the two digests, truncated, and never the new text —
+   reproducing upstream-controlled content in the trail would put it into
+   every SIEM that reads it. And the digest is `json.Marshal` of the SDK
+   struct, which is stable but not contractually so: an encoding change in the
+   SDK would read as one drift event per definition on upgrade, which is noisy
+   rather than wrong, and the tests pin today's behaviour so a change is
+   deliberate.
 2. **Reach** — prompts through the same path; drift surfaced in the console's
    read-only views and in `/api/federation`.
 3. **Prevention** — `block`, only with an adoption path chosen from section 5,

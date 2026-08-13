@@ -43,6 +43,7 @@ scrapers must send an allowed `Host` header (see
 | `fold_state_degraded_total` | `kind` | The limiter/breaker peer of the above: rate-limit (`limiter`) and circuit-breaker (`breaker`) decisions made from the instance's local mirror because Redis was unreachable. Per-instance enforcement continues; fleet-wide enforcement does not — **alert on any non-zero rate** (packaged as `FoldStateDegraded`). |
 | `fold_http_rejections_total` | `reason` | Requests refused before the MCP layer: `body_too_large`, `forbidden_host`, `forbidden_origin`, `unauthenticated`, `rate_limited`, `oauth_token_rate_limited`, `introspection_viewer` (principal outside `server.introspection.groups`; was `console_viewer` and undocumented before v1.9). |
 | `fold_discovery_syncs_total` | `outcome` | Discovery polls: `applied`, `unchanged`, `rejected` (document failed parse or merged validation), `error` (fetch failed). |
+| `fold_definition_drift_total` | `upstream`, `kind` | Definitions an upstream rewrote after fold had already served them, when `pinDefinitions` is on. The tool name is deliberately not a label — it is upstream-chosen and unbounded — so read the `upstream/definitionChanged` audit event for which one. A change is counted once, not once per refill: the new definition becomes the baseline. |
 | `fold_downstream_sessions` | — | Live downstream MCP sessions. Sessions idle past `server.sessionIdleTimeoutMs` are expired; sustained growth means clients are minting sessions faster than they expire — raise the alarm before memory does. |
 | `fold_upstream_bridged_sessions` | `upstream` | Per-client bridged sessions currently held against each upstream (idle ones sweep after 5 minutes). |
 | `fold_panics_total` | `site` | Panics the gateway recovered instead of dying from: the request path (`route`, `fanout`), background loops (`sweep`, `discovery`, `probe`, `health`, `reload`, `telemetry`), SDK-invoked handlers (`bridge`, `notify`), and the audit delivery worker (`audit`). The process survives them by design, but **every one is a bug: alert on non-zero** and file what the paired `panic recovered` log line's stack trace shows. |
@@ -153,6 +154,7 @@ traffic. Treat a rising line as a question, not a measurement.
 | `FoldBudgetDegraded` | any degraded decision in 10m | The fleet is enforcing N copies of one allowance |
 | `FoldDiscoverySyncFailing` | rejected/error sync in 15m | Last good set still serving, but nothing new applies — an id collision freezes discovery until resolved |
 | `FoldTenantBudgetExhausted` | a tenant refused on budget in 15m | Nobody is broken; someone owes a customer a decision |
+| `FoldDefinitionDrift` | an upstream rewrote a definition it had already advertised, 15m | Fires once per change, not per request: what a model is instructed to do changed after the federation was approved, and a human should confirm which kind of change it was |
 | `FoldIngressRejectionSpike` | bad Host/Origin or unauthenticated over threshold, 10m | Misconfigured client or someone probing — worth knowing which |
 
 Severities are `warning` and `info` only. Nothing here pages by default:

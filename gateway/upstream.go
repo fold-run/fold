@@ -60,6 +60,10 @@ type upstream struct {
 	// (single-endpoint upstreams hold a pool of one).
 	endpoints *endpointPool
 
+	// pins notices when this upstream rewrites a definition it already
+	// advertised. Nil-safe and inert unless pinDefinitions enables it.
+	pins *definitionPins
+
 	limiter state.Limiter
 	budget  state.Budget
 	// globalBudget is the server-wide allowance, shared by every upstream.
@@ -170,6 +174,13 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 		bridged:        map[string]*bridgedEntry{},
 		subscribed:     map[string]bool{},
 		log:            slog.New(slog.DiscardHandler),
+	}
+	// The store is scoped per upstream, so a definition is pinned against the
+	// server that advertised it and two upstreams offering the same tool name
+	// cannot alias. report stays nil until the gateway wires it — "off"
+	// compiles to a nil hook rather than to a branch on every refill.
+	if cfg.PinDefinitions == "warn" {
+		u.pins = &definitionPins{store: provider.Store("pin:" + cfg.ID)}
 	}
 	// streamIdle is opt-in, not defaulted: the SDK client only resets its
 	// reconnect budget when Last-Event-ID advances, so a default idle cut
@@ -1075,6 +1086,11 @@ func (u *upstream) listTools(ctx context.Context) ([]*mcp.Tool, error) {
 			}
 			tools = append(tools, t)
 		}
+		// Inside the fill, so the comparison happens once per cache
+		// generation rather than once per request: this is the refill that
+		// just paid for a round trip and a decode, and the only moment the
+		// definitions can have changed.
+		u.pins.checkTools(ctx, tools)
 		return tools, nil
 	})
 }
@@ -1088,6 +1104,7 @@ func (u *upstream) listPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
 			}
 			prompts = append(prompts, p)
 		}
+		u.pins.checkPrompts(ctx, prompts)
 		return prompts, nil
 	})
 }

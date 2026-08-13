@@ -73,6 +73,30 @@ is still per-instance — in both cases the task falls through to the
 locate-by-probe path and becomes reachable by any caller, exactly as it
 does for a task fold never saw minted.
 
+## What an upstream advertises can change after you approve it
+
+The trust decision that matters most in a federation is made by a human
+reading a tool list, and until `pinDefinitions` it was pinned to nothing.
+Definitions are re-read from the upstream on every cache refill, so a tool's
+description, schema, or annotations can be rewritten afterwards and be served
+under the same namespace, the same policy grant, and the same audit trail.
+
+`pinDefinitions: "warn"` records the digest of each definition and reports a
+difference — `upstream/definitionChanged` in the trail,
+`fold_definition_drift_total` in the metrics, `FoldDefinitionDrift` in the
+packaged alerts. The baseline lives in shared state so a fleet agrees and a
+rolling restart cannot silently re-pin, which matters because a restart would
+otherwise be the moment to choose.
+
+Three limits, stated rather than implied. Trust-on-first-use cannot vouch for
+a definition fold has never seen — this detects change, not badness. A
+legitimate improvement trips it identically to a hostile rewrite, because they
+are the same bytes; the event says *changed*, and a human decides which kind.
+And it reports rather than blocks: prevention needs a way to adopt a new
+definition, every candidate costs either a write path into running state or a
+hand-copying chore, and that trade is
+[unresolved on purpose](design-definition-pinning.md).
+
 ## The reverse direction is governed separately, and opts in
 
 Bridged sessions let an upstream reach the caller's client: sampling borrows
