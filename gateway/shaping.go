@@ -44,10 +44,52 @@ func newListFilter(principal *auth.Principal, pol *policy.Engine, method string)
 	return &listFilter{principal: principal, policy: pol, method: method}
 }
 
+// visibleTool is visible for a tool, whose annotations a toolKind rule may
+// gate on. They are read from the item itself rather than looked up: at list
+// time fold is holding the very thing being judged.
+func (f *listFilter) visibleTool(upstreamID string, t *mcp.Tool) bool {
+	if !f.policy.NeedsAnnotations() {
+		return f.visible(upstreamID, t.Name)
+	}
+	return f.decide(upstreamID, t.Name, func() policy.Decision {
+		return f.policy.DecideList(f.principal, upstreamID, f.method, t.Name, func() (policy.ToolAnnotations, bool) {
+			return toolAnnotations(t)
+		})
+	})
+}
+
+// toolAnnotations reads the MCP hints, taking the spec's defaults as written:
+// readOnlyHint defaults to false and destructiveHint to true, so an
+// unannotated tool is not read-only and is destructive. Those defaults are
+// fail-safe in the direction fold wants, and "improving" them would admit
+// every unannotated tool to a read-only grant.
+func toolAnnotations(t *mcp.Tool) (policy.ToolAnnotations, bool) {
+	if t == nil {
+		return policy.ToolAnnotations{}, false
+	}
+	anno := policy.ToolAnnotations{Destructive: true}
+	if a := t.Annotations; a != nil {
+		anno.ReadOnly = a.ReadOnlyHint
+		if a.DestructiveHint != nil {
+			anno.Destructive = *a.DestructiveHint
+		}
+	}
+	return anno, true
+}
+
 // visible reports whether one item survives policy and the rule's cap.
 func (f *listFilter) visible(upstreamID, name string) bool {
+	return f.decide(upstreamID, name, func() policy.Decision {
+		return f.policy.Decide(f.principal, upstreamID, f.method, name)
+	})
+}
+
+// decide applies one policy decision plus the rule's cap, and counts what
+// happened. The decision is a thunk so the two callers differ only in what
+// evidence they supply.
+func (f *listFilter) decide(upstreamID, name string, decide func() policy.Decision) bool {
 	f.offered++
-	d := f.policy.Decide(f.principal, upstreamID, f.method, name)
+	d := decide()
 	if !d.Allowed {
 		return false
 	}

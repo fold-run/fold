@@ -48,6 +48,9 @@ type Engine struct {
 	// path never unmarshals a request body, which is what it does today.
 	hasArgs bool
 
+	// hasKind is whether any rule gates on tool annotations.
+	hasKind bool
+
 	// serverInitiatedAllow is the posture for the reverse direction — the
 	// requests an upstream makes of the caller's client. It is a separate
 	// default from defaultAllow, and it defaults the other way, because this
@@ -76,12 +79,66 @@ type compiledAllow struct {
 	// args are the argument constraints, with each dotted path pre-split so
 	// the walk does not re-split per call.
 	args []compiledArg
+	// kind gates on the tool's own annotations; kindAny means the clause does
+	// not care.
+	kind toolKind
+}
+
+// toolKind is the compiled form of a clause's toolKind field.
+type toolKind int
+
+const (
+	kindAny toolKind = iota
+	kindReadOnly
+	kindNonDestructive
+)
+
+// admits reports whether annotations satisfy this gate.
+func (k toolKind) admits(a ToolAnnotations) bool {
+	switch k {
+	case kindReadOnly:
+		return a.ReadOnly
+	case kindNonDestructive:
+		// A read-only tool is non-destructive by construction; otherwise the
+		// upstream must have said so explicitly, since the spec's default for
+		// destructiveHint is true.
+		return a.ReadOnly || !a.Destructive
+	}
+	return true
 }
 
 // compiledArg is one dotted path and the value the argument at it must equal.
 type compiledArg struct {
 	path  []string
 	value any
+}
+
+// ToolAnnotations is what a toolKind rule needs to know about a tool. The
+// fields carry the MCP spec's defaults for an unannotated tool, which are
+// fail-safe as written and which fold does not "improve": readOnlyHint
+// defaults to false and destructiveHint to true, so an unannotated tool is
+// not read-only and is destructive.
+type ToolAnnotations struct {
+	ReadOnly    bool
+	Destructive bool
+}
+
+// AnnotationSource yields the annotations of the tool being decided, or false
+// when fold cannot establish them from the snapshot it holds. False denies:
+// a gate that cannot see what it is gating must not wave things through, and
+// failing here in the direction the rest of the engine fails makes the
+// limitation visible the first time someone hits it.
+//
+// It is a function so that nothing is looked up for a decision that never
+// reaches a rule carrying toolKind.
+type AnnotationSource func() (ToolAnnotations, bool)
+
+// Evidence is what a decision may consult beyond names — the invocation's
+// arguments and the tool's annotations. Both are lazy, and either may be nil
+// when the caller has none to offer.
+type Evidence struct {
+	Args ArgSource
+	Tool AnnotationSource
 }
 
 // ArgSource yields the invocation's parsed arguments, or false when there are
@@ -120,6 +177,9 @@ func New(cfg *config.Policy) *Engine {
 				if len(c.args) > 0 {
 					e.hasArgs = true
 				}
+				if c.kind != kindAny {
+					e.hasKind = true
+				}
 			}
 		}
 		e.rules = append(e.rules, cr)
@@ -134,7 +194,7 @@ func compileClauses(in []config.PolicyAllow) []compiledAllow {
 	}
 	out := make([]compiledAllow, 0, len(in))
 	for _, a := range in {
-		ca := compiledAllow{server: a.Server, methods: a.Methods}
+		ca := compiledAllow{server: a.Server, methods: a.Methods, kind: compileKind(a.ToolKind)}
 		for _, pattern := range a.Names {
 			ca.names = append(ca.names, compileGlob(pattern))
 		}
@@ -150,6 +210,18 @@ func compileClauses(in []config.PolicyAllow) []compiledAllow {
 		out = append(out, ca)
 	}
 	return out
+}
+
+// compileKind maps the config spelling to the compiled gate. Validation has
+// already rejected anything else.
+func compileKind(s string) toolKind {
+	switch s {
+	case "readOnly":
+		return kindReadOnly
+	case "nonDestructive":
+		return kindNonDestructive
+	}
+	return kindAny
 }
 
 // argsSatisfied reports whether every constraint holds, and names the first
@@ -241,7 +313,7 @@ func matches(clauses []compiledAllow, upstreamID, method, name string) bool {
 // matchesArgs is matches for documents that constrain arguments. It also
 // reports — when a clause matched on everything but its constraints — the path
 // that refused it, for the denial message.
-func matchesArgs(clauses []compiledAllow, upstreamID, method, name string, args ArgSource, mode argMode) (bool, string) {
+func matchesArgs(clauses []compiledAllow, upstreamID, method, name string, ev Evidence, mode argMode) (bool, string) {
 	var failed string
 	for j := range clauses {
 		a := &clauses[j]
@@ -254,13 +326,20 @@ func matchesArgs(clauses []compiledAllow, upstreamID, method, name string, args 
 		if len(a.names) > 0 && !globAny(a.names, name) {
 			continue
 		}
+		// Unlike arguments, annotations exist at list time as well as at call
+		// time — they arrive with the tool — so a toolKind gate filters lists
+		// and denies invocations alike. That is what lets one rule say "read
+		// anything, write nothing" without naming a tool.
+		if a.kind != kindAny && !kindAdmits(a.kind, ev.Tool) {
+			continue
+		}
 		switch {
 		case len(a.args) == 0:
 			// Unconstrained: nothing to evaluate in any mode.
 		case mode == argSkip:
 			continue
 		case mode == argEnforce:
-			if ok, path := argsSatisfied(a.args, args); !ok {
+			if ok, path := argsSatisfied(a.args, ev.Args); !ok {
 				// Keep looking: another clause may grant this call outright.
 				// Remember the first near-miss so the denial can say which
 				// constraint stood in the way.
@@ -275,27 +354,49 @@ func matchesArgs(clauses []compiledAllow, upstreamID, method, name string, args 
 	return false, failed
 }
 
+// kindAdmits resolves the annotations only when a gate actually asks, and
+// denies when they cannot be established.
+func kindAdmits(k toolKind, src AnnotationSource) bool {
+	if src == nil {
+		return false
+	}
+	anno, ok := src()
+	return ok && k.admits(anno)
+}
+
 // Decide checks whether principal may invoke method (e.g. "tools/call") with
 // the un-namespaced name on the given upstream. Protocol plumbing (ping,
 // lists themselves) is not policy-gated; list filtering plus call denial is
 // the enforcement pair.
 func (e *Engine) Decide(p *auth.Principal, upstreamID, method, name string) Decision {
-	return e.decide(p, upstreamID, method, name, nil, argIgnore)
+	return e.decide(p, upstreamID, method, name, Evidence{}, argIgnore)
 }
 
-// DecideCall is Decide for an actual invocation, where the request's arguments
-// exist and any argument constraints must therefore hold. args is consulted
-// only if a rule carries constraints, so a document without them parses
-// nothing.
-func (e *Engine) DecideCall(p *auth.Principal, upstreamID, method, name string, args ArgSource) Decision {
-	return e.decide(p, upstreamID, method, name, args, argEnforce)
+// DecideList is Decide for one item of a list, where the tool is in hand and
+// its annotations can therefore be judged, but there are no arguments to
+// judge.
+func (e *Engine) DecideList(p *auth.Principal, upstreamID, method, name string, tool AnnotationSource) Decision {
+	return e.decide(p, upstreamID, method, name, Evidence{Tool: tool}, argIgnore)
+}
+
+// DecideCall is Decide for an actual invocation: argument constraints must
+// hold, and annotations must be establishable if a rule gates on them.
+// Neither source is consulted unless a rule reaches for it, so a document
+// using neither parses and looks up nothing.
+func (e *Engine) DecideCall(p *auth.Principal, upstreamID, method, name string, ev Evidence) Decision {
+	return e.decide(p, upstreamID, method, name, ev, argEnforce)
 }
 
 // NeedsArguments reports whether any rule constrains arguments. The gateway
 // asks before building an ArgSource at all.
 func (e *Engine) NeedsArguments() bool { return e.hasArgs }
 
-func (e *Engine) decide(p *auth.Principal, upstreamID, method, name string, args ArgSource, mode argMode) Decision {
+// NeedsAnnotations reports whether any rule gates on tool annotations, so the
+// gateway can skip building an AnnotationSource — and skip warming a list to
+// answer it — for the documents that do not.
+func (e *Engine) NeedsAnnotations() bool { return e.hasKind }
+
+func (e *Engine) decide(p *auth.Principal, upstreamID, method, name string, ev Evidence, mode argMode) Decision {
 	if !e.enabled {
 		return Decision{Allowed: true}
 	}
@@ -304,7 +405,7 @@ func (e *Engine) decide(p *auth.Principal, upstreamID, method, name string, args
 	// pasted in the wrong place. So every rule is checked for a matching deny
 	// before any allow is honoured — but only when the document contains one,
 	// which is what keeps this free for the documents that do not.
-	if !e.hasArgs {
+	if !e.hasArgs && !e.hasKind {
 		// The path every document took before argument constraints existed,
 		// preserved exactly rather than approximately.
 		if e.hasDeny {
@@ -342,7 +443,7 @@ func (e *Engine) decide(p *auth.Principal, upstreamID, method, name string, args
 			if denyMode == argIgnore {
 				denyMode = argSkip // see argSkip: an unevaluable deny must not hide
 			}
-			if ok, _ := matchesArgs(r.deny, upstreamID, method, name, args, denyMode); ok {
+			if ok, _ := matchesArgs(r.deny, upstreamID, method, name, ev, denyMode); ok {
 				return Decision{Allowed: false, RuleID: r.id}
 			}
 		}
@@ -353,7 +454,7 @@ func (e *Engine) decide(p *auth.Principal, upstreamID, method, name string, args
 		if !subjectsMatch(r.subjects, p) {
 			continue
 		}
-		ok, failed := matchesArgs(r.allow, upstreamID, method, name, args, mode)
+		ok, failed := matchesArgs(r.allow, upstreamID, method, name, ev, mode)
 		if ok {
 			return Decision{Allowed: true, RuleID: r.id, MaxItems: r.maxItems}
 		}

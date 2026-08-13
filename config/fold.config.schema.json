@@ -238,7 +238,8 @@
         "args": {
           "type": "object",
           "additionalProperties": { "type": ["string", "number", "boolean"] }
-        }
+        },
+        "toolKind": { "enum": ["readOnly", "nonDestructive"] }
       }
     },
     "audit": {

@@ -303,7 +303,7 @@ func TestArgumentConstraints(t *testing.T) {
 		{"no arguments at all", nil, false, "target.environment"},
 	}
 	for _, c := range cases {
-		d := e.DecideCall(nil, "deploy", "tools/call", "deploy", c.args)
+		d := e.DecideCall(nil, "deploy", "tools/call", "deploy", Evidence{Args: c.args})
 		if d.Allowed != c.allowed {
 			t.Errorf("%s: allowed = %v, want %v", c.name, d.Allowed, c.allowed)
 		}
@@ -326,10 +326,10 @@ func TestArgumentTypesAreExact(t *testing.T) {
 	num := func() (map[string]any, bool) { return map[string]any{"replicas": float64(1)}, true }
 	str := func() (map[string]any, bool) { return map[string]any{"replicas": "1"}, true }
 
-	if !e.DecideCall(nil, "deploy", "tools/call", "scale", num).Allowed {
+	if !e.DecideCall(nil, "deploy", "tools/call", "scale", Evidence{Args: num}).Allowed {
 		t.Error("numeric 1 did not satisfy a numeric constraint")
 	}
-	if e.DecideCall(nil, "deploy", "tools/call", "scale", str).Allowed {
+	if e.DecideCall(nil, "deploy", "tools/call", "scale", Evidence{Args: str}).Allowed {
 		t.Error(`string "1" satisfied a numeric constraint`)
 	}
 }
@@ -351,7 +351,7 @@ func TestArgumentConstrainedToolStaysVisible(t *testing.T) {
 		t.Error("an argument-constrained tool must still list; there are no arguments to judge at list time")
 	}
 	prod := func() (map[string]any, bool) { return map[string]any{"environment": "production"}, true }
-	if e.DecideCall(nil, "deploy", "tools/call", "deploy", prod).Allowed {
+	if e.DecideCall(nil, "deploy", "tools/call", "deploy", Evidence{Args: prod}).Allowed {
 		t.Error("visible must not mean callable with any arguments")
 	}
 }
@@ -370,7 +370,7 @@ func TestUnconstrainedClauseWinsOverConstrained(t *testing.T) {
 		}},
 	})
 	prod := func() (map[string]any, bool) { return map[string]any{"environment": "production"}, true }
-	d := e.DecideCall(nil, "deploy", "tools/call", "deploy", prod)
+	d := e.DecideCall(nil, "deploy", "tools/call", "deploy", Evidence{Args: prod})
 	if !d.Allowed {
 		t.Error("the unconstrained grant was skipped after a constrained near-miss")
 	}
@@ -395,10 +395,98 @@ func TestDenyWithArgumentsDoesNotHide(t *testing.T) {
 	}
 	prod := func() (map[string]any, bool) { return map[string]any{"environment": "production"}, true }
 	staging := func() (map[string]any, bool) { return map[string]any{"environment": "staging"}, true }
-	if e.DecideCall(nil, "deploy", "tools/call", "deploy", prod).Allowed {
+	if e.DecideCall(nil, "deploy", "tools/call", "deploy", Evidence{Args: prod}).Allowed {
 		t.Error("the prod deploy was not denied")
 	}
-	if !e.DecideCall(nil, "deploy", "tools/call", "deploy", staging).Allowed {
+	if !e.DecideCall(nil, "deploy", "tools/call", "deploy", Evidence{Args: staging}).Allowed {
 		t.Error("the staging deploy was refused by a prod-only deny")
+	}
+}
+
+// anno builds an annotation source for a known tool.
+func anno(readOnly, destructive bool) AnnotationSource {
+	return func() (ToolAnnotations, bool) {
+		return ToolAnnotations{ReadOnly: readOnly, Destructive: destructive}, true
+	}
+}
+
+// TestToolKindGating covers "read anything, write nothing" without naming a
+// tool, and takes the MCP spec's defaults as written: an unannotated tool is
+// not read-only and is destructive, so it fails both gates.
+func TestToolKindGating(t *testing.T) {
+	engine := func(kind string) *Engine {
+		return New(&config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID:    "by-kind",
+				Allow: []config.PolicyAllow{{Server: "*", Methods: []string{"tools/call"}, ToolKind: kind}},
+			}},
+		})
+	}
+	unannotated := anno(false, true) // the spec's defaults
+
+	cases := []struct {
+		kind    string
+		tool    AnnotationSource
+		allowed bool
+		what    string
+	}{
+		{"readOnly", anno(true, false), true, "a read-only tool"},
+		{"readOnly", anno(false, false), false, "a non-destructive but writing tool"},
+		{"readOnly", unannotated, false, "an unannotated tool"},
+		{"nonDestructive", anno(false, false), true, "an explicitly non-destructive tool"},
+		{"nonDestructive", anno(true, false), true, "a read-only tool, non-destructive by construction"},
+		{"nonDestructive", anno(false, true), false, "a destructive tool"},
+		{"nonDestructive", unannotated, false, "an unannotated tool"},
+	}
+	for _, c := range cases {
+		got := engine(c.kind).DecideCall(nil, "u", "tools/call", "x", Evidence{Tool: c.tool}).Allowed
+		if got != c.allowed {
+			t.Errorf("toolKind %q with %s: allowed = %v, want %v", c.kind, c.what, got, c.allowed)
+		}
+	}
+}
+
+// TestUnknownAnnotationsDeny is the fail-safe the design record insists on:
+// a gate that cannot see what it is gating must refuse, so the limitation is
+// visible the first time someone hits it rather than silently permissive.
+func TestUnknownAnnotationsDeny(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID:    "reads",
+			Allow: []config.PolicyAllow{{Server: "*", ToolKind: "readOnly"}},
+		}},
+	})
+	unknown := func() (ToolAnnotations, bool) { return ToolAnnotations{}, false }
+
+	if e.DecideCall(nil, "u", "tools/call", "x", Evidence{Tool: unknown}).Allowed {
+		t.Error("a tool whose annotations could not be established was allowed")
+	}
+	if e.DecideCall(nil, "u", "tools/call", "x", Evidence{}).Allowed {
+		t.Error("a missing annotation source was allowed")
+	}
+	// And it must not accidentally leak through the list path either.
+	if e.DecideList(nil, "u", "tools/call", "x", unknown).Allowed {
+		t.Error("unknown annotations were visible in a list")
+	}
+}
+
+// TestToolKindFiltersLists is the difference from argument constraints:
+// annotations arrive with the tool, so a kind gate can filter a list rather
+// than only refusing a call.
+func TestToolKindFiltersLists(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID:    "reads",
+			Allow: []config.PolicyAllow{{Server: "*", Methods: []string{"tools/call"}, ToolKind: "readOnly"}},
+		}},
+	})
+	if !e.DecideList(nil, "u", "tools/call", "search", anno(true, false)).Allowed {
+		t.Error("a read-only tool was hidden from a read-only grant")
+	}
+	if e.DecideList(nil, "u", "tools/call", "delete", anno(false, true)).Allowed {
+		t.Error("a destructive tool was listed under a read-only grant")
 	}
 }
