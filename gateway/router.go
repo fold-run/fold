@@ -330,6 +330,9 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 	if err != nil {
 		return nil, err
 	}
+	if err := g.hookEgress(ctx, evt, rt, u, "tools/call", bare, out); err != nil {
+		return nil, err
+	}
 	// If the call minted a task, pin its ownership so later task calls skip
 	// the probe.
 	g.noteMintedTask(ctx, u, out.Meta)
@@ -401,6 +404,9 @@ func (g *Gateway) getPrompt(ctx context.Context, rt *routes, req mcp.Request, ev
 	})
 	g.drainBridge(key, before)
 	if err != nil {
+		return nil, err
+	}
+	if err := g.hookEgress(ctx, evt, rt, u, "prompts/get", bare, out); err != nil {
 		return nil, err
 	}
 	tagUpstream(&out.Meta, u)

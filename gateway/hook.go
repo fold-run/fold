@@ -32,6 +32,24 @@ const hookMaxBody = 64 << 10
 // allowed it and before it reaches the upstream.
 const stageIngress = "ingress"
 
+// stageEgress inspects the result an upstream returned, before the caller
+// sees it and before audit closes the request.
+//
+// What it can and cannot do is worth stating precisely, because the obvious
+// reading is wrong: by the time this runs **the upstream has already acted**.
+// A denial here withholds the disclosure, not the effect — the row is deleted,
+// the message is sent, and the caller is told the result was refused. Egress
+// is a data-loss control. To stop an action, refuse it at ingress.
+const stageEgress = "egress"
+
+// hookMaxResultBytes bounds what fold will serialize and send for inspection.
+// A result larger than this is not truncated — a partial body is precisely
+// the blind spot an inspector must not be handed — so it takes the configured
+// error path instead, which means an operator running onError "deny" refuses
+// results too large to inspect. That is the fail-safe reading, and it is
+// documented rather than discovered.
+const hookMaxResultBytes = 1 << 20
+
 // decisionHook is the compiled form of config.Hook: fold's one out-of-process
 // seam. It decides, and cannot rewrite — see docs/design-decision-hook.md for
 // why that line is what keeps the invisibility rule intact.
@@ -110,6 +128,8 @@ type hookRequest struct {
 	Principal *hookPrincipal  `json:"principal,omitempty"`
 	Tenant    string          `json:"tenant,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+	// Result is the upstream's answer, verbatim, on the egress stage only.
+	Result json.RawMessage `json:"result,omitempty"`
 }
 
 type hookPrincipal struct {
@@ -253,6 +273,69 @@ func (g *Gateway) hookIngress(ctx context.Context, evt *audit.Event, rt *routes,
 		// Failed open. The call proceeds uninspected, and says so.
 		g.log.Warn("decision hook unavailable; proceeding per onError",
 			"stage", stageIngress, "method", method, "upstream", u.cfg.ID)
+	}
+	return nil
+}
+
+// hookEgress runs the egress stage against a result the upstream has already
+// produced. It returns a wire error when the result must not be disclosed.
+//
+// The upstream has acted by now. A denial here is a data-loss control — it
+// withholds the answer, not the effect — and the error message says so, so a
+// caller who reads "the result was withheld" does not conclude their write
+// was rolled back.
+func (g *Gateway) hookEgress(ctx context.Context, evt *audit.Event, rt *routes, u *upstream, method, bare string, result any) error {
+	h := rt.hook
+	if !h.inspects(stageEgress, method) {
+		return nil
+	}
+	req := hookRequest{
+		Version:  hookWireVersion,
+		Stage:    stageEgress,
+		Method:   method,
+		Name:     bare,
+		Upstream: u.cfg.ID,
+		Tenant:   evt.Tenant,
+	}
+	if p := auth.PrincipalFromContext(ctx); p != nil {
+		req.Principal = &hookPrincipal{Sub: p.Subject, Issuer: p.Issuer, Groups: p.Groups}
+	}
+
+	start := time.Now()
+	var (
+		outcome hookOutcome
+		reason  string
+	)
+	// Serializing the result is the cost egress adds over ingress: fold holds
+	// the decoded form and the hook needs bytes. It happens only for
+	// inspected methods on a configured stage.
+	body, err := json.Marshal(result)
+	switch {
+	case err != nil || len(body) > hookMaxResultBytes:
+		outcome = h.onError()
+	default:
+		req.Result = body
+		outcome, reason = h.decide(ctx, req)
+	}
+	g.metrics.observeHook(stageEgress, string(outcome), time.Since(start))
+	// Ingress may have recorded its own outcome; egress is the later word on
+	// the same request, and a denial here is what the caller experienced.
+	if evt.HookOutcome == "" || outcome != hookAllowed {
+		evt.HookOutcome = string(outcome)
+	}
+
+	switch outcome {
+	case hookDenied:
+		evt.Outcome = audit.OutcomeHookDenied
+		evt.Decision = "deny"
+		msg := fmt.Sprintf("decision hook withheld the result of %s %q (the upstream has already acted)", method, evt.Name)
+		if reason != "" {
+			msg += ": " + reason
+		}
+		return &jsonrpc.Error{Code: codeDenied, Message: msg}
+	case hookErrored:
+		g.log.Warn("decision hook unavailable; disclosing result per onError",
+			"stage", stageEgress, "method", method, "upstream", u.cfg.ID)
 	}
 	return nil
 }

@@ -279,7 +279,7 @@ The external decision endpoint — fold's one out-of-process seam, and its answe
   "url": "https://inspector.internal/decide",
   "timeoutMs": 300,            // required — no default
   "onError": "deny",           // required — "allow" or "deny", no default
-  "stages": ["ingress"],       // nothing runs unless a stage is named
+  "stages": ["ingress", "egress"],  // nothing runs unless a stage is named
   "methods": ["tools/call"],   // omit → every inspectable invocation
   "bearerSecretRef": "HOOK_TOKEN"
 }
@@ -288,6 +288,10 @@ The external decision endpoint — fold's one out-of-process seam, and its answe
 fold `POST`s a versioned JSON envelope per inspected invocation — stage, method, bare name, upstream, principal, tenant, and the caller's arguments verbatim — and expects `{"decision":"allow"|"deny","reason":"..."}`. The `reason` is returned to the caller, deliberately: unlike a policy denial, where the expected value is the operator's configuration, a hook denial is usually about the caller's own content, and a refusal nobody can act on becomes a support ticket instead of a fix.
 
 **The hook decides; it cannot rewrite.** No redacted arguments, no filtered results. A hook that could edit traffic would be the [transformation non-goal](docs/roadmap.md#non-goals) with an extra hop — fold buffering and mutating bodies, behavior through the gateway no longer matching the upstream. A hook that wants content changed refuses the call and says why.
+
+**Ingress and egress are not interchangeable.** Ingress inspects the invocation and its arguments before the upstream sees them. Egress inspects the result — and by then **the upstream has already acted**. A denial at egress withholds the disclosure, not the effect: the row is deleted, the message is sent, and the caller is told the result was withheld. Egress is a data-loss control; stopping an action means refusing it at ingress. fold says this in the error message too, so a caller does not read "denied" as "did not happen".
+
+A result too large to inspect (1 MiB) is not truncated — a partial body is exactly the blind spot an inspector must not be handed — so it takes the `onError` path, which under `"deny"` means refusing results nobody could have inspected.
 
 **It runs after policy.** Its allow is necessary but never sufficient, and its operator is never handed traffic the gateway has already refused. An organization that turns the hook off is still governed by everything above.
 

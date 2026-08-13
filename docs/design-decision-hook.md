@@ -224,7 +224,22 @@ guard fold has.
    is the one fold controls. The added-latency gate is unmoved at 181 µs,
    because a deployment without a hook pays a nil check.
 2. **Egress.** The result stage, and the honest accounting of what it costs on
-   large results.
+   large results. **Shipped**, and the record was missing the thing that
+   matters most about it.
+
+   *By egress the upstream has already acted.* A denial there withholds the
+   disclosure, not the effect — the row is deleted, the message is sent, and
+   the caller is told the result was withheld. Egress is a data-loss control;
+   stopping an action means refusing it at ingress. The error message says so
+   in those words, because "denied" otherwise reads as "did not happen", and
+   an organization deploying egress as a control on what its agents can *do*
+   has misread the feature. This belonged in the design and was not there.
+
+   *Oversize results are not truncated.* A partial body is precisely the blind
+   spot an inspector must not be handed, so a result past 1 MiB takes the
+   `onError` path — which under `"deny"` means refusing results nobody could
+   have inspected. Fail-safe, and documented rather than discovered. The bound
+   is a constant today; it becomes a field when someone needs it to be.
 3. **The reverse path.** Sampling and elicitation as a hook stage, which is
    what [design-server-initiated.md](design-server-initiated.md) defers here —
    "refuse an elicitation that asks for a password" is the case it names.

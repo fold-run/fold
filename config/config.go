@@ -59,7 +59,12 @@ type Hook struct {
 	OnError string `json:"onError"`
 
 	// Stages selects what is inspected: "ingress" (the invocation and its
-	// arguments). Nothing runs unless named.
+	// arguments) and "egress" (the result). Nothing runs unless named.
+	//
+	// The two are not interchangeable. By egress the upstream has already
+	// acted, so a denial there withholds the disclosure and not the effect:
+	// egress is a data-loss control, and stopping an action means refusing it
+	// at ingress.
 	Stages []string `json:"stages,omitempty"`
 
 	// Methods limits inspection to specific MCP methods. Absent means every
@@ -414,7 +419,9 @@ func (c *Config) validateHook() error {
 		return fmt.Errorf("hook: onError is required and must be %q or %q — fold will not guess whether your deployment prefers to keep serving or to stop", "allow", "deny")
 	}
 	for _, s := range h.Stages {
-		if s != "ingress" {
+		switch s {
+		case "ingress", "egress":
+		default:
 			return fmt.Errorf("hook: unknown stage %q", s)
 		}
 	}

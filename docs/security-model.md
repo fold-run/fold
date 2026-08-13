@@ -104,6 +104,13 @@ so its compromise costs availability rather than authorization: a hostile hook
 denies traffic it should have allowed, and cannot admit anything policy has
 already refused. That asymmetry is why ingress sits where it does.
 
+**Egress stops disclosure, not action.** By the time the result stage runs the
+upstream has done whatever it was going to do. A denial there withholds the
+answer from the caller and records it; it does not roll anything back. An
+organization deploying egress inspection as a control on *what its agents can
+do* has misread it — that control is ingress. Egress is what keeps data from
+leaving.
+
 The failure posture is the operator's explicit choice (`onError`), and
 fold refuses to start without it. Under `allow`, a hook outage means calls
 proceed **uninspected** — recorded per request as `hookOutcome: "error"` and

@@ -296,3 +296,85 @@ func BenchmarkHookIngress(b *testing.B) {
 		}
 	}
 }
+
+// TestHookEgressWithholdsTheResult is the egress stage, and the caveat that
+// comes with it: the upstream has already acted, so a denial here is a
+// data-loss control rather than a way to stop anything. The caller is told so
+// explicitly, because "denied" would otherwise read as "did not happen".
+func TestHookEgressWithholdsTheResult(t *testing.T) {
+	var called atomic.Int32
+	url, last := hookServer(t, func(req hookRequest) (int, string) {
+		called.Add(1)
+		if req.Stage == "egress" {
+			return 200, `{"decision":"deny","reason":"result contained a card number"}`
+		}
+		return 200, `{"decision":"allow"}`
+	})
+	// The upstream records that it ran, which is the point: egress does not
+	// prevent the side effect it inspects.
+	var ran atomic.Bool
+	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1.0"}, nil)
+	server.AddTool(&mcp.Tool{Name: "charge", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			ran.Store(true)
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "4111111111111111"}}}, nil
+		})
+	up := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(up.Close)
+
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Hook: &config.Hook{
+			URL: url, TimeoutMs: 2000, OnError: "deny",
+			Stages: []string{"ingress", "egress"},
+		},
+	})
+	session := connect(t, ts.URL, nil)
+
+	_, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "charge"})
+	if err == nil {
+		t.Fatal("egress denial did not withhold the result")
+	}
+	if !strings.Contains(err.Error(), "already acted") {
+		t.Errorf("denial does not warn that the effect happened: %v", err)
+	}
+	if !strings.Contains(err.Error(), "card number") {
+		t.Errorf("hook's reason did not reach the caller: %v", err)
+	}
+	if !ran.Load() {
+		t.Error("test is not exercising the caveat: the upstream never ran")
+	}
+	if called.Load() != 2 {
+		t.Errorf("hook called %d times, want 2 (ingress and egress)", called.Load())
+	}
+	if got := last(); got.Stage != "egress" || len(got.Result) == 0 {
+		t.Errorf("egress envelope = %+v, want the result verbatim", got)
+	}
+}
+
+// TestHookEgressOversizeTakesTheErrorPath: a result too large to inspect is
+// not truncated — a partial body is the blind spot an inspector must not be
+// handed — so it takes onError, which under "deny" means refusing results
+// nobody could have inspected.
+func TestHookEgressOversizeTakesTheErrorPath(t *testing.T) {
+	url, _ := hookServer(t, func(hookRequest) (int, string) {
+		return 200, `{"decision":"allow"}`
+	})
+	big := strings.Repeat("x", hookMaxResultBytes+1)
+	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1.0"}, nil)
+	server.AddTool(&mcp.Tool{Name: "dump", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: big}}}, nil
+		})
+	up := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(up.Close)
+
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Hook:      &config.Hook{URL: url, TimeoutMs: 2000, OnError: "deny", Stages: []string{"egress"}},
+	})
+	session := connect(t, ts.URL, nil)
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "dump"}); err == nil {
+		t.Error("an uninspectable result was disclosed under onError deny")
+	}
+}
