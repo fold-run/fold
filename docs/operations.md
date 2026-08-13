@@ -43,6 +43,8 @@ scrapers must send an allowed `Host` header (see
 | `fold_state_degraded_total` | `kind` | The limiter/breaker peer of the above: rate-limit (`limiter`) and circuit-breaker (`breaker`) decisions made from the instance's local mirror because Redis was unreachable. Per-instance enforcement continues; fleet-wide enforcement does not — **alert on any non-zero rate** (packaged as `FoldStateDegraded`). |
 | `fold_http_rejections_total` | `reason` | Requests refused before the MCP layer: `body_too_large`, `forbidden_host`, `forbidden_origin`, `unauthenticated`, `rate_limited`, `oauth_token_rate_limited`, `introspection_viewer` (principal outside `server.introspection.groups`; was `console_viewer` and undocumented before v1.9). |
 | `fold_discovery_syncs_total` | `outcome` | Discovery polls: `applied`, `unchanged`, `rejected` (document failed parse or merged validation), `error` (fetch failed). |
+| `fold_hook_decisions_total` | `stage`, `outcome` | External decision-hook results: `allow`, `deny`, `error`. **Alert on `error`** — under `onError: "allow"` it counts calls that proceeded without inspection, which is a compliance gap rather than a service one. Packaged as `FoldHookErrors`. |
+| `fold_hook_duration_seconds` | `stage` | What one decision round trip added to a request. This is latency fold adds on purpose, at your request — it is the number that says what inspection costs, and the floor against a local no-op endpoint is ~42 µs. |
 | `fold_definition_drift_total` | `upstream`, `kind` | Definitions an upstream rewrote after fold had already served them, when `pinDefinitions` is on. The tool name is deliberately not a label — it is upstream-chosen and unbounded — so read the `upstream/definitionChanged` audit event for which one. A change is counted once, not once per refill: the new definition becomes the baseline. |
 | `fold_downstream_sessions` | — | Live downstream MCP sessions. Sessions idle past `server.sessionIdleTimeoutMs` are expired; sustained growth means clients are minting sessions faster than they expire — raise the alarm before memory does. |
 | `fold_upstream_bridged_sessions` | `upstream` | Per-client bridged sessions currently held against each upstream (idle ones sweep after 5 minutes). |
@@ -154,6 +156,8 @@ traffic. Treat a rising line as a question, not a measurement.
 | `FoldBudgetDegraded` | any degraded decision in 10m | The fleet is enforcing N copies of one allowance |
 | `FoldDiscoverySyncFailing` | rejected/error sync in 15m | Last good set still serving, but nothing new applies — an id collision freezes discovery until resolved |
 | `FoldTenantBudgetExhausted` | a tenant refused on budget in 15m | Nobody is broken; someone owes a customer a decision |
+| `FoldHookErrors` | any hook error in 10m | Under `onError: "allow"`, these calls were served uninspected — the audit events name them via `hookOutcome` |
+| `FoldHookLatencyHigh` | hook p99 over the configured bound, 10m | Not a fold regression: it is what your inspector costs, added to every inspected invocation |
 | `FoldDefinitionDrift` | an upstream rewrote a definition it had already advertised, 15m | Fires once per change, not per request: what a model is instructed to do changed after the federation was approved, and a human should confirm which kind of change it was |
 | `FoldIngressRejectionSpike` | bad Host/Origin or unauthenticated over threshold, 10m | Misconfigured client or someone probing — worth knowing which |
 
@@ -175,7 +179,8 @@ asynchronous and batched, never adding request latency). Fields:
 | `name` | Namespaced tool/prompt name or resource URI. |
 | `upstream` | Routed upstream id. |
 | `decision`, `ruleId` | Policy outcome (`allow`/`deny`) and the matching rule. An explicit `deny` rule names itself here; a refusal that fell through to `defaultDecision` has no `ruleId`, which is how you tell "a rule refused this" from "nothing granted it". |
-| `outcome` | `ok`, `error`, `denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`, `warned`. The last is a finding rather than a request outcome — fold noticed something an operator should see and served the request anyway. |
+| `hookOutcome` | What the external decision hook said: `allow`, `deny`, or `error`. Present only when a hook inspected the request. `error` under `onError: "allow"` means this call was served **uninspected**. |
+| `outcome` | `ok`, `error`, `denied`, `hook_denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`, `warned`. `hook_denied` is kept distinct from `denied` because policy and the inspector are different systems, often owned by different teams. The last is a finding rather than a request outcome — fold noticed something an operator should see and served the request anyway. |
 | `direction` | `server_initiated` on the reverse path — a sampling or elicitation request an upstream made of the caller's client. Absent means the ordinary client-to-upstream direction, so every event predating the field reads unchanged. |
 | `tenant` | The tenant the principal resolved to, when `tenants` is configured. Empty means no tenant matched — not an error, just a caller governed by the gateway-wide rules. |
 | `upstreamCalls` | Upstream invocations this request cost — the fan-out. Not always 1. |

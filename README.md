@@ -270,6 +270,33 @@ Scope a rule to specific token issuers with `"subjects": { "issuers": ["https://
 
 Attribute-based rules match on verified token claims: `"subjects": { "claims": { "dept": "eng", "mfa": true } }`. Every listed claim must match — the token claim equals the value, or, when the token carries an array (like an entitlements list), contains it. Values are JSON scalars (string, number, bool). Claims gate like issuers: they combine with `subs`/`groups` as an additional requirement, or stand alone as the whole subject. The same issuer-pinning caveat applies — claim names mean whatever each IdP says they mean, so pin claim-based rules to an issuer when more than one is trusted. Richer conditions (device posture, network location) belong in the IdP, surfaced to fold as claims — that is what token claims are for.
 
+### `hook`
+
+The external decision endpoint — fold's one out-of-process seam, and its answer to the plugin runtime it [declines](docs/roadmap.md#non-goals). Absent by default; nothing on the request path changes without it.
+
+```jsonc
+{
+  "url": "https://inspector.internal/decide",
+  "timeoutMs": 300,            // required — no default
+  "onError": "deny",           // required — "allow" or "deny", no default
+  "stages": ["ingress"],       // nothing runs unless a stage is named
+  "methods": ["tools/call"],   // omit → every inspectable invocation
+  "bearerSecretRef": "HOOK_TOKEN"
+}
+```
+
+fold `POST`s a versioned JSON envelope per inspected invocation — stage, method, bare name, upstream, principal, tenant, and the caller's arguments verbatim — and expects `{"decision":"allow"|"deny","reason":"..."}`. The `reason` is returned to the caller, deliberately: unlike a policy denial, where the expected value is the operator's configuration, a hook denial is usually about the caller's own content, and a refusal nobody can act on becomes a support ticket instead of a fix.
+
+**The hook decides; it cannot rewrite.** No redacted arguments, no filtered results. A hook that could edit traffic would be the [transformation non-goal](docs/roadmap.md#non-goals) with an extra hop — fold buffering and mutating bodies, behavior through the gateway no longer matching the upstream. A hook that wants content changed refuses the call and says why.
+
+**It runs after policy.** Its allow is necessary but never sufficient, and its operator is never handed traffic the gateway has already refused. An organization that turns the hook off is still governed by everything above.
+
+**Both bounds are required, with no defaults.** A hook without a timeout is a gateway without one. And fold will not guess between fail-open and fail-closed: compliance deployments want traffic to stop when inspection stops, availability-first deployments want the gateway to keep serving, and guessing would be wrong half the time in a direction an operator discovers during an incident. A hook that times out is abandoned at the bound rather than waited on — a *slow* hook is more dangerous than a broken one, because failing open turns it into an invisible bypass.
+
+**Sending arguments to a second endpoint is a data-egress decision.** The traffic fold otherwise proxies to exactly one upstream now also reaches your inspector, principal claims included. There is deliberately no redaction knob: a partial body is a scanner's blind spot, and choosing what to strip is the content judgement being delegated. An organization that cannot send a body to its own hook should not enable the stage.
+
+Denials get their own audit outcome (`hook_denied`) so an operator can tell their policy from their inspector, and every inspected request carries `hookOutcome`. When `onError: "allow"`, an error there means the call proceeded **uninspected** — `fold_hook_decisions_total{outcome="error"}` and the packaged `FoldHookErrors` alert exist for exactly that. Cost is `fold_hook_duration_seconds`: measured at ~42 µs per decision against a local no-op endpoint, which is the floor, not an estimate of your inspector. Reasoning and the phases still to come: [design-decision-hook.md](docs/design-decision-hook.md).
+
 ### `audit`
 
 ```jsonc

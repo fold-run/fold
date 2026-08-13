@@ -146,6 +146,37 @@ spec:
               Confirm the change with whoever runs that upstream; the new definition is
               already the baseline, so this fires once per change.
 
+        # The hook is the one place fold adds latency deliberately, so its
+        # failures and its cost both get a rule. The error rule matters most
+        # under onError "allow": those calls proceeded uninspected.
+        - alert: FoldHookErrors
+          expr: increase(fold_hook_decisions_total{outcome="error"}[10m]) > 0
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: "decision hook failing at the {{ "{{" }} $labels.stage {{ "}}" }} stage"
+            description: >-
+              The external decision endpoint timed out, refused the connection, or answered
+              something fold could not read. With onError "deny" these calls are being
+              refused; with onError "allow" they proceeded UNINSPECTED. Audit events carry
+              hookOutcome "error" for exactly the calls affected.
+
+        - alert: FoldHookLatencyHigh
+          expr: |
+            histogram_quantile(0.99, sum by (le, stage) (rate(fold_hook_duration_seconds_bucket[5m])))
+              > {{ .Values.metrics.prometheusRule.hookLatencyP99Seconds }}
+          for: 10m
+          labels:
+            severity: info
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: "decision hook p99 is {{ "{{" }} $value | humanizeDuration {{ "}}" }}"
+            description: >-
+              Latency added to every inspected invocation, on purpose. Not a fold
+              regression — it is what inspection costs. Set this threshold from your
+              configured timeoutMs.
+
         - alert: FoldDiscoverySyncFailing
           expr: increase(fold_discovery_syncs_total{outcome=~"rejected|error"}[15m]) > 0
           labels:

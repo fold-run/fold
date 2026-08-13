@@ -306,6 +306,12 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 	if res, err := g.authorizeCall(ctx, evt, rt, u, "tools/call", bare, ev); err != nil {
 		return res, err
 	}
+	// After policy, before the proxy: the hook's allow is necessary but never
+	// sufficient, and its operator is never handed traffic the gateway has
+	// already refused.
+	if err := g.hookIngress(ctx, evt, rt, u, "tools/call", bare, params.Arguments); err != nil {
+		return nil, err
+	}
 	// A missing arguments field must stay missing — a nil RawMessage would
 	// marshal as JSON null, which schema-validating upstreams reject.
 	var args any
@@ -381,6 +387,9 @@ func (g *Gateway) getPrompt(ctx context.Context, rt *routes, req mcp.Request, ev
 	evt.Upstream = u.cfg.ID
 	if res, err := g.authorize(ctx, evt, rt, u, "prompts/get", bare); err != nil {
 		return res, err
+	}
+	if err := g.hookIngress(ctx, evt, rt, u, "prompts/get", bare, nil); err != nil {
+		return nil, err
 	}
 	key, opts := g.bridgeFor(req, u)
 	defer g.pushCallCtx(ctx, key)()

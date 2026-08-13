@@ -194,6 +194,10 @@ type routes struct {
 	// tenants is the resolved tenant set, reloadable like the rest of the
 	// snapshot: tenants change when a customer signs up.
 	tenants tenantSet
+	// hook is the external decision endpoint, nil when unconfigured. It is
+	// snapshot state so a reload swaps it atomically and in-flight requests
+	// finish against the configuration they started under.
+	hook *decisionHook
 }
 
 // rt returns the current routing snapshot.
@@ -445,6 +449,12 @@ func (g *Gateway) buildRoutes(cfg *config.Config, prev *routes) *routes {
 		passthrough: cfg.Passthrough(),
 		policy:      policy.New(cfg.Policy),
 		tenants:     buildTenants(cfg, g.state, prevTenants),
+		// Rebuilt per snapshot rather than reused: the client carries the
+		// configured timeout, so a reload that changes the bound must not
+		// leave requests running under the old one. Connections are pooled
+		// per client, so a reload costs the hook's keep-alives — rare enough
+		// to prefer over a second reuse rule to keep in step.
+		hook: newDecisionHook(cfg.Hook),
 	}
 	for _, ucfg := range cfg.Upstreams {
 		var u *upstream

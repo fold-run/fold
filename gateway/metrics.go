@@ -52,6 +52,12 @@ type metricsSet struct {
 	// survives them by design, but every one is a bug — alert on non-zero.
 	panics *prometheus.CounterVec
 
+	// hookDecisions counts external decision-hook outcomes and how long they
+	// took. The error series is the one that matters: with onError "allow" it
+	// is the count of calls that proceeded without inspection.
+	hookDecisions *prometheus.CounterVec
+	hookLatency   *prometheus.HistogramVec
+
 	// drift counts definitions an upstream rewrote after fold had already
 	// served them. Labelled by upstream and list kind only: the tool name is
 	// upstream-chosen and therefore unbounded, so it belongs in the audit
@@ -120,6 +126,15 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_tenant_upstream_calls_total",
 			Help: "Upstream invocations attributed to a tenant — the same unit a tenant budget is charged in, so this is what a budget is spent on, live.",
 		}, []string{"tenant"}),
+		hookDecisions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_hook_decisions_total",
+			Help: "External decision-hook outcomes by stage: allow, deny, error. With onError \"allow\", the error series counts calls that proceeded uninspected — alert on it.",
+		}, []string{"stage", "outcome"}),
+		hookLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "fold_hook_duration_seconds",
+			Help:    "Time one decision-hook round trip added to the request. This is latency fold adds on purpose, at an operator's request; it is the number that says what inspection costs.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"stage"}),
 		drift: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fold_definition_drift_total",
 			Help: "Definitions an upstream rewrote after fold had served them, by upstream and list kind. Non-zero means a tool's instructions or annotations changed after the federation was approved — legitimate or not, it is a change nobody reviewed.",
@@ -135,7 +150,7 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
-		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems, m.panics, m.drift,
+		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems, m.panics, m.drift, m.hookDecisions, m.hookLatency,
 		m.stateDegr,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -284,6 +299,12 @@ func (m *metricsSet) observeListShaping(method string, offered, served, capped i
 	if capped > 0 {
 		m.listItems.WithLabelValues(method, "capped").Add(float64(capped))
 	}
+}
+
+// observeHook records one decision-hook round trip.
+func (m *metricsSet) observeHook(stage, outcome string, d time.Duration) {
+	m.hookDecisions.WithLabelValues(stage, outcome).Inc()
+	m.hookLatency.WithLabelValues(stage).Observe(d.Seconds())
 }
 
 // observeDrift counts one definition an upstream rewrote after fold served it.

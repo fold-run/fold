@@ -42,6 +42,7 @@ var schemaDefs = map[string]reflect.Type{
 	"consoleOAuth":   reflect.TypeOf(ConsoleOAuth{}),
 	"tracing":        reflect.TypeOf(Tracing{}),
 	"discovery":      reflect.TypeOf(Discovery{}),
+	"hook":           reflect.TypeOf(Hook{}),
 }
 
 func jsonFields(t reflect.Type) []string {

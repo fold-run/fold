@@ -414,6 +414,12 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 - [ ] `pinDefinitions: "warn"` on upstreams you do not operate yourself, with
       `FoldDefinitionDrift` routed somewhere a human reads — otherwise a tool
       can acquire new instructions after you approved it and nothing says so
+- [ ] If `hook` is configured: `onError` matches what your organization
+      actually wants during a hook outage (traffic stops, or the gateway keeps
+      serving uninspected), `timeoutMs` is smaller than your client timeouts,
+      and `FoldHookErrors` is routed somewhere a human reads — under
+      `onError: "allow"` that alert is the only signal that calls are going
+      uninspected
 - [ ] Discovery: `allowedAuthStrategies`, `allowedSecretRefs`, and
       `allowedCredentialHosts` set whenever the registry is not operated by
       the gateway's own operators (the gateway warns at startup when all

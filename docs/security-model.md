@@ -83,6 +83,33 @@ is still per-instance — in both cases the task falls through to the
 locate-by-probe path and becomes reachable by any caller, exactly as it
 does for a task fold never saw minted.
 
+## The decision hook is a trust boundary and a data-egress path
+
+`hook` sends each inspected invocation — the caller's arguments verbatim, the
+principal's subject, issuer, and groups, and the tenant — to an endpoint an
+operator configures. Two consequences deserve to be stated rather than
+inferred.
+
+**It is a disclosure.** Traffic fold otherwise proxies to exactly one upstream
+now reaches a second destination. That is the operator's decision to make, and
+fold makes it explicit rather than offering a redaction knob: a partial body is
+a scanner's blind spot, and choosing what to strip is the content judgement
+being delegated. The endpoint is held to the same posture as every other
+outbound trust path — bounded timeout, redirects refused, a dedicated client —
+because a hook that can redirect fold's decision request can be repointed by
+whoever answers it.
+
+**It cannot widen a grant.** The hook runs after policy and can only refuse,
+so its compromise costs availability rather than authorization: a hostile hook
+denies traffic it should have allowed, and cannot admit anything policy has
+already refused. That asymmetry is why ingress sits where it does.
+
+The failure posture is the operator's explicit choice (`onError`), and
+fold refuses to start without it. Under `allow`, a hook outage means calls
+proceed **uninspected** — recorded per request as `hookOutcome: "error"` and
+counted in `fold_hook_decisions_total`, because a fail-open bypass that left
+no trace would be the worst of both designs.
+
 ## What an upstream advertises can change after you approve it
 
 The trust decision that matters most in a federation is made by a human
