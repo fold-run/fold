@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/fold-run/fold/audit"
 	"github.com/fold-run/fold/config"
 )
 
@@ -50,6 +52,29 @@ func newUpstreamServer(t *testing.T, toolNames ...string) (*httptest.Server, *at
 
 func lastHeader(v *atomic.Value, name string) string {
 	return v.Load().(http.Header).Get(name)
+}
+
+// readAuditEvents parses a file sink's output, keeping events for method.
+func readAuditEvents(t *testing.T, path, method string) []audit.Event {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read audit file: %v", err)
+	}
+	var out []audit.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var e audit.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("bad audit line %q: %v", line, err)
+		}
+		if e.Method == method {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func startGateway(t *testing.T, cfg *config.Config) (*httptest.Server, *Gateway) {

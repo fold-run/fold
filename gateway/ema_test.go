@@ -18,6 +18,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/fold-run/fold/audit"
 	"github.com/fold-run/fold/config"
 )
 
@@ -246,5 +247,48 @@ func TestEMADiscovery(t *testing.T) {
 	key, _ := keys[0].(map[string]any)
 	if key["kty"] != "EC" || key["crv"] != "P-256" || key["kid"] == "" {
 		t.Errorf("unexpected minting key document: %v", key)
+	}
+}
+
+// TestEMAExchangeIsAudited: the token endpoint is an authorization server,
+// and its terminal responses — the mint, the replay, the bad assertion —
+// each leave exactly one audit record. The replay is the one that matters:
+// before this, an attacker replaying ID-JAGs under the rate limit was
+// invisible to the trail.
+func TestEMAExchangeIsAudited(t *testing.T) {
+	setEMAKey(t)
+	idp := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "tool")
+	cfg := emaConfig(idp, []config.Upstream{{ID: "a", Namespace: "a", URL: up.URL}})
+	auditPath := t.TempDir() + "/audit.jsonl"
+	cfg.Audit = &config.Audit{Sinks: []config.AuditSink{{Type: "file", Path: auditPath}}}
+	ts, _ := startGateway(t, cfg)
+
+	assertion := idJAG(t, idp, "alice", "jag-audited")
+	if status, body := redeem(t, ts.URL, assertion); status != http.StatusOK {
+		t.Fatalf("first redeem: %d %v", status, body)
+	}
+	if status, _ := redeem(t, ts.URL, assertion); status != http.StatusBadRequest {
+		t.Fatalf("replay should be refused, got %d", status)
+	}
+	if status, _ := redeem(t, ts.URL, "not-a-jwt"); status != http.StatusBadRequest {
+		t.Fatalf("garbage assertion should be refused, got %d", status)
+	}
+
+	events := readAuditEvents(t, auditPath, "oauth/token")
+	if len(events) != 3 {
+		t.Fatalf("oauth/token audit events = %d, want 3: %+v", len(events), events)
+	}
+	mint, replay, garbage := events[0], events[1], events[2]
+	if mint.Outcome != audit.OutcomeOK || mint.Decision != "minted" || mint.Principal != "alice" || mint.Issuer != idp.server.URL {
+		t.Fatalf("mint event = %+v", mint)
+	}
+	// The replay is alertable on the structured decision field, not only by
+	// substring-matching the error text.
+	if replay.Outcome != audit.OutcomeUnauthenticated || replay.Decision != "replayed" || replay.Principal != "alice" {
+		t.Fatalf("replay event = %+v", replay)
+	}
+	if garbage.Outcome != audit.OutcomeUnauthenticated || garbage.Decision != "invalid_grant" {
+		t.Fatalf("garbage event = %+v", garbage)
 	}
 }

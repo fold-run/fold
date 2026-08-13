@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/state"
 )
 
 // TestNoCrossHostCredentialLeak proves a hostile upstream cannot capture the
@@ -324,5 +326,96 @@ func TestHostRejectionAudited(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Error("host rejection was not audited")
+	}
+}
+
+func TestAuthorityHostRejectsMalformedPort(t *testing.T) {
+	for _, tc := range []struct {
+		authority string
+		want      string
+		ok        bool
+	}{
+		{"localhost", "localhost", true},
+		{"LocalHost:8080", "localhost", true},
+		{"[::1]:8080", "::1", true},
+		{"[::1]", "::1", true},
+		// net.SplitHostPort splits at the last colon without checking what
+		// follows, so these must not be read as the allowed host prefix.
+		{"localhost:8080.evil.com", "", false},
+		{"localhost:evil", "", false},
+		{"", "", false},
+	} {
+		got, ok := authorityHost(tc.authority)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("authorityHost(%q) = (%q, %v), want (%q, %v)", tc.authority, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestOriginAllowedRejectsMalformedOrigins(t *testing.T) {
+	allowed := map[string]bool{"localhost": true}
+	for _, tc := range []struct {
+		origin string
+		want   bool
+	}{
+		{"http://localhost", true},
+		{"https://localhost:8080", true},
+		{"null", false},
+		{"localhost", false},        // schemeless
+		{"file://localhost", false}, // not an http(s) origin
+		{"https://evil.com", false},
+		{"https://localhost:8080.evil.com", false}, // invalid port
+		{"https://evil.com/localhost", false},
+	} {
+		if got := originAllowed(allowed, tc.origin); got != tc.want {
+			t.Errorf("originAllowed(%q) = %v, want %v", tc.origin, got, tc.want)
+		}
+	}
+}
+
+// TestForbiddenHostWithMalformedPort proves the rebinding guard rejects an
+// authority whose port is not numeric rather than reading it as its prefix.
+func TestForbiddenHostWithMalformedPort(t *testing.T) {
+	up, _ := newUpstreamServer(t, "echo")
+	ts, _ := startGateway(t, &config.Config{Upstreams: []config.Upstream{{ID: "u", URL: up.URL}}})
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "localhost:8080.evil.com"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Host %q should be forbidden, got %d", req.Host, resp.StatusCode)
+	}
+}
+
+// TestUpstreamDownMessageRedacted: a fold-minted -32041 must not carry the
+// raw transport error — it names internal endpoints and can name secret
+// env vars, the same strings /health redacts for untrusted callers.
+func TestUpstreamDownMessageRedacted(t *testing.T) {
+	provider := state.NewMemory()
+	t.Cleanup(func() { _ = provider.Close() })
+	u := newUpstream(config.Upstream{
+		ID:       "internal",
+		URL:      "http://secret-internal-host.invalid:9",
+		Timeouts: &config.Timeouts{ConnectMs: 200},
+	}, provider)
+	t.Cleanup(u.Close)
+
+	err := u.ping(context.Background())
+	var wire *jsonrpc.Error
+	if !asWireError(err, &wire) || wire.Code != codeUpstreamDown {
+		t.Fatalf("expected -32041, got %v", err)
+	}
+	if strings.Contains(wire.Message, "secret-internal-host") {
+		t.Fatalf("minted error leaks the endpoint: %q", wire.Message)
+	}
+	if !strings.Contains(wire.Message, `upstream "internal" unavailable`) {
+		t.Fatalf("unexpected message shape: %q", wire.Message)
 	}
 }
