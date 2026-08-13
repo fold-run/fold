@@ -102,7 +102,17 @@ jobs:
           fi
           echo "appVersion $app matches $TAG"
 
-      - name: log in to ghcr
+      # helm registry login writes helm's own credential store, which the
+      # attest step below cannot read — it looks in ~/.docker/config.json.
+      # docker/login-action populates that, so the chart's provenance
+      # attestation authenticates the same way the images' do.
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: log in to ghcr (helm)
         run: |
           helm registry login ghcr.io \
             --username "${{ github.actor }}" \
