@@ -350,6 +350,33 @@ the forward path.
 Content questions — "refuse an elicitation that asks for a password" — stay out
 and become a call site for the decision hook above.
 
+### 14. Pinning upstream definitions
+
+A tool definition is the instruction set a model acts on and the annotations a
+policy decides with, and fold re-reads it from the upstream on every cache
+refill without comparing it to anything. The approval that mattered — a human
+reading a tool list and accepting the federation — is pinned to nothing, so a
+tool can acquire new instructions after acceptance and be served with the same
+namespace, grant, and trail as the one that was approved. This is the
+ecosystem's most-published attack, and the answers on offer elsewhere are
+scanners.
+
+fold's is arithmetic: hash what an upstream advertises, keep the baseline in
+`state.Store` so a fleet agrees and a rolling restart does not silently
+re-pin, and report a difference. It never asks whether a description is
+malicious, only whether it is the same one — which keeps inline content
+inspection declined rather than smuggled in, and puts the whole cost on the
+list-refill path where `json.Unmarshal` already lives.
+
+Designed in [design-definition-pinning.md](design-definition-pinning.md),
+which is explicit that trust-on-first-use cannot vouch for the first
+definition, and which stops short of a full plan on purpose. Detection
+(`warn`) has no open questions and is what the roadmap intends to ship.
+Prevention (`block`) does: legitimate change and attack are the same bytes, so
+blocking needs a way to adopt a new definition, and every candidate either
+invents a write path into running state or hands operators a hand-copying
+chore. That choice belongs to whoever needs prevention, not to the design.
+
 ## Horizon 3 — gated
 
 Not scheduled. Each is blocked on something outside fold's control, or waiting
