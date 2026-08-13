@@ -269,6 +269,55 @@ func TestDenyRuleKeepsTheEnforcementPair(t *testing.T) {
 	}
 }
 
+// TestArgumentConstraintThroughTheGateway drives the visible-but-conditional
+// asymmetry end to end: the tool lists, the staging call succeeds, the
+// production call is refused, and the refusal names the constraint path
+// without disclosing what the rule wanted it to be.
+func TestArgumentConstraintThroughTheGateway(t *testing.T) {
+	up, _ := newUpstreamServer(t, "deploy")
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "deploy", URL: up.URL, Namespace: "d"}},
+		Policy: &config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID: "staging-only",
+				Allow: []config.PolicyAllow{{
+					Server: "deploy", Methods: []string{"tools/call"}, Names: []string{"deploy"},
+					Args: map[string]any{"environment": "staging"},
+				}},
+			}},
+		},
+	})
+	session := connect(t, ts.URL, nil)
+
+	res, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if got := strings.Join(toolNames(res), ","); got != "d__deploy" {
+		t.Errorf("list = %q — a constrained tool is visible, since there are no arguments to judge at list time", got)
+	}
+
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "d__deploy", Arguments: map[string]any{"environment": "staging"},
+	}); err != nil {
+		t.Errorf("staging deploy refused: %v", err)
+	}
+
+	_, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "d__deploy", Arguments: map[string]any{"environment": "production"},
+	})
+	if err == nil {
+		t.Fatal("production deploy was allowed")
+	}
+	if !strings.Contains(err.Error(), "environment") {
+		t.Errorf("denial does not name the constraint that failed: %v", err)
+	}
+	if strings.Contains(err.Error(), "staging") {
+		t.Errorf("denial disclosed the operator's expected value: %v", err)
+	}
+}
+
 func TestPartialFailure(t *testing.T) {
 	up, _ := newUpstreamServer(t, "alive")
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

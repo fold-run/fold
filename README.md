@@ -232,6 +232,20 @@ A rule may also carry `"deny"`, shaped exactly like `allow` and matched the same
 
 Deny does not create a second enforcement mechanism: it participates in the same decision, so a carved-out name is invisible in lists *and* uncallable, together. The evaluation cost is confined to the documents that use it — the engine computes at construction whether any rule carries a deny, and when none does, evaluation is the first-match short-circuit it has always been, measurably unchanged.
 
+A clause may constrain the invocation's arguments with `"args"` — a map of dotted JSON path to required value, all of which must match:
+
+```jsonc
+{ "server": "deploy", "names": ["deploy"], "args": { "target.environment": "staging" } }
+```
+
+That is the difference between "may call `deploy`" and "may call `deploy` against staging". Values compare **type-exactly**, like subject claims: `"1"` and `1` are different, because a lenient comparison silently widens a grant. Paths have no wildcards and no array indexing — a matcher that starts narrow can widen later, whereas one that starts expressive cannot be narrowed.
+
+**A constrained tool is visible but conditionally callable.** There are no arguments at list time, so this cannot filter a list: the tool appears, and a call with non-matching arguments is denied. That is a genuine weakening of the invisibility pair, and the pair's guarantee becomes *a caller never sees a tool they cannot call at all* rather than *never sees anything they might be refused*. An operator who needs the stronger property grants by name. The mirror case is a `deny` carrying `args`, which for the same reason does **not** hide the tool — "no deploys to production" must not remove `deploy` entirely.
+
+The denial names the constraint path that failed and never the value the rule wanted, because that value is the operator's configuration and a refusal is a poor place to disclose a policy document one field at a time.
+
+fold forwards `arguments` as raw JSON and never parses them, so this is conditional: the engine knows at construction whether any rule carries `args`, and a document without them parses nothing and evaluates on the same path it always has.
+
 First matching rule allows; otherwise `defaultDecision`. Policy governs named invocations (`tools/call`, `prompts/get`, `resources/read`), the completions and subscriptions derived from them (`completion/complete` is gated behind the prompt/resource it completes; `resources/subscribe` behind the resource), and it **filters list results per principal** — callers never see tools, prompts, or resources they cannot reach. Protocol plumbing (ping, the lists themselves) is not policy-gated; invisibility plus call-denial is the enforcement pair.
 
 `"serverInitiatedDecision": "deny"` extends policy to the **reverse direction** — the `sampling/createMessage` and `elicitation/create` requests an upstream makes of the caller's client over a bridged session. Those spend something of the caller's (model budget, or a human's attention), so a rule grants them explicitly: `{ "server": "corpus", "methods": ["sampling/createMessage"] }`, server-and-method only, since neither request has a name. Enforcement is the invisibility pair pointed the other way: an upstream that may not ask is never told the caller can answer, so it does not ask — and a request arriving on a session whose grant a reload removed is refused with `-32042`, which a client is entitled to say. Those refusals, and every allowed exchange, carry `direction: "server_initiated"` in the audit trail; a capability withheld outright has no event, because nothing was asked.

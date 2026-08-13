@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/fold-run/fold/audit"
 	"github.com/fold-run/fold/auth"
+	"github.com/fold-run/fold/policy"
 )
 
 // metaPartialFailure marks list results assembled while one or more
@@ -293,7 +295,7 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 		return nil, err
 	}
 	evt.Upstream = u.cfg.ID
-	if res, err := g.authorize(ctx, evt, rt, u, "tools/call", bare); err != nil {
+	if res, err := g.authorizeCall(ctx, evt, rt, u, "tools/call", bare, rawArgs(rt, params.Arguments)); err != nil {
 		return res, err
 	}
 	// A missing arguments field must stay missing — a nil RawMessage would
@@ -623,7 +625,33 @@ func (g *Gateway) setLevel(ctx context.Context, rt *routes, req mcp.Request, nex
 
 // authorize applies the policy engine to a named invocation. Denials return
 // a policy error; the audit event records the decision either way.
+// rawArgs builds the lazy argument source for an invocation, or nil when no
+// rule in the running policy constrains arguments — which is every document
+// written before `args` existed. The closure memoizes, so a policy that
+// consults the arguments twice still unmarshals once, and a policy that never
+// consults them leaves the raw JSON untouched on its way upstream.
+func rawArgs(rt *routes, raw json.RawMessage) policy.ArgSource {
+	if !rt.policy.NeedsArguments() || len(raw) == 0 {
+		return nil
+	}
+	var (
+		once   sync.Once
+		parsed map[string]any
+		ok     bool
+	)
+	return func() (map[string]any, bool) {
+		once.Do(func() {
+			ok = json.Unmarshal(raw, &parsed) == nil
+		})
+		return parsed, ok
+	}
+}
+
 func (g *Gateway) authorize(ctx context.Context, evt *audit.Event, rt *routes, u *upstream, method, bare string) (mcp.Result, error) {
+	return g.authorizeCall(ctx, evt, rt, u, method, bare, nil)
+}
+
+func (g *Gateway) authorizeCall(ctx context.Context, evt *audit.Event, rt *routes, u *upstream, method, bare string, args policy.ArgSource) (mcp.Result, error) {
 	// The tenant's subset is evaluated before policy: it bounds which
 	// upstreams exist for this caller at all, and policy then decides what
 	// may be invoked among them. Nothing outside the subset reaches the
@@ -633,7 +661,7 @@ func (g *Gateway) authorize(ctx context.Context, evt *audit.Event, rt *routes, u
 		evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
 		return nil, errOutsideSubset(tn, method, evt.Name, u.cfg.ID)
 	}
-	d := rt.policy.Decide(auth.PrincipalFromContext(ctx), u.cfg.ID, method, bare)
+	d := rt.policy.DecideCall(auth.PrincipalFromContext(ctx), u.cfg.ID, method, bare, args)
 	evt.RuleID = d.RuleID
 	if d.Allowed {
 		evt.Decision = "allow"
@@ -641,10 +669,14 @@ func (g *Gateway) authorize(ctx context.Context, evt *audit.Event, rt *routes, u
 	}
 	evt.Decision = "deny"
 	evt.Outcome = audit.OutcomeDenied
-	return nil, &jsonrpc.Error{
-		Code:    codeDenied,
-		Message: fmt.Sprintf("policy denied %s %q", method, evt.Name),
+	msg := fmt.Sprintf("policy denied %s %q", method, evt.Name)
+	if d.FailedArg != "" {
+		// The path, never the expected value: what the caller sent is theirs
+		// already, but what the rule wanted is the operator's configuration,
+		// and a denial is a poor place to disclose it a field at a time.
+		msg += fmt.Sprintf(": argument %q does not satisfy the grant", d.FailedArg)
 	}
+	return nil, &jsonrpc.Error{Code: codeDenied, Message: msg}
 }
 
 // directionServerInitiated marks the audit events that describe the reverse

@@ -234,7 +234,11 @@
       "properties": {
         "server": { "type": "string" },
         "methods": { "type": "array", "items": { "type": "string" } },
-        "names": { "type": "array", "items": { "type": "string" } }
+        "names": { "type": "array", "items": { "type": "string" } },
+        "args": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        }
       }
     },
     "audit": {

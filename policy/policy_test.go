@@ -272,3 +272,133 @@ func TestDenyRuleNeedsNoAllow(t *testing.T) {
 		t.Error("unrelated call refused")
 	}
 }
+
+// TestArgumentConstraints covers the grant that names a condition rather than
+// just a tool: "may deploy, but only to staging".
+func TestArgumentConstraints(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID: "staging-only",
+			Allow: []config.PolicyAllow{{
+				Server: "deploy", Names: []string{"deploy"},
+				Args: map[string]any{"target.environment": "staging"},
+			}},
+		}},
+	})
+	args := func(m map[string]any) ArgSource {
+		return func() (map[string]any, bool) { return m, true }
+	}
+
+	cases := []struct {
+		name    string
+		args    ArgSource
+		allowed bool
+		failed  string
+	}{
+		{"matching nested value", args(map[string]any{"target": map[string]any{"environment": "staging"}}), true, ""},
+		{"wrong value", args(map[string]any{"target": map[string]any{"environment": "production"}}), false, "target.environment"},
+		{"path absent", args(map[string]any{"target": map[string]any{}}), false, "target.environment"},
+		{"parent not an object", args(map[string]any{"target": "staging"}), false, "target.environment"},
+		{"no arguments at all", nil, false, "target.environment"},
+	}
+	for _, c := range cases {
+		d := e.DecideCall(nil, "deploy", "tools/call", "deploy", c.args)
+		if d.Allowed != c.allowed {
+			t.Errorf("%s: allowed = %v, want %v", c.name, d.Allowed, c.allowed)
+		}
+		if d.FailedArg != c.failed {
+			t.Errorf("%s: failed path = %q, want %q", c.name, d.FailedArg, c.failed)
+		}
+	}
+}
+
+// TestArgumentTypesAreExact: "1" and 1 are different values, because a lenient
+// comparison silently widens the grant — the same rule subject claims follow.
+func TestArgumentTypesAreExact(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID:    "replicas-one",
+			Allow: []config.PolicyAllow{{Server: "deploy", Args: map[string]any{"replicas": float64(1)}}},
+		}},
+	})
+	num := func() (map[string]any, bool) { return map[string]any{"replicas": float64(1)}, true }
+	str := func() (map[string]any, bool) { return map[string]any{"replicas": "1"}, true }
+
+	if !e.DecideCall(nil, "deploy", "tools/call", "scale", num).Allowed {
+		t.Error("numeric 1 did not satisfy a numeric constraint")
+	}
+	if e.DecideCall(nil, "deploy", "tools/call", "scale", str).Allowed {
+		t.Error(`string "1" satisfied a numeric constraint`)
+	}
+}
+
+// TestArgumentConstrainedToolStaysVisible is the asymmetry the design record
+// insists on stating rather than letting someone discover: there are no
+// arguments at list time, so a constrained tool is visible and only
+// conditionally callable. An operator who needs the stronger guarantee grants
+// by name.
+func TestArgumentConstrainedToolStaysVisible(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID:    "staging-only",
+			Allow: []config.PolicyAllow{{Server: "deploy", Names: []string{"deploy"}, Args: map[string]any{"environment": "staging"}}},
+		}},
+	})
+	if !e.Visible(nil, "deploy", "tools/call", "deploy") {
+		t.Error("an argument-constrained tool must still list; there are no arguments to judge at list time")
+	}
+	prod := func() (map[string]any, bool) { return map[string]any{"environment": "production"}, true }
+	if e.DecideCall(nil, "deploy", "tools/call", "deploy", prod).Allowed {
+		t.Error("visible must not mean callable with any arguments")
+	}
+}
+
+// TestUnconstrainedClauseWinsOverConstrained: a later clause granting the tool
+// outright must not be skipped because an earlier constrained one missed.
+func TestUnconstrainedClauseWinsOverConstrained(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID: "two-ways",
+			Allow: []config.PolicyAllow{
+				{Server: "deploy", Names: []string{"deploy"}, Args: map[string]any{"environment": "staging"}},
+				{Server: "deploy", Names: []string{"deploy"}},
+			},
+		}},
+	})
+	prod := func() (map[string]any, bool) { return map[string]any{"environment": "production"}, true }
+	d := e.DecideCall(nil, "deploy", "tools/call", "deploy", prod)
+	if !d.Allowed {
+		t.Error("the unconstrained grant was skipped after a constrained near-miss")
+	}
+	if d.FailedArg != "" {
+		t.Errorf("an allowed decision reported a failed constraint %q", d.FailedArg)
+	}
+}
+
+// TestDenyWithArgumentsDoesNotHide: a deny that cannot be evaluated at list
+// time must not hide the tool, or "no deploys to prod" would remove deploy
+// entirely — applying the rule far more broadly than it was written.
+func TestDenyWithArgumentsDoesNotHide(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{
+			{ID: "can-deploy", Allow: []config.PolicyAllow{{Server: "deploy"}}},
+			{ID: "not-prod", Deny: []config.PolicyAllow{{Server: "deploy", Args: map[string]any{"environment": "production"}}}},
+		},
+	})
+	if !e.Visible(nil, "deploy", "tools/call", "deploy") {
+		t.Error("a conditionally-denied tool was hidden outright")
+	}
+	prod := func() (map[string]any, bool) { return map[string]any{"environment": "production"}, true }
+	staging := func() (map[string]any, bool) { return map[string]any{"environment": "staging"}, true }
+	if e.DecideCall(nil, "deploy", "tools/call", "deploy", prod).Allowed {
+		t.Error("the prod deploy was not denied")
+	}
+	if !e.DecideCall(nil, "deploy", "tools/call", "deploy", staging).Allowed {
+		t.Error("the staging deploy was refused by a prod-only deny")
+	}
+}

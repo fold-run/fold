@@ -542,6 +542,19 @@ type PolicyAllow struct {
 	Server  string   `json:"server"`
 	Methods []string `json:"methods,omitempty"` // omit → all methods
 	Names   []string `json:"names,omitempty"`   // omit → all names
+
+	// Args constrains the invocation's arguments: a map of dotted JSON path
+	// to required value, all of which must match. It is the difference
+	// between "may call deploy" and "may call deploy against staging".
+	//
+	// Values compare type-exactly, like subject claims — "1" and 1 are
+	// different, because a lenient comparison silently widens a grant. Paths
+	// have no wildcards and no array indexing.
+	//
+	// A constrained clause makes a tool **visible but conditionally
+	// callable**: there are no arguments at list time, so this cannot filter
+	// a list. An operator who needs the stronger guarantee grants by name.
+	Args map[string]any `json:"args,omitempty"`
 }
 
 // Audit configures audit event emission.
@@ -1036,6 +1049,19 @@ func (c *Config) Validate() error {
 			for _, a := range slices.Concat(r.Allow, r.Deny) {
 				if a.Server != "" && a.Server != "*" && !seenID[a.Server] {
 					return fmt.Errorf("policy rule %q: unknown server %q", r.ID, a.Server)
+				}
+				for path, v := range a.Args {
+					if path == "" {
+						return fmt.Errorf("policy rule %q: args paths must not be empty", r.ID)
+					}
+					// Same contract as subject claims, for the same reason:
+					// deep equality against arrays and objects has semantics
+					// nobody can predict from reading a config file.
+					switch v.(type) {
+					case string, float64, bool:
+					default:
+						return fmt.Errorf("policy rule %q: args %q must be a JSON scalar (string, number, or bool)", r.ID, path)
+					}
 				}
 			}
 			if r.Subjects != nil {
