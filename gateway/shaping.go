@@ -51,7 +51,7 @@ func (f *listFilter) visibleTool(upstreamID string, t *mcp.Tool) bool {
 	if !f.policy.NeedsAnnotations() {
 		return f.visible(upstreamID, t.Name)
 	}
-	return f.decide(upstreamID, t.Name, func() policy.Decision {
+	return f.decide(func() policy.Decision {
 		return f.policy.DecideList(f.principal, upstreamID, f.method, t.Name, func() (policy.ToolAnnotations, bool) {
 			return toolAnnotations(t)
 		})
@@ -79,15 +79,15 @@ func toolAnnotations(t *mcp.Tool) (policy.ToolAnnotations, bool) {
 
 // visible reports whether one item survives policy and the rule's cap.
 func (f *listFilter) visible(upstreamID, name string) bool {
-	return f.decide(upstreamID, name, func() policy.Decision {
+	return f.decide(func() policy.Decision {
 		return f.policy.Decide(f.principal, upstreamID, f.method, name)
 	})
 }
 
 // decide applies one policy decision plus the rule's cap, and counts what
 // happened. The decision is a thunk so the two callers differ only in what
-// evidence they supply.
-func (f *listFilter) decide(upstreamID, name string, decide func() policy.Decision) bool {
+// evidence they supply — each closes over the item it is deciding about.
+func (f *listFilter) decide(decide func() policy.Decision) bool {
 	f.offered++
 	d := decide()
 	if !d.Allowed {
