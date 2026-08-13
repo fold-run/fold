@@ -197,3 +197,78 @@ func TestClaimsCombineWithGroups(t *testing.T) {
 		t.Error("claim without group should deny")
 	}
 }
+
+// TestDenyWinsRegardlessOfOrder is the whole claim of deny rules. The same two
+// rules are evaluated in both orders and must reach the same answer — that is
+// what "globally" means, and it is why fold does not use first-match here: a
+// rule whose correctness depends on where it was pasted will eventually be
+// pasted in the wrong place.
+func TestDenyWinsRegardlessOfOrder(t *testing.T) {
+	broadAllow := config.PolicyRule{
+		ID:    "support-billing",
+		Allow: []config.PolicyAllow{{Server: "billing"}},
+	}
+	carveOut := config.PolicyRule{
+		ID:   "no-refunds",
+		Deny: []config.PolicyAllow{{Server: "billing", Names: []string{"refund_*"}}},
+	}
+
+	for _, order := range []struct {
+		name  string
+		rules []config.PolicyRule
+	}{
+		{"allow first", []config.PolicyRule{broadAllow, carveOut}},
+		{"deny first", []config.PolicyRule{carveOut, broadAllow}},
+	} {
+		e := New(&config.Policy{DefaultDecision: "deny", Rules: order.rules})
+		if d := e.Decide(nil, "billing", "tools/call", "refund_order"); d.Allowed {
+			t.Errorf("%s: refund_order allowed; deny must not be overridable", order.name)
+		} else if d.RuleID != "no-refunds" {
+			t.Errorf("%s: denial rule = %q, want no-refunds — an explicit refusal owes the operator its rule", order.name, d.RuleID)
+		}
+		if !e.Decide(nil, "billing", "tools/call", "read_invoice").Allowed {
+			t.Errorf("%s: the carve-out swallowed the rest of the grant", order.name)
+		}
+	}
+}
+
+// TestDenyIsScopedToItsSubjects keeps deny from becoming a global kill switch:
+// it is a rule like any other, and a rule that does not match this principal
+// has nothing to say about them.
+func TestDenyIsScopedToItsSubjects(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{
+			{ID: "everyone-billing", Allow: []config.PolicyAllow{{Server: "billing"}}},
+			{
+				ID:       "contractors-no-refunds",
+				Subjects: &config.PolicySubjects{Groups: []string{"contractors"}},
+				Deny:     []config.PolicyAllow{{Server: "billing", Names: []string{"refund_*"}}},
+			},
+		},
+	})
+	staff := &auth.Principal{Subject: "alice", Groups: []string{"staff"}}
+	contractor := &auth.Principal{Subject: "bob", Groups: []string{"contractors"}}
+
+	if !e.Decide(staff, "billing", "tools/call", "refund_order").Allowed {
+		t.Error("a deny scoped to contractors refused staff")
+	}
+	if e.Decide(contractor, "billing", "tools/call", "refund_order").Allowed {
+		t.Error("contractor refund was not denied")
+	}
+}
+
+// TestDenyRuleNeedsNoAllow: a document may carve out of a grant written
+// elsewhere, so deny stands alone.
+func TestDenyRuleNeedsNoAllow(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "allow",
+		Rules:           []config.PolicyRule{{ID: "nobody-deletes", Deny: []config.PolicyAllow{{Server: "*", Names: []string{"delete_*"}}}}},
+	})
+	if e.Decide(nil, "any", "tools/call", "delete_everything").Allowed {
+		t.Error("deny must override an allow-by-default posture too")
+	}
+	if !e.Decide(nil, "any", "tools/call", "list_things").Allowed {
+		t.Error("unrelated call refused")
+	}
+}

@@ -219,7 +219,12 @@ reason would make clients handle distinctions they cannot act on.
 
 1. **Deny rules.** Config, the deny-wins evaluation with the no-deny
    short-circuit preserved, list filtering and invocation together, and a
-   benchmark showing the unused case unchanged.
+   benchmark showing the unused case unchanged. **Shipped**, and the benchmark
+   says what was promised: a deny-free document decides in 73.8 ns against
+   72.7 ns before the change, zero allocations either way, while a document
+   whose deny rule matches the caller pays 92.7 ns for the full scan. The
+   schema needed `anyOf` to express "allow or deny, at least one", since
+   `allow` stopped being required.
 2. **Argument constraints.** Config, conditional parsing, call-path enforcement,
    the visible-but-conditional asymmetry documented in the README's policy
    section, and `make bench` on a document that uses them.
