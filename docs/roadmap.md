@@ -274,6 +274,23 @@ Non-negotiables: off by default, latency-budgeted with a documented cost,
 fail-open or fail-closed as a deliberate configuration choice, and its own
 audit outcome so a hook denial is as visible as a policy denial.
 
+Designed in [design-decision-hook.md](design-decision-hook.md), which draws
+the line the feature lives or dies on: the hook **decides**, and cannot
+rewrite. A hook that could edit traffic would be the transformation non-goal
+with an extra hop — fold buffering and mutating bodies, behavior through the
+gateway no longer matching the upstream, and the conformance suite enforcing a
+fiction. A hook that wants content changed refuses the call and says why.
+
+Three things the record settles rather than leaves to implementation. The
+ingress stage sits *after* policy, so the hook's allow is necessary but never
+sufficient and it never sees traffic the gateway has already refused. Both
+`timeoutMs` and `onError` are required with no defaults, because "deliberate
+configuration choice" means refusing to start without one — and because
+guessing between fail-open and fail-closed would be wrong half the time, in a
+direction the operator discovers during an incident. And sending arguments and
+results to a second endpoint is a data-egress decision, which the
+documentation states in those words rather than leaving an operator to notice.
+
 ### 10. Tenant as a first-class object — **shipped**
 
 Tenancy used to be emergent — issuer-pinned policy rules, per-principal
