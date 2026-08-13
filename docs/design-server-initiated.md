@@ -1,6 +1,6 @@
 # Design: governing server-initiated requests
 
-Status: **proposed**. This records the design for governing the traffic that
+Status: **phase 1 shipped**, the rest proposed. This records the design for governing the traffic that
 flows *from* an upstream *to* the caller — `sampling/createMessage` and
 `elicitation/create` — which fold bridges today and does not govern. It settles
 the questions that surface raises before any of it is built.
@@ -225,6 +225,13 @@ exactly as it does today.
 1. **Decide and refuse** — `bridgeFor(req, u)`, the policy check in both
    handlers, `serverInitiatedDecision`, `-32042` to the upstream, audit events
    with `direction`. Integration tests with a real SDK upstream that samples.
+   **Shipped.** Two things implementation added to this plan. `bridgeFor` grew
+   a `bridgeKey` sibling, because `logging/setLevel` bridges to every visible
+   upstream at once and the options now differ per upstream — they carry a
+   decision about one. And the audit event is emitted *after* the client
+   answers rather than at the decision: an allowed request is not a terminal
+   response until there is a response, and on an elicitation the interesting
+   number is how long the human took.
 2. **The pair** — intersect declared capabilities with policy at session
    connect; test that a denied upstream sees no sampling capability *and* is
    refused if it asks anyway.
