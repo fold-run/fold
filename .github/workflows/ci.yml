@@ -134,3 +134,43 @@ jobs:
 
       - name: vendored console matches its pin
         run: make console-check
+
+  # The release images are built here without pushing, because the release
+  # workflow's image job only runs on a tag — so a Dockerfile that cannot
+  # build sat on main through two green merges and failed at the one moment
+  # it is expensive to discover, after the tag was pushed and the binaries
+  # and chart had already published. The specific skew was a builder base
+  # pinned below the version go.mod requires, which the image cannot fix at
+  # build time because it sets GOTOOLCHAIN=local. Single-platform on purpose:
+  # this gate is "does it build", and cross-building both arches per PR buys
+  # nothing the release job does not already prove.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: build gateway image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/fold.Dockerfile
+          push: false
+          build-args: VERSION=ci
+
+      - name: build stdio image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/stdio.Dockerfile
+          push: false
+          build-args: VERSION=ci
+
+      - name: build discovery image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/discovery.Dockerfile
+          push: false
+          build-args: VERSION=ci

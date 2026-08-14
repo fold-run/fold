@@ -1,4 +1,10 @@
-FROM golang:1.26@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af AS build
+# The tag names the patch, not just the minor. The image sets
+# GOTOOLCHAIN=local, so it cannot fetch a newer toolchain than it ships: this
+# base must be at least the version go.mod requires, and bumping go.mod is
+# what makes this line stale. Pinned as golang:1.26 it read as current while
+# the digest held an older patch, and the build broke silently — the image is
+# only built on release tags, so CI stayed green until the tag was pushed.
+FROM golang:1.26.6@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e16eccd4205 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

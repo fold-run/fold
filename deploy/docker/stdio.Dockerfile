@@ -16,7 +16,9 @@
 # stage if a stage ever needs to read it.
 ARG RUNTIME_BASE=node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 
-FROM golang:1.26@sha256:7caba5286b4c3613a337b709c573047d8ae62ee76106647313b61e72b99f20af AS build
+# Patch-level pin: the image sets GOTOOLCHAIN=local, so this base must be at
+# least the version go.mod requires. See fold.Dockerfile.
+FROM golang:1.26.6@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e16eccd4205 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
