@@ -682,6 +682,17 @@ type AuditSink struct {
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 
+	// BearerSecretRef names an environment variable holding a bearer token
+	// for the sink, so the credential is not in the config document. Same
+	// convention as discovery's and the decision hook's.
+	//
+	// It exists because `headers` takes static values: a receiver that
+	// authenticates leaves the operator writing the token into the document
+	// itself, which is then the one part of a fold config that cannot be
+	// checked in, logged, or handed to anybody debugging a federation. The
+	// audit trail is exactly the sink most likely to need a credential.
+	BearerSecretRef string `json:"bearerSecretRef,omitempty"`
+
 	// Path is the file a "file" sink appends to, one JSON event per line.
 	Path string `json:"path,omitempty"`
 	// MaxSizeMb rotates the file once it exceeds this size (default 100).
@@ -1257,6 +1268,13 @@ func (c *Config) Validate() error {
 				if s.URL == "" {
 					return fmt.Errorf("audit: webhook sink requires a url")
 				}
+				// One way to say a thing. Both set is not a merge to guess at
+				// — it is two authors disagreeing, and the wrong guess sends
+				// the audit trail somewhere with the wrong credential.
+				if s.BearerSecretRef != "" && hasAuthorizationHeader(s.Headers) {
+					return fmt.Errorf(
+						"audit: webhook sink sets both bearerSecretRef and an Authorization header")
+				}
 			case "file":
 				if s.Path == "" {
 					return fmt.Errorf("audit: file sink requires a path")
@@ -1278,6 +1296,12 @@ func (c *Config) Validate() error {
 				}
 			default:
 				return fmt.Errorf("audit: unknown sink type %q", s.Type)
+			}
+			if s.BearerSecretRef != "" && s.Type != "webhook" {
+				// Named for a sink that does not make requests, this would be
+				// silently ignored — and a credential that looks configured
+				// and is not is worse than one that is missing.
+				return fmt.Errorf("audit: bearerSecretRef applies to webhook sinks, not %q", s.Type)
 			}
 			if s.MaxSizeMb < 0 || s.MaxFiles < 0 {
 				return fmt.Errorf("audit: maxSizeMb and maxFiles must not be negative")
@@ -1446,4 +1470,16 @@ func (c *Config) ConsoleOAuthIssuer() (*Issuer, error) {
 // (a single upstream with no namespace).
 func (c *Config) Passthrough() bool {
 	return len(c.Upstreams) == 1 && c.Upstreams[0].Namespace == ""
+}
+
+// hasAuthorizationHeader reports whether a header map already carries one,
+// whatever case it was written in — HTTP header names are case-insensitive
+// and a config file is written by hand.
+func hasAuthorizationHeader(headers map[string]string) bool {
+	for name := range headers {
+		if strings.EqualFold(name, "Authorization") {
+			return true
+		}
+	}
+	return false
 }

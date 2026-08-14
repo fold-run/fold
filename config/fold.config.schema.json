@@ -282,6 +282,7 @@
           "type": "object",
           "additionalProperties": { "type": "string" }
         },
+        "bearerSecretRef": { "type": "string" },
         "path": { "type": "string" },
         "maxSizeMb": { "type": "integer", "minimum": 0 },
         "maxFiles": { "type": "integer", "minimum": 0 },

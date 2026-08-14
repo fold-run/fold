@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -157,5 +158,78 @@ func TestWebhookSinkRefusesRedirect(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := attackerHits.Load(); n != 0 {
 		t.Fatalf("redirect target received %d deliveries; redirects must be refused", n)
+	}
+}
+
+// TestWebhookBearerSecretRef covers the reason this exists: `headers` takes
+// static values, so a receiver that authenticates leaves the token written
+// into the config document — the one part of a fold config that then cannot
+// be checked in, logged, or handed to somebody debugging a federation. The
+// audit trail is the sink most likely to need a credential.
+func TestWebhookBearerSecretRef(t *testing.T) {
+	var got string
+	received := make(chan struct{}, 1)
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer sink.Close()
+
+	t.Setenv("AUDIT_TOKEN", "s3cret")
+	logger := New(&config.Audit{Sinks: []config.AuditSink{{
+		Type: "webhook", URL: sink.URL, BearerSecretRef: "AUDIT_TOKEN",
+	}}})
+	if errs := logger.StartupErrors(); len(errs) != 0 {
+		t.Fatalf("startup errors: %v", errs)
+	}
+	logger.Emit(Event{Method: "tools/call"})
+
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no delivery")
+	}
+	logger.Close()
+
+	if got != "Bearer s3cret" {
+		t.Fatalf("Authorization = %q", got)
+	}
+}
+
+// A sink told to authenticate and unable to must not deliver unauthenticated:
+// the receiver refuses the batch, it retries, it dead-letters, and the trail
+// looks delivered while it is not. Saying so once at startup is the honest
+// failure.
+func TestWebhookBearerSecretRefEmptyIsAStartupError(t *testing.T) {
+	t.Setenv("AUDIT_TOKEN", "")
+	logger := New(&config.Audit{Sinks: []config.AuditSink{{
+		Type: "webhook", URL: "https://sink.test/audit", BearerSecretRef: "AUDIT_TOKEN",
+	}}})
+
+	errs := logger.StartupErrors()
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "AUDIT_TOKEN") {
+		t.Fatalf("startup errors = %v, want one naming the variable", errs)
+	}
+}
+
+// The caller's config is not written into. A sink that mutates the map it was
+// handed leaves a credential in whatever that caller does with it next.
+func TestWebhookBearerSecretRefDoesNotMutateTheConfig(t *testing.T) {
+	t.Setenv("AUDIT_TOKEN", "s3cret")
+	headers := map[string]string{"X-Fold": "yes"}
+	cfg := &config.Audit{Sinks: []config.AuditSink{{
+		Type: "webhook", URL: "https://sink.test/audit",
+		Headers: headers, BearerSecretRef: "AUDIT_TOKEN",
+	}}}
+
+	logger := New(cfg)
+	logger.Close()
+
+	if _, leaked := headers["Authorization"]; leaked {
+		t.Fatalf("the credential was written into the caller's headers: %v", headers)
 	}
 }
