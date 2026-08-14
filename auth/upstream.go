@@ -31,7 +31,20 @@ type UpstreamCredentials struct {
 
 	mu      sync.Mutex
 	tokens  map[string]*cachedToken // cache key → token ("" for client-credentials)
-	fetchMu map[string]*sync.Mutex  // per-key fetch serialization
+	fetchMu map[string]*fetchGate   // per-key fetch serialization
+}
+
+// fetchGate serializes the fetches for one cache key. waiters counts the
+// callers holding or queued behind it, so the gate can be dropped once the
+// last one leaves: a gate that outlived its fetch would otherwise persist for
+// every key ever fetched — including the keys whose fetch *failed*, which
+// never reach the token cache and so were never pruned with it. Under
+// token-exchange the key is (issuer, subject), an identifier the gateway does
+// not choose, so an unbounded gate map grows with the caller population and
+// never shrinks.
+type fetchGate struct {
+	mu      sync.Mutex
+	waiters int // guarded by UpstreamCredentials.mu
 }
 
 type cachedToken struct {
@@ -75,7 +88,7 @@ func NewUpstreamCredentials(cfg *config.UpstreamAuth, client *http.Client) *Upst
 		cfg:     cfg,
 		client:  &noRedirect,
 		tokens:  map[string]*cachedToken{},
-		fetchMu: map[string]*sync.Mutex{},
+		fetchMu: map[string]*fetchGate{},
 	}
 }
 
@@ -156,15 +169,26 @@ func (c *UpstreamCredentials) cachedFetch(ctx context.Context, key string, form 
 	}
 
 	c.mu.Lock()
-	fm := c.fetchMu[key]
-	if fm == nil {
-		fm = &sync.Mutex{}
-		c.fetchMu[key] = fm
+	g := c.fetchMu[key]
+	if g == nil {
+		g = &fetchGate{}
+		c.fetchMu[key] = g
 	}
+	g.waiters++
 	c.mu.Unlock()
 
-	fm.Lock()
-	defer fm.Unlock()
+	g.mu.Lock()
+	defer func() {
+		// Drop the gate once nobody is behind it. Held in the same order as
+		// the cache write below (gate, then c.mu) so the two cannot deadlock.
+		c.mu.Lock()
+		g.waiters--
+		if g.waiters == 0 {
+			delete(c.fetchMu, key)
+		}
+		c.mu.Unlock()
+		g.mu.Unlock()
+	}()
 
 	// Re-check: the goroutine we queued behind may have filled the entry.
 	if v, ok := c.cached(key); ok {
@@ -208,7 +232,6 @@ func (c *UpstreamCredentials) pruneLocked() {
 	for k, t := range c.tokens {
 		if !now.Before(t.expires) {
 			delete(c.tokens, k)
-			delete(c.fetchMu, k)
 		}
 	}
 	for k := range c.tokens {
@@ -216,7 +239,6 @@ func (c *UpstreamCredentials) pruneLocked() {
 			break
 		}
 		delete(c.tokens, k)
-		delete(c.fetchMu, k)
 	}
 }
 
