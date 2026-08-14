@@ -4,7 +4,7 @@ Release history for [fold](README.md), newest first. The compatibility
 contract these entries are written against is
 [API stability](README.md#api-stability).
 
-## Unreleased
+## v1.12.1 — 2026-08-13
 
 Per-caller upstream credentials were only half-implemented; this is the other half.
 
