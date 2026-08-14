@@ -4,6 +4,12 @@ Release history for [fold](README.md), newest first. The compatibility
 contract these entries are written against is
 [API stability](README.md#api-stability).
 
+## v1.13.0 — 2026-08-14
+
+An audit sink that authenticates no longer forces its token into the config.
+
+- **A webhook audit sink can take its bearer token by reference.** `headers` accepts static values only, so a receiver that authenticates left the operator writing the credential into the config document itself — which made that document the one part of a fold deployment that could not be checked into a repository, printed in a log, or handed to somebody debugging a federation. `discovery` and the external decision hook have both taken a `bearerSecretRef` since they existed; the audit sink is the third feature that makes outbound requests and was the only one without it, while the `AuditSink` struct's own comment pointed at the convention it could not use. Two things are refused rather than reconciled: setting both `bearerSecretRef` and an `Authorization` header, which is two authors disagreeing and where guessing sends the audit trail with the wrong credential — case-insensitively, since header names are and config files are written by hand — and naming the field on a sink that makes no requests, where it would be silently ignored. A variable that is empty at startup fails the sink loudly instead of delivering unauthenticated, because a receiver would refuse the batch, fold would retry it, and the trail would look delivered while accumulating in the dead-letter file.
+
 ## v1.12.2 — 2026-08-13
 
 The images v1.12.1 should have published.
