@@ -102,10 +102,9 @@ type upstream struct {
 	hadFailure       atomic.Bool
 	lastBreakerState atomic.Value // string
 
-	mu         sync.Mutex
-	session    *mcp.ClientSession       // root session
-	bridged    map[string]*bridgedEntry // downstream session ID → bridged session
-	subscribed map[string]bool          // URIs subscribed on the root session
+	mu      sync.Mutex
+	roots   map[string]*rootEntry    // caller key → root session (sharedRootKey when shared)
+	bridged map[string]*bridgedEntry // downstream session ID → bridged session
 
 	// decoded memoizes the parsed form of each cached list, so a warm cache
 	// hit does not re-run json.Unmarshal on every request (see cachedList).
@@ -164,6 +163,33 @@ type bridgedEntry struct {
 	lastUsed time.Time
 }
 
+// sharedRootKey files the single root session an upstream with a
+// gateway-configured credential uses on behalf of every caller.
+const sharedRootKey = ""
+
+// rootEntry is one root session — the connection the gateway uses for lists,
+// resource reads, subscriptions, completion and tasks.
+//
+// There is normally exactly one, shared by every caller under sharedRootKey.
+// An upstream whose credential is derived from the caller (passthrough,
+// token-exchange) gets one per principal instead, because such a session
+// cannot be shared honestly: the SDK detaches the connection context but
+// deliberately keeps its values, so whichever caller happened to open the
+// session is the identity that established it. Its initialize, its standalone
+// SSE stream, and every reconnect of that stream carry the first caller's
+// credential for as long as the connection lives — so a shared session would
+// hand one caller's upstream session to another, and would keep re-minting a
+// departed caller's exchanged token indefinitely.
+//
+// session is nil between a transport drop and the next reconnect; the entry
+// itself survives, because subscribed is what replays the caller's
+// subscriptions onto the replacement.
+type rootEntry struct {
+	session    *mcp.ClientSession
+	lastUsed   time.Time
+	subscribed map[string]bool
+}
+
 func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 	u := &upstream{
 		cfg:            cfg,
@@ -173,7 +199,7 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 		requestTimeout: defaultRequestTimeout,
 		cacheTTL:       defaultCacheTTL,
 		bridged:        map[string]*bridgedEntry{},
-		subscribed:     map[string]bool{},
+		roots:          map[string]*rootEntry{},
 		log:            slog.New(slog.DiscardHandler),
 	}
 	// The store is scoped per upstream, so a definition is pinned against the
@@ -540,6 +566,16 @@ func (u *upstream) startHealthProbes() {
 	if hc == nil || hc.IntervalMs <= 0 || u.probeStop != nil {
 		return
 	}
+	// A probe runs on no caller's behalf, so an upstream whose credential is
+	// derived from the caller has nothing to present: every probe would fail
+	// at Apply and eject every endpoint, taking the upstream down for the
+	// clients it works perfectly well for. Skipped rather than rejected at
+	// validation, so an existing config keeps serving.
+	if u.callerDerived() {
+		u.log.Warn("ignoring healthCheck: this upstream's credential is derived from the caller, so it cannot be probed without one",
+			"strategy", u.cfg.Auth.Strategy)
+		return
+	}
 	interval := hc.IntervalMs
 	// The same floor discovered upstreams get (clampDiscoveredUpstreams),
 	// applied to static config: a probe is a full MCP handshake per endpoint
@@ -606,18 +642,48 @@ func (u *upstream) probeEndpoints() {
 	wg.Wait()
 }
 
+// callerDerived reports whether this upstream's credential comes from the
+// caller (passthrough, token-exchange) rather than from the gateway's own
+// configuration. Such an upstream can only be reached on behalf of an
+// authenticated principal, which is what makes the credential-free paths —
+// health probes above all — unable to speak to it at all.
+func (u *upstream) callerDerived() bool { return u.creds.PerRequest() }
+
+// rootKey returns the key this request's root session lives under. A
+// gateway-configured credential shares one session across every caller; a
+// caller-derived one is partitioned per principal, keyed on (issuer,
+// subject) — the same key the exchanged-token cache uses, since sub is
+// unique only within an issuer and the gateway may trust several.
+func (u *upstream) rootKey(ctx context.Context) (string, error) {
+	if !u.callerDerived() {
+		return sharedRootKey, nil
+	}
+	p := auth.PrincipalFromContext(ctx)
+	if p == nil || p.Subject == "" || p.Issuer == "" {
+		return "", fmt.Errorf("upstream %q derives its credential from the caller "+
+			"and cannot be reached without an authenticated principal", u.cfg.ID)
+	}
+	return p.Issuer + "\x00" + p.Subject, nil
+}
+
 // rootSession connects (or reuses) the shared upstream session. List-changed
 // notifications invalidate the list caches; resource-updated notifications
 // are forwarded so subscribed clients hear them.
 func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) {
+	key, err := u.rootKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	u.mu.Lock()
-	if u.session != nil {
-		s := u.session
+	e := u.rootEntryLocked(key)
+	if e.session != nil {
+		s := e.session
 		u.mu.Unlock()
 		return s, nil
 	}
-	resub := make([]string, 0, len(u.subscribed))
-	for uri := range u.subscribed {
+	resub := make([]string, 0, len(e.subscribed))
+	for uri := range e.subscribed {
 		resub = append(resub, uri)
 	}
 	u.mu.Unlock()
@@ -660,14 +726,17 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 	}
 
 	u.mu.Lock()
-	if u.session != nil {
+	// Re-resolved rather than reused: the sweeper may have retired this entry
+	// while the connect was in flight.
+	e = u.rootEntryLocked(key)
+	if e.session != nil {
 		// Lost the race; use the winner.
-		s := u.session
+		s := e.session
 		u.mu.Unlock()
 		_ = session.Close()
 		return s, nil
 	}
-	u.session = session
+	e.session = session
 	u.mu.Unlock()
 
 	// Restore upstream subscriptions lost with the previous session.
@@ -720,12 +789,31 @@ func (u *upstream) bridgedSession(ctx context.Context, key string, opts bridgeOp
 	return session, nil
 }
 
+// rootEntryLocked returns the entry for key, creating it if this is the
+// first request under it. Caller holds u.mu. The entry outlives its session
+// so a reconnect can replay the subscriptions established on the old one;
+// touching lastUsed here is what keeps a caller's entry out of the sweep.
+func (u *upstream) rootEntryLocked(key string) *rootEntry {
+	e := u.roots[key]
+	if e == nil {
+		e = &rootEntry{subscribed: map[string]bool{}}
+		u.roots[key] = e
+	}
+	if key != sharedRootKey {
+		e.lastUsed = time.Now()
+	}
+	return e
+}
+
 func (u *upstream) dropSession(s *mcp.ClientSession) {
 	u.mu.Lock()
 	dropped := false
-	if u.session == s {
-		u.session = nil
-		dropped = true
+	for _, e := range u.roots {
+		if e.session == s {
+			// The entry stays: its subscriptions replay on the reconnect.
+			e.session = nil
+			dropped = true
+		}
 	}
 	for key, e := range u.bridged {
 		if e.session == s {
@@ -742,23 +830,57 @@ func (u *upstream) dropSession(s *mcp.ClientSession) {
 	}
 }
 
-// subscribedURIs returns the URIs subscribed on the root session (used to
-// carry subscriptions over to a replacement upstream on reload).
+// subscribedURIs returns the URIs subscribed on any root session, deduped
+// (used to carry subscriptions over to a replacement upstream on reload).
 func (u *upstream) subscribedURIs() []string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	uris := make([]string, 0, len(u.subscribed))
-	for uri := range u.subscribed {
-		uris = append(uris, uri)
+	seen := map[string]bool{}
+	uris := make([]string, 0, len(u.roots))
+	for _, e := range u.roots {
+		for uri := range e.subscribed {
+			if !seen[uri] {
+				seen[uri] = true
+				uris = append(uris, uri)
+			}
+		}
 	}
 	return uris
 }
 
-// isSubscribed reports whether the root session holds a subscription for uri.
+// isSubscribed reports whether any root session holds a subscription for
+// uri. The gateway ref-counts downstream subscribers by URI, so "is this
+// upstream already subscribed" is the question it needs answered, whichever
+// caller's session carries it.
 func (u *upstream) isSubscribed(uri string) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.subscribed[uri]
+	for _, e := range u.roots {
+		if e.subscribed[uri] {
+			return true
+		}
+	}
+	return false
+}
+
+// markSubscribed records (or forgets) a subscription on the caller's own
+// root entry, so a reconnect replays exactly what that caller established.
+func (u *upstream) markSubscribed(ctx context.Context, uri string, on bool) {
+	key, err := u.rootKey(ctx)
+	if err != nil {
+		return // unreachable: the request that got here already resolved a key
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	e := u.roots[key]
+	if e == nil {
+		return
+	}
+	if on {
+		e.subscribed[uri] = true
+	} else {
+		delete(e.subscribed, uri)
+	}
 }
 
 // bridgedCount reports how many per-client sessions this upstream currently
@@ -769,7 +891,11 @@ func (u *upstream) bridgedCount() int {
 	return len(u.bridged)
 }
 
-// sweepBridged closes bridged sessions idle longer than bridgedIdleTimeout.
+// sweepBridged closes bridged sessions — and per-caller root sessions — idle
+// longer than bridgedIdleTimeout. Both maps are keyed by identifiers the
+// gateway does not choose (a downstream session id, a verified principal), so
+// the sweep is what bounds them: an entry survives only while its owner keeps
+// using it.
 func (u *upstream) sweepBridged() {
 	u.mu.Lock()
 	var stale []*mcp.ClientSession
@@ -779,9 +905,22 @@ func (u *upstream) sweepBridged() {
 			delete(u.bridged, key)
 		}
 	}
+	for key, e := range u.roots {
+		// The shared root is never swept: it belongs to the gateway rather
+		// than to any caller, and carries the federation's subscriptions.
+		if key == sharedRootKey || time.Since(e.lastUsed) <= bridgedIdleTimeout {
+			continue
+		}
+		if e.session != nil {
+			stale = append(stale, e.session)
+		}
+		delete(u.roots, key)
+	}
 	u.mu.Unlock()
 	for _, s := range stale {
-		_ = s.Close()
+		if s != nil {
+			_ = s.Close()
+		}
 	}
 }
 
@@ -791,8 +930,11 @@ func (u *upstream) Close() {
 		u.stopProbeOnce.Do(func() { close(u.probeStop) })
 	}
 	u.mu.Lock()
-	sessions := []*mcp.ClientSession{u.session}
-	u.session = nil
+	sessions := make([]*mcp.ClientSession, 0, len(u.roots)+len(u.bridged))
+	for _, e := range u.roots {
+		sessions = append(sessions, e.session)
+	}
+	u.roots = map[string]*rootEntry{}
 	for _, e := range u.bridged {
 		sessions = append(sessions, e.session)
 	}
@@ -1212,9 +1354,7 @@ func (u *upstream) subscribe(ctx context.Context, uri string) error {
 		return s.Subscribe(ctx, &mcp.SubscribeParams{URI: uri})
 	})
 	if err == nil {
-		u.mu.Lock()
-		u.subscribed[uri] = true
-		u.mu.Unlock()
+		u.markSubscribed(ctx, uri, true)
 	}
 	return err
 }
@@ -1224,9 +1364,7 @@ func (u *upstream) unsubscribe(ctx context.Context, uri string) error {
 		return s.Unsubscribe(ctx, &mcp.UnsubscribeParams{URI: uri})
 	})
 	if err == nil {
-		u.mu.Lock()
-		delete(u.subscribed, uri)
-		u.mu.Unlock()
+		u.markSubscribed(ctx, uri, false)
 	}
 	return err
 }

@@ -198,6 +198,23 @@ evicting one costs a re-exchange, never correctness; per-caller strategies
 (passthrough, token-exchange) require `auth.mode: "required"` and disable
 list caching so one caller's per-user list can never serve another.
 
+**A caller-derived credential also partitions the upstream session, not just
+the request.** Attaching credentials per request is necessary but not
+sufficient: the MCP session itself is established by whichever caller opened
+it, and that identity is durable — the SDK detaches the connection context
+but preserves its values, so the `initialize`, the standalone SSE stream, and
+every reconnect of that stream carry the opening caller's credential for as
+long as the connection lives. A shared session would therefore present one
+caller's identity to the upstream while carrying another's bearer on the
+request, which an upstream that scopes anything to the session it minted is
+entitled to resolve either way — and it would keep re-minting a departed
+caller's exchanged token indefinitely. So `passthrough` and `token-exchange`
+upstreams hold one root session per `(issuer, subject)`, the same key their
+token cache uses. Those sessions age out on the idle sweep that already
+bounds bridged sessions, because they are keyed by an identifier the gateway
+does not choose. Upstreams whose credential is the gateway's own keep the
+single shared session: their identity is the same whoever asks.
+
 The same redirect rule covers fold's other two credentialed outbound
 clients. The discovery poller refuses every redirect: the document decides
 where traffic routes, and Go only strips a bearer credential when a

@@ -230,6 +230,20 @@ reachable. The chart's probe defaults follow from that:
 - **Startup**: `httpGet /health` with a ~2-minute budget for first upstream
   connects and JWKS fetches.
 
+**Upstreams with caller-derived credentials are not probed at all.** A probe
+runs on nobody's behalf, so an upstream using `passthrough` or
+`token-exchange` has no credential to present: it reports `"unprobed": true`
+and counts as neither healthy nor unhealthy. This is not cosmetic. Pinging it
+anyway would fail on every poll, and that failure is not free — it consumes
+the upstream's rate budget, records a circuit-breaker failure (five polls
+open the circuit for the clients it serves perfectly well), and charges the
+upstream and server budgets once a real session exists. A federation made
+entirely of such upstreams answers `200`, so the pod becomes Ready; without
+that, `healthy == 0` would hold it out of rotation forever. For the same
+reason `healthCheck.intervalMs` is ignored on those upstreams, with a warning
+at startup — an active probe loop would eject every endpoint on its first
+round.
+
 The same split applies outside the chart — nomad checks, load-balancer
 target groups, uptime monitors, hand-written manifests. **Never use
 `/health` as a liveness/restart signal**: it answers `503` when every
