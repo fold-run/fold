@@ -176,15 +176,23 @@ func New(cfg *config.Audit, opts ...Option) *Logger {
 		case "stdout":
 			l.sinks = append(l.sinks, &stdoutSink{})
 		case "webhook":
+			headers, err := webhookHeaders(s)
+			if err != nil {
+				// Skipped rather than sent unauthenticated. A receiver that
+				// requires a credential will refuse the batch, retry it, and
+				// dead-letter it — an audit trail that looks delivered and is
+				// not. Failing at startup says so once, loudly.
+				l.startupErrs = append(l.startupErrs, err)
+				continue
+			}
 			var dl *deadLetter
 			if s.DeadLetterPath != "" {
-				var err error
 				if dl, err = newDeadLetter(s.DeadLetterPath, report); err != nil {
 					l.startupErrs = append(l.startupErrs, err)
 					dl = nil
 				}
 			}
-			w := newHTTPSink(s.URL, s.Headers, jsonBatch, resolveRetry(s.Retry), dl, report)
+			w := newHTTPSink(s.URL, headers, jsonBatch, resolveRetry(s.Retry), dl, report)
 			w.onPanic = l.panicHook
 			l.sinks = append(l.sinks, w)
 			l.closers = append(l.closers, w)
@@ -450,4 +458,33 @@ func (s *httpSink) post(data []byte) *postError {
 	default:
 		return &postError{err: fmt.Errorf("audit webhook: status %d", resp.StatusCode), retryable: false}
 	}
+}
+
+// webhookHeaders resolves what a webhook sink sends.
+//
+// The configured headers, plus the bearer token named by bearerSecretRef —
+// which exists so the credential is not in the config document, the same way
+// discovery and the decision hook take theirs. An empty variable is an error
+// rather than an omission: a sink configured to authenticate and silently not
+// doing so delivers nothing and says nothing.
+func webhookHeaders(s config.AuditSink) (map[string]string, error) {
+	if s.BearerSecretRef == "" {
+		return s.Headers, nil
+	}
+	token := os.Getenv(s.BearerSecretRef)
+	if token == "" {
+		return nil, fmt.Errorf(
+			"audit webhook %s: bearerSecretRef %s: environment variable is empty",
+			s.URL, s.BearerSecretRef)
+	}
+
+	// Copied rather than written into: the config belongs to the caller, and
+	// a sink that mutates it leaves a credential in whatever the caller does
+	// with that map next.
+	headers := make(map[string]string, len(s.Headers)+1)
+	for k, v := range s.Headers {
+		headers[k] = v
+	}
+	headers["Authorization"] = "Bearer " + token
+	return headers, nil
 }

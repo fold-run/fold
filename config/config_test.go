@@ -191,3 +191,48 @@ func TestHostAllowed(t *testing.T) {
 		}
 	}
 }
+
+// bearerSecretRef exists so an authenticating audit receiver does not force
+// the token into the config document. These are the ways of asking for it
+// that would be ambiguous or silently ignored.
+func TestAuditBearerSecretRefIsChecked(t *testing.T) {
+	cases := []struct{ name, json, wantErr string }{
+		{
+			// Two authors disagreeing, not a merge to guess at — and the
+			// wrong guess sends the audit trail with the wrong credential.
+			"both a bearerSecretRef and an Authorization header",
+			`{"upstreams":[{"id":"a","url":"https://x.test/mcp"}],"audit":{"sinks":[{"type":"webhook","url":"https://sink.test","bearerSecretRef":"T","headers":{"Authorization":"Bearer other"}}]}}`,
+			"bearerSecretRef",
+		},
+		{
+			// HTTP header names are case-insensitive and a config file is
+			// written by hand.
+			"the header in another case",
+			`{"upstreams":[{"id":"a","url":"https://x.test/mcp"}],"audit":{"sinks":[{"type":"webhook","url":"https://sink.test","bearerSecretRef":"T","headers":{"authorization":"Bearer other"}}]}}`,
+			"bearerSecretRef",
+		},
+		{
+			// A credential that looks configured and is not is worse than one
+			// that is missing.
+			"on a sink that makes no requests",
+			`{"upstreams":[{"id":"a","url":"https://x.test/mcp"}],"audit":{"sinks":[{"type":"file","path":"/tmp/a.jsonl","bearerSecretRef":"T"}]}}`,
+			"bearerSecretRef",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.json))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestAuditBearerSecretRefAloneIsAccepted(t *testing.T) {
+	if _, err := Parse([]byte(
+		`{"upstreams":[{"id":"a","url":"https://x.test/mcp"}],"audit":{"sinks":[{"type":"webhook","url":"https://sink.test","bearerSecretRef":"T","headers":{"X-Fold":"yes"}}]}}`,
+	)); err != nil {
+		t.Fatalf("bearerSecretRef with ordinary headers should validate: %v", err)
+	}
+}

@@ -224,6 +224,7 @@ Denials get their own audit outcome (`hook_denied`) so an operator can tell thei
       "type": "webhook",
       "url": "https://siem.example.com/ingest",
       "headers": { "x-api-key": "..." },
+      "bearerSecretRef": "FOLD_AUDIT_TOKEN",
       "retry": { "maxAttempts": 4, "initialBackoffMs": 500, "maxBackoffMs": 30000 },
       "deadLetterPath": "/var/log/fold/audit-dead.jsonl"
     }
@@ -237,7 +238,7 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 |---|---|---|
 | `stdout` | — | One JSON line per event. |
 | `file` | `path`, `maxSizeMb` (100), `maxFiles` (5) | One JSON line per event, rotated by size. Rotation renames in place (`audit.jsonl` → `.1` → `.2`), so a tail or log shipper watching the live name survives it, and the file count is bounded — a gateway that fills its disk with its own audit trail has found a novel way to stop serving. |
-| `webhook` | `url`, `headers`, `retry`, `deadLetterPath` | Batched POSTs. Redirects are refused outright: the request carries the sink's token and records naming principals and tools. |
+| `webhook` | `url`, `headers`, `bearerSecretRef`, `retry`, `deadLetterPath` | Batched POSTs. Redirects are refused outright: the request carries the sink's token and records naming principals and tools. `bearerSecretRef` names an environment variable holding a bearer token, the same convention `discovery` and the decision hook use — `headers` takes static values, so without it a receiver that authenticates forces the credential into the config document, which is then the one part of a fold config that cannot be checked in, logged, or handed to somebody debugging a federation. Setting both it and an `Authorization` header is rejected rather than merged, and a variable that is empty at startup fails the sink loudly instead of delivering unauthenticated: a receiver would refuse the batch, fold would retry it, and the trail would look delivered while landing in the dead-letter file. |
 | `otlp-logs` | `url`, `headers`, `retry`, `deadLetterPath` | OpenTelemetry log records over OTLP/HTTP, via the OTel SDK's own exporter — the wire format is not hand-rolled. A bare base URL (`http://collector:4318`) gets OTLP's `/v1/logs` path, matching the `tracing` section's convention. The event's fields become attributes under the same names fold's spans use (`mcp.method`, `fold.upstream`, `fold.tenant`, `enduser.id`), so a trace and its audit record join on the same keys; the body is a short summary, and the outcome sets severity — a refusal is `WARN`, not `ERROR`, because policy denying a call is the gateway working. |
 
 **Delivery is retried, and what it cannot deliver is kept.** A failing POST is retried with exponential backoff and equal jitter — `maxAttempts` 4, `initialBackoffMs` 500, `maxBackoffMs` 30000 by default, so a receiver restarting costs nothing. Retry is on without configuration, because the alternative is losing exactly the events someone will later go looking for. A `4xx` other than `429` is not retried: a receiver that rejects the payload will reject it identically four times. When attempts run out, events are appended to `deadLetterPath` for replay; without one they are counted and gone.
