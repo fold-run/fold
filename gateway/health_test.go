@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -101,5 +103,122 @@ func TestHealthzIsGone(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("/healthz status = %d, want 404 — the alias was removed in v1.9", resp.StatusCode)
+	}
+}
+
+// TestHealthDoesNotProbeCallerDerivedUpstreams proves a federation whose
+// credentials belong to the caller is reported unprobed rather than down. A
+// probe carries no principal, so pinging such an upstream fails at Apply on
+// every poll — which used to charge its budget, record a breaker failure
+// (five polls open the circuit), and leave /health answering 503 forever, so
+// an orchestrator never marked the process ready while it was serving every
+// authenticated caller correctly.
+func TestHealthDoesNotProbeCallerDerivedUpstreams(t *testing.T) {
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "tool")
+	ts, g := startGateway(t, authedConfig(iss, []config.Upstream{
+		{ID: "u", URL: up.URL, Auth: &config.UpstreamAuth{Strategy: "passthrough"}, CacheTTLMs: -1},
+	}, nil))
+
+	// Well past the breaker's default failure threshold of 5. Collected
+	// directly rather than over HTTP so the 1s health cache does not turn the
+	// loop into a single collection.
+	for i := range 10 {
+		statuses, healthy, probeable := g.collectUpstreamHealth(context.Background(), g.rt())
+		if len(statuses) != 1 {
+			t.Fatalf("collection %d returned %d statuses, want 1", i, len(statuses))
+		}
+		if !statuses[0].Unprobed {
+			t.Fatalf("collection %d: caller-derived upstream was probed anyway (connected=%v err=%q)",
+				i, statuses[0].Connected, statuses[0].Error)
+		}
+		if probeable != 0 || healthy != 0 {
+			t.Fatalf("collection %d: healthy=%d probeable=%d, want 0/0 — an unprobed upstream is neither",
+				i, healthy, probeable)
+		}
+	}
+
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/health = %d, want 200: nothing is probeable, so nothing is down", resp.StatusCode)
+	}
+	var body struct {
+		Status    string `json:"status"`
+		Upstreams []struct {
+			Connected bool `json:"connected"`
+			Unprobed  bool `json:"unprobed"`
+		} `json:"upstreams"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "ok" {
+		t.Errorf("/health status = %q, want ok", body.Status)
+	}
+	if len(body.Upstreams) != 1 || !body.Upstreams[0].Unprobed || body.Upstreams[0].Connected {
+		t.Errorf("/health upstreams = %+v, want one unprobed and not connected", body.Upstreams)
+	}
+
+	// The circuit is the point: after ten collections the upstream must still
+	// serve the callers it can actually authenticate.
+	session := connect(t, ts.URL, map[string]string{
+		"Authorization": "Bearer " + iss.mint(t, "dana", "https://gw.example.com", nil),
+	})
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool"}); err != nil {
+		t.Fatalf("health collection tripped the upstream for real callers: %v", err)
+	}
+}
+
+// TestHealthStillReportsProbeableUpstreamsDown proves the unprobed carve-out
+// is not a blanket amnesty: an upstream the gateway *can* reach still decides
+// the verdict, and a federation with nothing reachable still answers 503.
+func TestHealthStillReportsProbeableUpstreamsDown(t *testing.T) {
+	iss := newFixtureIssuer(t)
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusBadGateway)
+	}))
+	t.Cleanup(dead.Close)
+	live, _ := newUpstreamServer(t, "tool")
+
+	ts, _ := startGateway(t, authedConfig(iss, []config.Upstream{
+		{ID: "caller", URL: live.URL, Namespace: "caller",
+			Auth: &config.UpstreamAuth{Strategy: "passthrough"}, CacheTTLMs: -1},
+		{ID: "dead", URL: dead.URL, Namespace: "dead"},
+	}, nil))
+
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("/health = %d, want 503: the one probeable upstream is down", resp.StatusCode)
+	}
+}
+
+// TestActiveProbesSkipCallerDerivedUpstreams proves healthCheck is ignored
+// for an upstream whose credential belongs to the caller. Probing it would
+// fail at Apply every interval and eject every endpoint, taking the upstream
+// down for the clients it serves perfectly well.
+func TestActiveProbesSkipCallerDerivedUpstreams(t *testing.T) {
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "tool")
+	_, g := startGateway(t, authedConfig(iss, []config.Upstream{
+		{ID: "u", URL: up.URL, Auth: &config.UpstreamAuth{Strategy: "passthrough"},
+			CacheTTLMs: -1, HealthCheck: &config.HealthCheck{IntervalMs: 1}},
+	}, nil))
+
+	u := g.rt().upstreams[0]
+	if u.probeStop != nil {
+		t.Fatal("the probe loop started for a caller-derived upstream")
+	}
+	for _, ep := range u.endpoints.snapshot(true) {
+		if !ep.Healthy {
+			t.Fatalf("endpoint %q was ejected by a probe that cannot hold a credential", ep.URL)
+		}
 	}
 }

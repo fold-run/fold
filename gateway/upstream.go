@@ -540,6 +540,16 @@ func (u *upstream) startHealthProbes() {
 	if hc == nil || hc.IntervalMs <= 0 || u.probeStop != nil {
 		return
 	}
+	// A probe runs on no caller's behalf, so an upstream whose credential is
+	// derived from the caller has nothing to present: every probe would fail
+	// at Apply and eject every endpoint, taking the upstream down for the
+	// clients it works perfectly well for. Skipped rather than rejected at
+	// validation, so an existing config keeps serving.
+	if u.callerDerived() {
+		u.log.Warn("ignoring healthCheck: this upstream's credential is derived from the caller, so it cannot be probed without one",
+			"strategy", u.cfg.Auth.Strategy)
+		return
+	}
 	interval := hc.IntervalMs
 	// The same floor discovered upstreams get (clampDiscoveredUpstreams),
 	// applied to static config: a probe is a full MCP handshake per endpoint
@@ -605,6 +615,13 @@ func (u *upstream) probeEndpoints() {
 	}
 	wg.Wait()
 }
+
+// callerDerived reports whether this upstream's credential comes from the
+// caller (passthrough, token-exchange) rather than from the gateway's own
+// configuration. Such an upstream can only be reached on behalf of an
+// authenticated principal, which is what makes the credential-free paths —
+// health probes above all — unable to speak to it at all.
+func (u *upstream) callerDerived() bool { return u.creds.PerRequest() }
 
 // rootSession connects (or reuses) the shared upstream session. List-changed
 // notifications invalidate the list caches; resource-updated notifications

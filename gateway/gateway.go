@@ -1618,6 +1618,16 @@ type upstreamHealth struct {
 	LatencyMs int64             `json:"latencyMs,omitempty"`
 	Error     string            `json:"error,omitempty"`
 
+	// Unprobed marks an upstream the gateway cannot check on its own: one
+	// whose credential is derived from the caller (passthrough,
+	// token-exchange) has none outside a request, so there is no honest
+	// liveness check to run. Such an upstream is reported unprobed rather
+	// than down, and counts as neither healthy nor unhealthy — pinging it
+	// would fail on every poll, charge the upstream's budget, and trip its
+	// breaker for the clients it serves correctly. Omitted when false, so a
+	// federation without caller-derived credentials keeps its exact shape.
+	Unprobed bool `json:"unprobed,omitempty"`
+
 	// Endpoints reports the balancer's per-replica view for multi-endpoint
 	// upstreams (URLs only on trusted deployments, like URL above).
 	Endpoints []endpointStatus `json:"endpoints,omitempty"`
@@ -1636,7 +1646,7 @@ type upstreamHealth struct {
 // a trusted and an untrusted caller. Callers pass the snapshot they are
 // already answering from, so one request never mixes two worlds across a
 // reload.
-func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes) (statuses []upstreamHealth, healthy int) {
+func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes) (statuses []upstreamHealth, healthy, probeable int) {
 	upstreams := rt.upstreams
 	statuses = make([]upstreamHealth, len(upstreams))
 	var wg sync.WaitGroup
@@ -1660,6 +1670,17 @@ func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes) (status
 			if len(u.cfg.URLs) > 0 {
 				h.Endpoints = u.endpoints.snapshot(true)
 			}
+			// A ping carries no principal, so a caller-derived credential
+			// cannot be resolved for it. Pinging anyway would fail at Apply,
+			// and that failure is not free: it consumes the upstream's rate
+			// budget, records a breaker failure — five polls open the circuit
+			// — and, once a real session exists, charges the upstream and
+			// server budgets for traffic no caller asked for.
+			if u.callerDerived() {
+				h.Unprobed = true
+				statuses[i] = h
+				return
+			}
 			start := time.Now()
 			if err := u.ping(ctx); err != nil {
 				h.Error = err.Error()
@@ -1672,11 +1693,15 @@ func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes) (status
 	}
 	wg.Wait()
 	for _, s := range statuses {
+		if s.Unprobed {
+			continue
+		}
+		probeable++
 		if s.Connected {
 			healthy++
 		}
 	}
-	return statuses, healthy
+	return statuses, healthy, probeable
 }
 
 // redactUpstreamHealth strips the fields an untrusted caller must not see:
@@ -1714,17 +1739,18 @@ const (
 // bounded to one fan-out per TTL. A snapshot swap (reload, discovery sync)
 // invalidates immediately, so a probe never answers from a retired world.
 type healthCache struct {
-	mu       sync.Mutex
-	rt       *routes
-	at       time.Time
-	statuses []upstreamHealth
-	healthy  int
+	mu        sync.Mutex
+	rt        *routes
+	at        time.Time
+	statuses  []upstreamHealth
+	healthy   int
+	probeable int
 }
 
 // upstreamHealthFor returns the (possibly cached) full health view for rt.
 // The returned slice is the caller's own copy: redaction and console
 // annotation mutate it freely.
-func (g *Gateway) upstreamHealthFor(ctx context.Context, rt *routes) (statuses []upstreamHealth, healthy int) {
+func (g *Gateway) upstreamHealthFor(ctx context.Context, rt *routes) (statuses []upstreamHealth, healthy, probeable int) {
 	c := &g.health
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1733,26 +1759,31 @@ func (g *Gateway) upstreamHealthFor(ctx context.Context, rt *routes) (statuses [
 		// client hanging up must not cancel the pings every other waiter is
 		// about to read.
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), healthFanoutTimeout)
-		c.statuses, c.healthy = g.collectUpstreamHealth(fctx, rt)
+		c.statuses, c.healthy, c.probeable = g.collectUpstreamHealth(fctx, rt)
 		cancel()
 		c.rt, c.at = rt, time.Now()
 	}
-	return append([]upstreamHealth(nil), c.statuses...), c.healthy
+	return append([]upstreamHealth(nil), c.statuses...), c.healthy, c.probeable
 }
 
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
-	statuses, healthy := g.upstreamHealthFor(r.Context(), g.rt())
+	statuses, healthy, probeable := g.upstreamHealthFor(r.Context(), g.rt())
 	if g.cfg.AuthRequired() {
 		redactUpstreamHealth(statuses)
 	}
+	// Unreachable-when-nothing-is-reachable, judged against what the gateway
+	// can actually reach: a federation made entirely of caller-derived
+	// upstreams has nothing to probe, and reporting it down would leave the
+	// process permanently unready while it serves every authenticated caller
+	// correctly.
 	code := http.StatusOK
-	if healthy == 0 {
+	if probeable > 0 && healthy == 0 {
 		code = http.StatusServiceUnavailable
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":    map[bool]string{true: "ok", false: "degraded"}[healthy == len(statuses)],
+		"status":    map[bool]string{true: "ok", false: "degraded"}[healthy == probeable],
 		"version":   version,
 		"upstreams": statuses,
 	})

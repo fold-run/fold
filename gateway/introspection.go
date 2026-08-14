@@ -105,7 +105,7 @@ func (g *Gateway) handleFederationState(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	rt := g.rt()
-	statuses, _ := g.upstreamHealthFor(r.Context(), rt)
+	statuses, _, _ := g.upstreamHealthFor(r.Context(), rt)
 	if g.cfg.AuthRequired() {
 		// Any valid principal may read this — including tenants with zero
 		// policy grants — so raw connect errors, which can name secret env
