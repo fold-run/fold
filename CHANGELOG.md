@@ -4,6 +4,12 @@ Release history for [fold](README.md), newest first. The compatibility
 contract these entries are written against is
 [API stability](README.md#api-stability).
 
+## v1.12.2 — 2026-08-13
+
+The images v1.12.1 should have published.
+
+- **v1.12.1 shipped binaries and a chart but no container images.** `go.mod` has required Go 1.26.6 since the standard-library advisory bump in v1.12.0's wake, while all three Dockerfiles pinned a `golang:1.26` digest holding 1.26.5 — and the images set `GOTOOLCHAIN=local`, so they cannot fetch a newer toolchain than they ship. The release workflow's image job only runs on a tag, so a Dockerfile that could not build sat on `main` through two green merges and failed after the tag was pushed, once the binaries and the chart had already published. Chart 0.2.2 therefore names `ghcr.io/fold-run/fold:v1.12.1`, an image that does not exist: **install chart 0.2.3 or later**, or set `image.tag` explicitly. The builder base now names its patch version rather than its minor, so a `go.mod` bump makes the pin visibly stale instead of silently wrong, and CI builds all three images without pushing so the skew fails on the pull request that introduces it.
+
 ## v1.12.1 — 2026-08-13
 
 Per-caller upstream credentials were only half-implemented; this is the other half.
