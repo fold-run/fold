@@ -96,10 +96,16 @@ echo "--- fetching fold-console @ ${CONSOLE_COMMIT:0:12}"
 # leave a console/ directory whose .git has lost HEAD, config, and refs.
 # Testing for the directory calls that a cache hit and hands git a shell of a
 # repo ("fatal: not a git repository"), which fails every local run from then
-# on until someone deletes the directory by hand. Ask git whether it is a
-# repository instead, and re-clone when it says no. CI never sees this (a
-# fresh RUNNER_TEMP each run), which is exactly why it has to be caught here.
-if ! git -C "$work/console" rev-parse --git-dir >/dev/null 2>&1; then
+# on until someone deletes the directory by hand. CI never sees this (a fresh
+# RUNNER_TEMP each run), which is exactly why it has to be caught here.
+#
+# Asking whether it is a repository was not enough: a sweep can leave .git with
+# HEAD and objects intact but no config, which is still a repository and has no
+# remotes, so the clone was skipped and the fetch failed with "'origin' does not
+# appear to be a git repository" — the same dead end one level in. Asking for
+# the remote URL covers both, because it fails when there is no repository and
+# when there is one that cannot be fetched from.
+if ! git -C "$work/console" remote get-url origin >/dev/null 2>&1; then
   rm -rf "$work/console"
   git clone --quiet "$CONSOLE_REPO" "$work/console"
 fi
