@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"strings"
@@ -127,13 +128,14 @@ func (u *upstream) mintToolMeta(m mcp.Meta) mcp.Meta {
 // federation typically has no ui:// resources at all, so the common answer is
 // the input slice itself — memoized like the others, so the scan that decides
 // that happens once per cache generation rather than once per request.
-func (u *upstream) namespacedResources(bare []*mcp.Resource) []*mcp.Resource {
+func (u *upstream) namespacedResources(ctx context.Context, bare []*mcp.Resource) []*mcp.Resource {
 	if u.cfg.Namespace == "" {
 		return bare
 	}
+	profile := capProfileFrom(ctx)
 	u.publicMu.Lock()
 	defer u.publicMu.Unlock()
-	if items, ok := u.publicResources.get(bare); ok {
+	if items, ok := u.publicResources[profile].get(bare); ok {
 		return items
 	}
 	items := bare
@@ -148,7 +150,10 @@ func (u *upstream) namespacedResources(bare []*mcp.Resource) []*mcp.Resource {
 		nr.URI = u.mintUIURI(r.URI)
 		items[i] = &nr
 	}
-	u.publicResources = publicView[mcp.Resource]{from: bare, items: items}
+	if u.publicResources == nil {
+		u.publicResources = map[capProfile]publicView[mcp.Resource]{}
+	}
+	u.publicResources[profile] = publicView[mcp.Resource]{from: bare, items: items}
 	return items
 }
 

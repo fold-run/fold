@@ -149,6 +149,10 @@ func (g *Gateway) route(ctx context.Context, method string, req mcp.Request, evt
 		evt.Tenant = t.id()
 	}
 	ctx = withTenant(ctx, t)
+	// What this client declared it can render decides which upstream session
+	// serves it, because an upstream may register a different tool set for a
+	// client that supports MCP Apps. See uicapability.go.
+	ctx = withCapProfile(ctx, profileOf(req))
 	switch method {
 	case "tools/list":
 		return g.listTools(ctx, rt, req, evt)
@@ -261,7 +265,7 @@ func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, ev
 	for i, u := range ups {
 		// Visibility is decided on the bare name, the item emitted is the
 		// namespaced one; the two lists are index-aligned.
-		public := u.namespacedTools(lists[i])
+		public := u.namespacedTools(ctx, lists[i])
 		for j, t := range lists[i] {
 			// The tool is in hand here, so a toolKind gate costs a field read
 			// rather than a lookup — annotations arrive with the list.
@@ -354,7 +358,7 @@ func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, 
 	out := &mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}, Meta: meta}
 	filter := newListFilter(principal, rt.policy, "prompts/get")
 	for i, u := range ups {
-		public := u.namespacedPrompts(lists[i]) // index-aligned — see listTools
+		public := u.namespacedPrompts(ctx, lists[i]) // index-aligned — see listTools
 		for j, p := range lists[i] {
 			if !filter.visible(u.cfg.ID, p.Name) {
 				continue
@@ -428,7 +432,7 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 	for i, u := range ups {
 		// Visibility is decided on the upstream's own URI, the item emitted is
 		// the public one; the two lists are index-aligned, as for tools.
-		public := u.namespacedResources(lists[i])
+		public := u.namespacedResources(ctx, lists[i])
 		for j, r := range lists[i] {
 			// Resource URIs are opaque identifiers clients persist; fold never
 			// rewrites them, with one documented exception for the MCP Apps

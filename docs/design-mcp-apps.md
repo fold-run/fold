@@ -1,10 +1,11 @@
 # Design: MCP Apps through a federating gateway
 
-Status: **§2 (`ui://` routing) shipped; §1 (capability parity) designed and
-unbuilt**, with every premise below verified on the wire 2026-08-14 — see
-"What the wire says". Routing went first because it was the defect a
-federation hits today, while parity is insurance against a spec SHOULD that no
-shipping server takes up yet. This records what the
+Status: **§1 (capability parity) and §2 (`ui://` routing) both shipped**, with
+every premise below verified on the wire 2026-08-14 — see "What the wire
+says". Routing went first because it was the defect a federation hits today;
+parity followed, and turned out to cost far less than this record feared,
+because root sessions were already a keyed map. What remains open is §3 and
+§4, which belong to the extension's specification. This records what the
 [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
 (SEP-1865, specification dated 2026-01-26) asks of an intermediary, which of
 its assumptions federation breaks, and how much of the gap is fold's to close.
@@ -210,16 +211,17 @@ Two constraints decide whether it holds:
   app-aware list be served to another pod's plain client — the same bug as the
   local one, arriving from a different instance.
 
-**Cost, and where the risk moved.** An upstream's `session` field becomes a
-small keyed set, so everything that touches root-session lifecycle has to
-follow: endpoint pinning and failover (`gateway/endpoints.go`), the drain on
-reload, and the subscription state that today lives on the one session.
-Subscriptions are per-upstream rather than per-client, so they should stay on
-the first profile session opened rather than being duplicated — a rule worth
-writing into the code, since the alternative is duplicate
-`notifications/resources/updated` fan-out. This is more implementation surface
-than a config field, and that is the honest trade: the knob was cheaper because
-it was willing to be wrong in two directions.
+**Cost, as designed and as built.** This section expected the expensive part
+to be turning an upstream's single root session into a keyed set — endpoint
+pinning, the reload drain, and the subscription state all following. In fact
+`u.roots` was *already* a keyed map: an upstream whose credential is derived
+from the caller has held one root session per principal since that feature
+landed, with reconnect, resubscribe, and drain written against the map rather
+than a field. Adding the profile to `rootKey` was therefore a two-line change,
+and the rest of the work was the cache and memo keys plus the declaration
+itself. The subscription duplication this feared does not arise either: the
+gateway ref-counts one upstream subscription per URI across all clients, so
+only the first subscriber's profile ever holds it.
 
 **No config field.** Not even an opt-out. An operator who does not want an
 upstream's app variants in the federation is expressing a policy, and fold has
@@ -371,18 +373,19 @@ answer differently.
 
 0. **Verification** — **done**, 2026-08-14; results in "What the wire says",
    and they moved three of the sections above.
-1. **Parity** — the bridged-session half first, since it is self-contained:
-   carry the client's declared extensions onto the per-client session. Then the
-   root session becomes profile-keyed, with the profile in the `ListCache` key,
-   subscriptions pinned to the first session opened, and endpoint pinning and
-   reload drain following the set rather than the single field. Integration
-   tests with a real SDK upstream that registers UI-enabled tools only when the
-   client declares the extension, and two downstream clients — one app-aware,
-   one not — that must each get their own answer from it, concurrently and
-   across a reload. The Go SDK peers the tests already use can gate directly on
-   `InitializeParams().Capabilities.Extensions`, so the fixture does not
-   inherit the TypeScript SDK's registration-order trap. This phase is the
-   feature; the rest is refinement.
+1. **Parity** — **shipped** (`gateway/uicapability.go`). The profile is
+   resolved once per request from the downstream session's initialize params,
+   keys the root session and every list-cache and decode-memo entry, and is
+   declared upstream on both session kinds. Integration tests run a real SDK
+   upstream that registers its UI-enabled tool only for a client that declared
+   the extension, with an app-aware and a plain client interleaving lists
+   against it — neither is ever served the other's. Two notes from
+   implementation. `list_changed` invalidates every profile's entry, not the
+   one whose session heard it: the notification arrives on one connection and
+   says nothing about the others, but it is the same upstream that changed for
+   all of them. And the public-view memos became per-profile maps rather than
+   single slots — a single slot stays *correct*, because it validates by slice
+   identity, but two alternating clients would rebuild it on every request.
 2. **Routing** — **shipped** ahead of phase 1, because it was the live defect
    and phase 1 is insurance. Minting on every egress surface, resolution on
    read, subscribe, unsubscribe and the orphan sweep, and integration tests

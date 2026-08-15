@@ -404,7 +404,7 @@ blocking needs a way to adopt a new definition, and every candidate either
 invents a write path into running state or hands operators a hand-copying
 chore. That choice belongs to whoever needs prevention, not to the design.
 
-### 15. MCP Apps
+### 15. MCP Apps — **shipped**
 
 The [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
 (SEP-1865) lets a tool carry a pointer to an interactive HTML interface that
@@ -429,22 +429,23 @@ per namespace on every egress surface and resolved back on read, subscribe and
 update, which is the sole documented exception to fold never rewriting a URI
 and is argued as one in the design record.
 
-What remains is the handshake. The fix there is to proxy the declaration rather
-than to configure it. Calls already ride a per-client session, so carrying the
-client's declared extensions there is wiring. Lists ride one shared root
-session per upstream, which is where the design work is: key that session — and
-its list cache entry — by a normalized capability profile, so a federation
-whose clients are all one kind pays what it pays today, a mixed one pays two
-sessions, and every client gets the list the upstream would have handed it
-directly.
+The handshake half **shipped after it**. fold proxies the declaration rather
+than configuring it: a named invocation rides a per-client session that now
+declares what its client declared, and lists ride root sessions keyed by a
+normalized capability profile — so a federation whose clients are all one kind
+pays exactly what it paid before, a mixed one keeps two sessions per upstream,
+and every client gets the list the upstream would have handed it directly. The
+design record expected that to be the expensive half and it was not: root
+sessions were already a keyed map, because a caller-derived credential has
+needed one session per principal since it landed.
 
 Designed in [design-mcp-apps.md](design-mcp-apps.md), which is as clear about
 what fold should not do here. It adds **no config field**, opt-out included: an
 operator who does not want an upstream's app variants is expressing a policy,
 and a handshake setting that works by misreporting the client would be a
-control with the wrong name. It declines minting fold-scoped `ui://` URIs for
-now, because chasing the rewrite into embedded resources inside tool results is
-response rewriting. And it refuses to paper over app-initiated calls with a
+control with the wrong name. It mints fold-scoped `ui://` URIs but
+declines to chase one embedded in a *tool result*, because following it there
+is response-body rewriting. And it refuses to paper over app-initiated calls with a
 bare-name fallback, which would weaken the namespace contract for every caller
 and hand an app whatever tool owns that name across the whole federation. The
 record also carries the design it replaced — a per-upstream flag plus
