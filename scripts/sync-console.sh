@@ -32,7 +32,7 @@ set -euo pipefail
 # Bump deliberately, in its own commit. The scheduled console-sync workflow
 # proposes bumps as PRs; it never merges them.
 CONSOLE_REPO="${CONSOLE_REPO:-https://github.com/fold-run/fold-console.git}"
-CONSOLE_COMMIT="${CONSOLE_COMMIT:-1f695ea8096023db144b5d4a6da4f43af7394259}"
+CONSOLE_COMMIT="${CONSOLE_COMMIT:-31c31ab220f9f8f20bbd779bc8aa9e745adc3d56}"
 
 # The exact file set that may enter the binary. //go:embed takes the whole
 # directory, so without an allowlist anything upstream's build happened to emit
