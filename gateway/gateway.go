@@ -489,6 +489,14 @@ func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
 		u.pins.report = g.reportDrift(u)
 	}
 	u.onResourceUpdated = func(ctx context.Context, params *mcp.ResourceUpdatedNotificationParams) {
+		// A client subscribed with the minted URI and must be told about that
+		// one; the upstream names its own. Copied rather than edited — the
+		// notification belongs to the SDK's read loop.
+		if minted := u.mintUIURI(params.URI); minted != params.URI {
+			p := *params
+			p.URI = minted
+			params = &p
+		}
 		_ = g.server.ResourceUpdated(ctx, params) // best-effort fan-out
 	}
 	u.onListChanged = g.notifyListChanged
@@ -785,6 +793,17 @@ func (g *Gateway) reapSubscribers() {
 
 	rt := g.rt()
 	for _, uri := range orphaned {
+		// A minted ui:// URI says which upstream holds it and under what name,
+		// so the sweep releases it exactly rather than by search.
+		if u, original, ok := g.uiOwner(rt, uri); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), u.requestTimeout)
+			if err := u.unsubscribe(ctx, original); err != nil {
+				g.log.Debug("sweep: releasing orphaned subscription failed",
+					"upstream", u.cfg.ID, "uri", uri, "err", err)
+			}
+			cancel()
+			continue
+		}
 		// Ask the upstreams that actually hold the subscription — a list
 		// fan-out to re-resolve ownership would be a heavy price for a
 		// background sweep.
@@ -808,11 +827,11 @@ func (g *Gateway) reapSubscribers() {
 // client's unsubscribe cannot tear down another's.
 func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest) error {
 	rt := g.rt()
-	u, err := g.ownerForURI(ctx, rt, req.Params.URI)
+	u, upstreamURI, err := g.subscribeTarget(ctx, rt, req.Params.URI)
 	if err != nil {
 		return err
 	}
-	if !rt.policy.Decide(auth.PrincipalFromContext(ctx), u.cfg.ID, "resources/read", req.Params.URI).Allowed {
+	if !rt.policy.Decide(auth.PrincipalFromContext(ctx), u.cfg.ID, "resources/read", upstreamURI).Allowed {
 		return &jsonrpc.Error{Code: codeDenied, Message: fmt.Sprintf("policy denied resources/subscribe %q", req.Params.URI)}
 	}
 	sessionID := ""
@@ -833,7 +852,7 @@ func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest
 	if !first {
 		return nil // upstream subscription already held
 	}
-	if err := u.subscribe(ctx, req.Params.URI); err != nil {
+	if err := u.subscribe(ctx, upstreamURI); err != nil {
 		g.subMu.Lock()
 		delete(g.subscribers[req.Params.URI], sessionID)
 		if len(g.subscribers[req.Params.URI]) == 0 {
@@ -846,7 +865,7 @@ func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest
 }
 
 func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeRequest) error {
-	u, err := g.ownerForURI(ctx, g.rt(), req.Params.URI)
+	u, upstreamURI, err := g.subscribeTarget(ctx, g.rt(), req.Params.URI)
 	if err != nil {
 		return err
 	}
@@ -871,9 +890,22 @@ func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeReq
 	g.subMu.Unlock()
 
 	if last {
-		return u.unsubscribe(ctx, req.Params.URI)
+		return u.unsubscribe(ctx, upstreamURI)
 	}
 	return nil
+}
+
+// subscribeTarget resolves a client-facing URI to the upstream that serves it
+// and the URI that upstream knows it by. The ref-count table stays keyed by
+// the *client-facing* URI: two upstreams may legitimately publish the same
+// ui:// URI, and keying by the upstream's form would merge two unrelated
+// subscriptions into one ref-count.
+func (g *Gateway) subscribeTarget(ctx context.Context, rt *routes, uri string) (*upstream, string, error) {
+	if u, original, ok := g.uiOwner(rt, uri); ok {
+		return u, original, nil
+	}
+	u, err := g.ownerForURI(ctx, rt, uri)
+	return u, uri, err
 }
 
 // ownerForURI resolves which upstream serves a resource URI, refreshing the

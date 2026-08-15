@@ -412,32 +412,44 @@ the host sandboxes and renders in place of text. It is shipping in Claude,
 Claude Desktop, VS Code Copilot, Microsoft 365 Copilot and Goose, and fold has
 no awareness of it at all.
 
-That is not a feature gap, it is an invisibility-rule violation. The extension
-is client-declared, fold's shared upstream sessions declare nothing, and a
-server following the spec's advice therefore registers its text-only fallbacks
-— so the same upstream renders an app on a direct connection and returns plain
-text through the gateway, with nothing in the trail saying why.
+That is not a feature gap, it is an invisibility-rule violation, and it is
+measured rather than theorised: an upstream gating on the client capability
+logged `extensions=null` from `fold-gateway` and served its text-only fallback
+to a host that had declared app support to fold one hop earlier. The same
+upstream renders an app on a direct connection and returns plain text through
+the gateway, with nothing in the trail saying why.
 
-Closing it is small and additive: declare the extension upward per upstream,
-and shape each list downward by what the client in hand declared — dropping
-app-only tools and stripping `_meta.ui` for a client that never asked for
-either, which is both the parity fix and the one `visibility` rule a gateway is
-positioned to enforce for hosts that have never heard of it. Alongside it,
-harvest `ui://` ownership from the tool metadata, which removes a per-upstream
-probe from every app's first render and makes URI collisions — likely, because
-the extension requires uniqueness only within one server — visible instead of
-silent.
+The routing half **shipped first**, because it was the defect a federation hits
+today rather than insurance against one it might: the extension requires a
+`ui://` URI to be unique only within a server and the published template ships
+one with no server segment, so two upstreams built from it advertise the same
+interface URI — and fold served a read of it from whichever upstream listed it
+last, with the winner depending on request history. Those URIs are now minted
+per namespace on every egress surface and resolved back on read, subscribe and
+update, which is the sole documented exception to fold never rewriting a URI
+and is argued as one in the design record.
+
+What remains is the handshake. The fix there is to proxy the declaration rather
+than to configure it. Calls already ride a per-client session, so carrying the
+client's declared extensions there is wiring. Lists ride one shared root
+session per upstream, which is where the design work is: key that session — and
+its list cache entry — by a normalized capability profile, so a federation
+whose clients are all one kind pays what it pays today, a mixed one pays two
+sessions, and every client gets the list the upstream would have handed it
+directly.
 
 Designed in [design-mcp-apps.md](design-mcp-apps.md), which is as clear about
-what fold should not do here. It recommends declaring the extension **on** by
-default, the rare default that is not opt-in in this repo, because it restores
-what a direct connection produces rather than adding a control. It declines
-minting fold-scoped `ui://` URIs for now, because chasing the rewrite into
-embedded resources inside tool results is response rewriting. And it refuses to
-paper over app-initiated calls with a bare-name fallback, which would weaken
-the namespace contract for every caller to fix a case that may never reach the
-gateway — the next step there is standing a real app behind fold and reading
-the wire, not writing code.
+what fold should not do here. It adds **no config field**, opt-out included: an
+operator who does not want an upstream's app variants is expressing a policy,
+and a handshake setting that works by misreporting the client would be a
+control with the wrong name. It declines minting fold-scoped `ui://` URIs for
+now, because chasing the rewrite into embedded resources inside tool results is
+response rewriting. And it refuses to paper over app-initiated calls with a
+bare-name fallback, which would weaken the namespace contract for every caller
+and hand an app whatever tool owns that name across the whole federation. The
+record also carries the design it replaced — a per-upstream flag plus
+compensating egress filters — because the reason that shape was wrong is the
+most useful thing in it.
 
 The two gaps that remain after all of that are the specification's, and they
 are in the gated horizon below.
