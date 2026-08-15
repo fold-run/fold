@@ -426,17 +426,22 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 	out := &mcp.ListResourcesResult{Resources: []*mcp.Resource{}, Meta: meta}
 	filter := newListFilter(principal, rt.policy, "resources/read")
 	for i, u := range ups {
-		for _, r := range lists[i] {
-			// Resource URIs are opaque identifiers clients persist; fold
-			// never rewrites them. Ownership is remembered instead — record
-			// it even for filtered resources so reads still route correctly.
+		// Visibility is decided on the upstream's own URI, the item emitted is
+		// the public one; the two lists are index-aligned, as for tools.
+		public := u.namespacedResources(lists[i])
+		for j, r := range lists[i] {
+			// Resource URIs are opaque identifiers clients persist; fold never
+			// rewrites them, with one documented exception for the MCP Apps
+			// `ui://` scheme (see uiresource.go). Ownership is remembered
+			// instead — recorded even for filtered resources so reads still
+			// route correctly.
 			g.resourceOwner.Store(r.URI, u.cfg.ID, 0)
 			if !filter.visible(u.cfg.ID, r.URI) {
 				continue
 			}
 			// Shared with every other caller of this list (see cachedList):
 			// forwarded as-is, never mutated.
-			out.Resources = append(out.Resources, r)
+			out.Resources = append(out.Resources, public[j])
 		}
 	}
 	filter.finish(g, evt, &out.Meta)
@@ -499,6 +504,34 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 	principal := auth.PrincipalFromContext(ctx)
 	tn := tenantFrom(ctx)
 	denied := false
+
+	// A minted ui:// URI names its owner, so it needs neither the affinity
+	// index below nor the probe after it. Policy and the tenant subset are
+	// evaluated against the upstream's own URI, the way a tool is authorized
+	// on its bare name — a rule written for the upstream keeps working, and a
+	// name fold invented never appears in one.
+	if u, original, ok := g.uiOwner(rt, params.URI); ok {
+		evt.Upstream = u.cfg.ID
+		if !tn.sees(u.cfg.ID) {
+			evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
+			return nil, errOutsideSubset(tn, "resources/read", original, u.cfg.ID)
+		}
+		if !rt.policy.Decide(principal, u.cfg.ID, "resources/read", original).Allowed {
+			evt.Decision, evt.Outcome = "deny", audit.OutcomeDenied
+			return nil, &jsonrpc.Error{Code: codeDenied, Message: fmt.Sprintf("policy denied resources/read %q", params.URI)}
+		}
+		evt.Decision = "allow"
+		// Unlike the affinity path, a failure here is the answer: the URI
+		// identified one upstream and that upstream refused, so falling back to
+		// probing the others would be asking servers that cannot own it.
+		out, err := u.readResource(ctx, &mcp.ReadResourceParams{URI: original, Meta: params.Meta})
+		if err != nil {
+			return nil, err
+		}
+		mintReadResult(out, original, params.URI)
+		tagUpstream(&out.Meta, u)
+		return out, nil
+	}
 
 	// Affinity first: route to the upstream the URI was listed from.
 	if id, ok := g.resourceOwner.Load(params.URI); ok {

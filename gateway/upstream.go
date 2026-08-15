@@ -118,13 +118,14 @@ type upstream struct {
 	// never rewritten anyway.
 	sep string
 
-	// publicTools / publicPrompts memoize the namespaced view of the cached
-	// lists — the egress rewrite is a pure function of the decoded list, the
-	// namespace, and the separator, so it belongs next to the decode rather
-	// than on every request. See publicView.
-	publicMu      sync.Mutex
-	publicTools   publicView[mcp.Tool]
-	publicPrompts publicView[mcp.Prompt]
+	// publicTools / publicPrompts / publicResources memoize the namespaced
+	// view of the cached lists — the egress rewrite is a pure function of the
+	// decoded list, the namespace, and the separator, so it belongs next to
+	// the decode rather than on every request. See publicView.
+	publicMu        sync.Mutex
+	publicTools     publicView[mcp.Tool]
+	publicPrompts   publicView[mcp.Prompt]
+	publicResources publicView[mcp.Resource]
 }
 
 // publicView is a namespaced list, index-aligned with the bare list it was
@@ -1193,6 +1194,9 @@ func (u *upstream) namespacedTools(bare []*mcp.Tool) []*mcp.Tool {
 	for i, t := range bare {
 		nt := *t
 		nt.Name = u.publicName(t.Name)
+		// An MCP Apps tool points at its interface from _meta; that pointer is
+		// federated alongside the name it belongs to. See uiresource.go.
+		nt.Meta = u.mintToolMeta(t.Meta)
 		items[i] = &nt
 	}
 	u.publicTools = publicView[mcp.Tool]{from: bare, items: items}
