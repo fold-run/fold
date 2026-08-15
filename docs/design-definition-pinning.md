@@ -206,7 +206,16 @@ default, and nothing new on the proxy path.
    struct, which is stable but not contractually so: an encoding change in the
    SDK would read as one drift event per definition on upgrade, which is noisy
    rather than wrong, and the tests pin today's behaviour so a change is
-   deliberate.
+   deliberate. A fourth note, found by re-measuring rather than by
+   review: hanging the check off the fetch closure gave that closure a
+   captured variable, which turned a statically-allocated function literal
+   into one allocation per upstream on *every* list request — warm cache
+   included, which is exactly the path section 6 promises this feature stays
+   off. The check itself was always inside the fill; the cost was the capture
+   around it. Fixed by passing the upstream as a parameter
+   (`gateway/upstream.go`, `cachedList`), and it is the reason
+   [benchmarks.md](benchmarks.md) is re-measured per release rather than
+   carried forward.
 2. **Reach** — prompts through the same path; drift surfaced in the console's
    read-only views and in `/api/federation`.
 3. **Prevention** — `block`, only with an adoption path chosen from section 5,
