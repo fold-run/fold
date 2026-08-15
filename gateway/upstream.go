@@ -1113,7 +1113,14 @@ func (u *upstream) invalidateList(ctx context.Context, kind string) {
 	}
 }
 
-func cachedList[T any](ctx context.Context, u *upstream, key string, fetch func(context.Context, *mcp.ClientSession) ([]T, error)) ([]T, error) {
+// fetch takes the upstream as a parameter rather than closing over it. That
+// looks redundant — every caller has u in scope — and is load-bearing: a
+// function literal with no free variables is allocated once, statically, while
+// one that captures u is allocated on every call, warm cache or not. Two of
+// these run per upstream per list request, so the difference is one allocation
+// per upstream on the hottest fan-out fold has. It was measured the day a
+// capture crept in.
+func cachedList[T any](ctx context.Context, u *upstream, key string, fetch func(context.Context, *upstream, *mcp.ClientSession) ([]T, error)) ([]T, error) {
 	// An upstream may answer differently per capability profile, so the cache
 	// entry — and with it the decode memo below, which shares this key — is
 	// scoped to the profile that filled it. The key reaches Redis, where a
@@ -1124,7 +1131,7 @@ func cachedList[T any](ctx context.Context, u *upstream, key string, fetch func(
 		var items []T
 		err := u.do(ctx, func(ctx context.Context, s *mcp.ClientSession) error {
 			var err error
-			items, err = fetch(ctx, s)
+			items, err = fetch(ctx, u, s)
 			return err
 		})
 		if err != nil {
@@ -1294,7 +1301,7 @@ func (u *upstream) annotationsFor(ctx context.Context, bare string) (policy.Tool
 
 // listTools returns the upstream's full (un-namespaced) tool list, cached.
 func (u *upstream) listTools(ctx context.Context) ([]*mcp.Tool, error) {
-	return cachedList(ctx, u, "tools", func(ctx context.Context, s *mcp.ClientSession) ([]*mcp.Tool, error) {
+	return cachedList(ctx, u, "tools", func(ctx context.Context, u *upstream, s *mcp.ClientSession) ([]*mcp.Tool, error) {
 		var tools []*mcp.Tool
 		for t, err := range s.Tools(ctx, nil) {
 			if err != nil {
@@ -1312,7 +1319,7 @@ func (u *upstream) listTools(ctx context.Context) ([]*mcp.Tool, error) {
 }
 
 func (u *upstream) listPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
-	return cachedList(ctx, u, "prompts", func(ctx context.Context, s *mcp.ClientSession) ([]*mcp.Prompt, error) {
+	return cachedList(ctx, u, "prompts", func(ctx context.Context, u *upstream, s *mcp.ClientSession) ([]*mcp.Prompt, error) {
 		var prompts []*mcp.Prompt
 		for p, err := range s.Prompts(ctx, nil) {
 			if err != nil {
@@ -1326,7 +1333,7 @@ func (u *upstream) listPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
 }
 
 func (u *upstream) listResources(ctx context.Context) ([]*mcp.Resource, error) {
-	return cachedList(ctx, u, "resources", func(ctx context.Context, s *mcp.ClientSession) ([]*mcp.Resource, error) {
+	return cachedList(ctx, u, "resources", func(ctx context.Context, _ *upstream, s *mcp.ClientSession) ([]*mcp.Resource, error) {
 		var res []*mcp.Resource
 		for r, err := range s.Resources(ctx, nil) {
 			if err != nil {
@@ -1339,7 +1346,7 @@ func (u *upstream) listResources(ctx context.Context) ([]*mcp.Resource, error) {
 }
 
 func (u *upstream) listResourceTemplates(ctx context.Context) ([]*mcp.ResourceTemplate, error) {
-	return cachedList(ctx, u, "resources/templates", func(ctx context.Context, s *mcp.ClientSession) ([]*mcp.ResourceTemplate, error) {
+	return cachedList(ctx, u, "resources/templates", func(ctx context.Context, _ *upstream, s *mcp.ClientSession) ([]*mcp.ResourceTemplate, error) {
 		var res []*mcp.ResourceTemplate
 		for r, err := range s.ResourceTemplates(ctx, nil) {
 			if err != nil {

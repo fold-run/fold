@@ -43,16 +43,18 @@ Headline, stated the way we'd defend it on a stage: **one fold instance sustaine
 
 ### Federation cost (`tools/list`, gateway-side, warm caches)
 
-*Measured 2026-08-07 on `main`; the `tools/call` tables above are the v1.3.0 run and have not been re-measured since.*
+*Re-measured 2026-08-15 on `main`, after v1.14.0 and including the allocation fix noted below (unreleased at the time of measurement); the `tools/call` tables above are the v1.3.0 run and have not been re-measured since.*
 
 What one merged list costs the gateway itself: fan-out, per-principal policy filter, namespace rewrite, and cursor fingerprint. Median of 5 runs.
 
 | federation | tools in list | ns/op | B/op | allocs/op |
 |---|---|---|---|---|
-| 1 upstream × 10 tools | 10 | 1,322 | 640 | 16 |
-| 5 upstreams × 20 tools | 100 | 4,718 | 3,341 | 31 |
-| 20 upstreams × 50 tools | 1,000 | **25,169** | 21,866 | 83 |
-| 20 × 50, deny-by-default policy with globs | 1,000 | 44,903 | 21,863 | 83 |
+| 1 upstream × 10 tools | 10 | 1,251 | 640 | 16 |
+| 5 upstreams × 20 tools | 100 | 5,332 | 3,336 | 31 |
+| 20 upstreams × 50 tools | 1,000 | **31,003** | 21,871 | 83 |
+| 20 × 50, deny-by-default policy with globs | 1,000 | 54,190 | 21,866 | 83 |
+
+The allocation counts are unchanged from the 2026-08-07 measurement, and for one release they were not: definition pinning (v1.12.0) added a captured variable to the closure each list method hands `cachedList`, which turned a statically-allocated function literal into one allocation per upstream per request — on the warm-cache path the feature's own design record promised to stay off. Restored on `main` after v1.14.0 by passing the upstream as a parameter instead of capturing it — so v1.12.0 through v1.14.0 carry the extra allocation; the regression and its fix are why this table is re-measured per release rather than trusted. The `ns/op` growth since is real and is governance the gateway now does on every list: tenant resolution, the visibility subset, and consumption metering all landed in that window.
 
 Two properties worth stating, because both were once false: a warm list-cache hit is **~55 ns and one allocation regardless of list size** (the parsed form is memoized, not re-decoded per request), and **policy filtering allocates nothing** — the `_policy` row's allocation count is identical to the row above it, so the cost of filtering 1,000 tools per principal is CPU only.
 
