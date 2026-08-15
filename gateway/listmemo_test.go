@@ -209,12 +209,12 @@ func TestNamespacedViewFollowsCacheGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listTools: %v", err)
 	}
-	first := u.namespacedTools(bare)
+	first := u.namespacedTools(context.Background(), bare)
 	if got := toolNamesOf(first); len(got) != 1 || got[0] != "ns__alpha" {
 		t.Fatalf("expected [ns__alpha], got %v", got)
 	}
 	// A second call on the same generation is the memoized view.
-	if second := u.namespacedTools(bare); &second[0] != &first[0] {
+	if second := u.namespacedTools(context.Background(), bare); &second[0] != &first[0] {
 		t.Error("rebuilt the namespaced view for an unchanged list")
 	}
 	// The bare list must not have been rewritten in place.
@@ -228,7 +228,7 @@ func TestNamespacedViewFollowsCacheGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listTools after invalidate: %v", err)
 	}
-	after := u.namespacedTools(bare)
+	after := u.namespacedTools(context.Background(), bare)
 	if len(after) != 2 {
 		t.Fatalf("expected 2 namespaced tools, got %v", toolNamesOf(after))
 	}
@@ -250,7 +250,7 @@ func TestNamespacedViewPassthroughIsIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listTools: %v", err)
 	}
-	if public := u.namespacedTools(bare); &public[0] != &bare[0] {
+	if public := u.namespacedTools(context.Background(), bare); &public[0] != &bare[0] {
 		t.Error("passthrough upstream copied its list instead of passing it through")
 	}
 }

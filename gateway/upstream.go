@@ -122,10 +122,15 @@ type upstream struct {
 	// view of the cached lists — the egress rewrite is a pure function of the
 	// decoded list, the namespace, and the separator, so it belongs next to
 	// the decode rather than on every request. See publicView.
+	//
+	// Keyed by capability profile: an upstream that registers a different tool
+	// set per profile produces a different decoded list per profile, and a
+	// single-slot memo would be correct but rebuild on every alternating
+	// request. The map holds one entry per profile fold implements.
 	publicMu        sync.Mutex
-	publicTools     publicView[mcp.Tool]
-	publicPrompts   publicView[mcp.Prompt]
-	publicResources publicView[mcp.Resource]
+	publicTools     map[capProfile]publicView[mcp.Tool]
+	publicPrompts   map[capProfile]publicView[mcp.Prompt]
+	publicResources map[capProfile]publicView[mcp.Resource]
 }
 
 // publicView is a namespaced list, index-aligned with the bare list it was
@@ -655,16 +660,22 @@ func (u *upstream) callerDerived() bool { return u.creds.PerRequest() }
 // caller-derived one is partitioned per principal, keyed on (issuer,
 // subject) — the same key the exchanged-token cache uses, since sub is
 // unique only within an issuer and the gateway may trust several.
+//
+// The capability profile partitions it again, because an upstream may
+// register a different tool set for a client that declared MCP Apps support
+// and a session can only have declared one thing. A federation whose clients
+// are all alike keeps exactly one session per upstream, as before.
 func (u *upstream) rootKey(ctx context.Context) (string, error) {
+	profile := capProfileFrom(ctx)
 	if !u.callerDerived() {
-		return sharedRootKey, nil
+		return profile.qualify(sharedRootKey), nil
 	}
 	p := auth.PrincipalFromContext(ctx)
 	if p == nil || p.Subject == "" || p.Issuer == "" {
 		return "", fmt.Errorf("upstream %q derives its credential from the caller "+
 			"and cannot be reached without an authenticated principal", u.cfg.ID)
 	}
-	return p.Issuer + "\x00" + p.Subject, nil
+	return profile.qualify(p.Issuer + "\x00" + p.Subject), nil
 }
 
 // rootSession connects (or reuses) the shared upstream session. List-changed
@@ -699,19 +710,23 @@ func (u *upstream) rootSession(ctx context.Context) (*mcp.ClientSession, error) 
 	// handler on every notification would otherwise crash-loop the gateway.
 	// See rescue.go.
 	opts := &mcp.ClientOptions{
+		// The caller's own declaration, restated upstream: this is the session
+		// an app-aware client's lists come from, and an upstream that gates on
+		// the extension needs to hear it to register its UI-enabled tools.
+		Capabilities: capProfileFrom(ctx).uiCapabilities(nil),
 		ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
 			defer u.rescue("notify")
-			u.lists.Invalidate(ctx, "tools")
+			u.invalidateList(ctx, "tools")
 			notifyDownstream("tools")
 		},
 		PromptListChangedHandler: func(ctx context.Context, _ *mcp.PromptListChangedRequest) {
 			defer u.rescue("notify")
-			u.lists.Invalidate(ctx, "prompts")
+			u.invalidateList(ctx, "prompts")
 			notifyDownstream("prompts")
 		},
 		ResourceListChangedHandler: func(ctx context.Context, _ *mcp.ResourceListChangedRequest) {
 			defer u.rescue("notify")
-			u.lists.Invalidate(ctx, "resources")
+			u.invalidateList(ctx, "resources")
 			notifyDownstream("resources")
 		},
 		ResourceUpdatedHandler: func(ctx context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
@@ -1087,7 +1102,24 @@ func isConnectionError(err error) bool {
 // and ~60 ns on a 200-tool upstream, multiplied by every upstream in the
 // federation on every list request. Callers that rewrite a name (egress
 // namespacing) copy the item first.
+// invalidateList drops a cached list under every capability profile. The
+// notification that triggers it arrives on one profile's session and says
+// nothing about the others, but it is the same upstream that changed for all
+// of them — and a stale entry the notification did not name is exactly the
+// bug list_changed exists to prevent.
+func (u *upstream) invalidateList(ctx context.Context, kind string) {
+	for _, p := range allProfiles {
+		u.lists.Invalidate(ctx, p.qualify(kind))
+	}
+}
+
 func cachedList[T any](ctx context.Context, u *upstream, key string, fetch func(context.Context, *mcp.ClientSession) ([]T, error)) ([]T, error) {
+	// An upstream may answer differently per capability profile, so the cache
+	// entry — and with it the decode memo below, which shares this key — is
+	// scoped to the profile that filled it. The key reaches Redis, where a
+	// profile-blind one would let one instance's app-aware list be served to
+	// another instance's plain client.
+	key = capProfileFrom(ctx).qualify(key)
 	data, err := u.lists.GetOrFill(ctx, key, u.cacheTTL, func(ctx context.Context) ([]byte, error) {
 		var items []T
 		err := u.do(ctx, func(ctx context.Context, s *mcp.ClientSession) error {
@@ -1181,13 +1213,14 @@ func (u *upstream) publicName(bare string) string {
 // name again for a result that only changes when the cache refills. Both the
 // returned slice and its items are shared and read-only, like everything else
 // from the list path (see cachedList).
-func (u *upstream) namespacedTools(bare []*mcp.Tool) []*mcp.Tool {
+func (u *upstream) namespacedTools(ctx context.Context, bare []*mcp.Tool) []*mcp.Tool {
 	if u.cfg.Namespace == "" {
 		return bare // passthrough: names are already public, nothing to rewrite
 	}
+	profile := capProfileFrom(ctx)
 	u.publicMu.Lock()
 	defer u.publicMu.Unlock()
-	if items, ok := u.publicTools.get(bare); ok {
+	if items, ok := u.publicTools[profile].get(bare); ok {
 		return items
 	}
 	items := make([]*mcp.Tool, len(bare))
@@ -1199,18 +1232,22 @@ func (u *upstream) namespacedTools(bare []*mcp.Tool) []*mcp.Tool {
 		nt.Meta = u.mintToolMeta(t.Meta)
 		items[i] = &nt
 	}
-	u.publicTools = publicView[mcp.Tool]{from: bare, items: items}
+	if u.publicTools == nil {
+		u.publicTools = map[capProfile]publicView[mcp.Tool]{}
+	}
+	u.publicTools[profile] = publicView[mcp.Tool]{from: bare, items: items}
 	return items
 }
 
 // namespacedPrompts is namespacedTools for prompts.
-func (u *upstream) namespacedPrompts(bare []*mcp.Prompt) []*mcp.Prompt {
+func (u *upstream) namespacedPrompts(ctx context.Context, bare []*mcp.Prompt) []*mcp.Prompt {
 	if u.cfg.Namespace == "" {
 		return bare
 	}
+	profile := capProfileFrom(ctx)
 	u.publicMu.Lock()
 	defer u.publicMu.Unlock()
-	if items, ok := u.publicPrompts.get(bare); ok {
+	if items, ok := u.publicPrompts[profile].get(bare); ok {
 		return items
 	}
 	items := make([]*mcp.Prompt, len(bare))
@@ -1219,7 +1256,10 @@ func (u *upstream) namespacedPrompts(bare []*mcp.Prompt) []*mcp.Prompt {
 		np.Name = u.publicName(p.Name)
 		items[i] = &np
 	}
-	u.publicPrompts = publicView[mcp.Prompt]{from: bare, items: items}
+	if u.publicPrompts == nil {
+		u.publicPrompts = map[capProfile]publicView[mcp.Prompt]{}
+	}
+	u.publicPrompts[profile] = publicView[mcp.Prompt]{from: bare, items: items}
 	return items
 }
 

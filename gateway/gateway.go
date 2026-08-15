@@ -1167,7 +1167,10 @@ func (g *Gateway) bridgeOptions(ss *mcp.ServerSession, u *upstream) *mcp.ClientO
 	// convert it into an error answer to the upstream.
 	opts := &mcp.ClientOptions{
 		// Advertise no capabilities by default; handlers below add theirs.
-		Capabilities: &mcp.ClientCapabilities{},
+		// The exception is what the client itself declared about rendering:
+		// this session carries that client's own invocations, so the upstream
+		// should hear it the way it would on a direct connection.
+		Capabilities: profileOfSession(ss).uiCapabilities(&mcp.ClientCapabilities{}),
 		LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) {
 			defer g.rescue("bridge")
 			g.bumpBridgeActivity(key)
