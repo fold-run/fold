@@ -8,4 +8,4 @@ package gateway
 // As a Go file it is also covered by `make fmt-check`, and it reaches
 // /api/federation so a version-skew question has an answer without unpacking
 // the binary.
-const consoleSource = "31c31ab220f9f8f20bbd779bc8aa9e745adc3d56"
+const consoleSource = "aae1a879c7c7449afce4b9fd27d0902ab5badefe"
