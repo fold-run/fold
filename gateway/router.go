@@ -755,7 +755,24 @@ func (g *Gateway) authorizeCall(ctx context.Context, evt *audit.Event, rt *route
 		// and a denial is a poor place to disclose it a field at a time.
 		msg += fmt.Sprintf(": argument %q does not satisfy the grant", d.FailedArg)
 	}
-	return nil, &jsonrpc.Error{Code: codeDenied, Message: msg}
+	err := &jsonrpc.Error{Code: codeDenied, Message: msg}
+	if len(d.MissingScopes) > 0 {
+		// Scopes are the one thing a denial *can* name, and the exception is
+		// principled rather than convenient: unlike an argument's expected
+		// value, a scope is a credential the caller goes and obtains, so
+		// naming it is telling them how to succeed rather than describing the
+		// operator's configuration. The engine has already bounded what
+		// appears here — only scopes this caller lacks, and only from a rule
+		// that would otherwise have granted this exact invocation.
+		evt.MissingScopes = d.MissingScopes
+		msg += fmt.Sprintf(": requires scope %s", strings.Join(d.MissingScopes, ", "))
+		err.Message = msg
+		data, mErr := json.Marshal(map[string]any{"missingScopes": d.MissingScopes})
+		if mErr == nil {
+			err.Data = data
+		}
+	}
+	return nil, err
 }
 
 // directionServerInitiated marks the audit events that describe the reverse

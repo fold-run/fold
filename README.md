@@ -126,7 +126,7 @@ field, default, and the reasoning behind each one.
 |---|---|
 | [`upstreams`](docs/configuration.md#upstreams) | **Required.** The federation itself: each upstream's endpoint or replica set, namespace, credential strategy, timeouts, breaker, rate limit, budget, and list-cache TTL. |
 | [`auth`](docs/configuration.md#auth) | Gateway authentication: trusted issuers, JWKS, and the token audience every caller must present — plus the embedded EMA authorization server. |
-| [`policy`](docs/configuration.md#policy) | Deny-by-default authorization: rules over server, method, name, arguments, and tool annotations, filtering lists and refusing calls together, in both directions. |
+| [`policy`](docs/configuration.md#policy) | Deny-by-default authorization: rules over server, method, name, arguments, and tool annotations, gated on principals by group, subject, issuer, claim, or OAuth scope — filtering lists and refusing calls together, in both directions. |
 | [`hook`](docs/configuration.md#hook) | The external decision endpoint: an out-of-process allow/deny on ingress, egress, and server-initiated traffic. Absent by default. |
 | [`audit`](docs/configuration.md#audit) | Where the event per terminal response goes: stdout, rotating file, webhook, or OTLP logs, with retry and dead-lettering. |
 | [`server`](docs/configuration.md#server) | The listener: MCP path, allowed hosts, global and per-principal rate limits, body cap, session expiry, shared state, the metrics listener, introspection, and the console. |
@@ -143,7 +143,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 |---|---|
 | `-32040` | Per-upstream rate limit exceeded |
 | `-32041` | Upstream unavailable (circuit open / unreachable / all upstreams down) |
-| `-32042` | Policy denied the invocation |
+| `-32042` | Policy denied the invocation. When scopes were the only thing missing, `data.missingScopes` names the ones the caller lacks. |
 | `-32043` | Name does not resolve to a configured namespace |
 | `-32044` | Consumption budget exhausted for the period (server or per-upstream) |
 | `-32002` | Task id not owned by any upstream |

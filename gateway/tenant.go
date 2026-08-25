@@ -49,6 +49,12 @@ type tenantSet struct {
 	// is what keeps a lookup both safe (a non-comparable key would panic)
 	// and exact (for same-typed scalars, equality is what the matcher does).
 	byClaim map[string]map[any][]*tenant
+	// byScope indexes single-scope selectors: scope → the tenants naming it,
+	// looked up by the scopes the principal holds. Single only — see
+	// indexableScope for why a multi-scope selector cannot be indexed this
+	// way.
+	byScope map[string][]*tenant
+
 	// byGroup indexes group-only selectors: group → the tenants naming it.
 	// A selector naming several groups appears under each, since holding any
 	// one of them matches; the same tenant reached twice is deduplicated at
@@ -153,6 +159,13 @@ func (ts *tenantSet) index(t *tenant) {
 		}
 		return
 	}
+	if sc, ok := indexableScope(s); ok {
+		if ts.byScope == nil {
+			ts.byScope = make(map[string][]*tenant)
+		}
+		ts.byScope[sc] = append(ts.byScope[sc], t)
+		return
+	}
 	ts.scan = append(ts.scan, t)
 }
 
@@ -167,7 +180,7 @@ func (ts *tenantSet) index(t *tenant) {
 // for tenancy means a caller governed as though they had no tenant. Selectors
 // of any other shape are matched by the scan, which is the general case.
 func indexableClaim(s *config.PolicySubjects) (string, any, bool) {
-	if s == nil || len(s.Claims) != 1 || len(s.Issuers) > 0 || len(s.Subs) > 0 || len(s.Groups) > 0 {
+	if s == nil || len(s.Claims) != 1 || len(s.Issuers) > 0 || len(s.Subs) > 0 || len(s.Groups) > 0 || len(s.Scopes) > 0 {
 		return "", nil, false
 	}
 	for key, val := range s.Claims {
@@ -182,7 +195,31 @@ func indexableClaim(s *config.PolicySubjects) (string, any, bool) {
 // indexableGroups reports whether a selector names groups and nothing else,
 // in which case the principal's own groups are the lookup keys.
 func indexableGroups(s *config.PolicySubjects) bool {
-	return s != nil && len(s.Groups) > 0 && len(s.Claims) == 0 && len(s.Issuers) == 0 && len(s.Subs) == 0
+	return s != nil && len(s.Groups) > 0 && len(s.Claims) == 0 && len(s.Issuers) == 0 && len(s.Subs) == 0 && len(s.Scopes) == 0
+}
+
+// indexableScope reports whether a selector is one scope and nothing else.
+//
+// Only one: scopes are conjunctive, so a selector naming two of them is not
+// satisfied by a principal holding either, and an index keyed on the
+// principal's held scopes would answer as though it were. A selector naming
+// several therefore falls to the scan, where the real matcher decides.
+//
+// The "nothing else" half — here and in the two predicates above — is
+// consistency and defence in depth rather than a live correctness
+// requirement: considerTenants re-matches every candidate an index produces,
+// so a mis-filed selector narrows oddly but never admits wrongly. It is kept
+// because dropping that re-match as redundant is exactly the optimization
+// someone will reach for one day, and these predicates are what makes it safe
+// to have been wrong. The one predicate that is load-bearing today is the
+// exclusion of subs from indexableGroups: subs and groups are alternatives, so
+// a principal can satisfy such a selector by subject while holding no group at
+// all, and a group lookup would never surface it. See docs/design-tenancy.md.
+func indexableScope(s *config.PolicySubjects) (string, bool) {
+	if s == nil || len(s.Scopes) != 1 || len(s.Claims) > 0 || len(s.Issuers) > 0 || len(s.Subs) > 0 || len(s.Groups) > 0 {
+		return "", false
+	}
+	return s.Scopes[0], true
 }
 
 // indexKey returns v as a lookup key when it is one of the scalar types the
@@ -311,6 +348,11 @@ func (rt *routes) resolveTenant(p *auth.Principal) (*tenant, *jsonrpc.Error) {
 	if ts.byGroup != nil {
 		for _, g := range p.Groups {
 			found, also = considerTenants(ts.byGroup[g], p, found, also)
+		}
+	}
+	if ts.byScope != nil {
+		for _, sc := range p.Scopes {
+			found, also = considerTenants(ts.byScope[sc], p, found, also)
 		}
 	}
 	for _, t := range ts.scan {
