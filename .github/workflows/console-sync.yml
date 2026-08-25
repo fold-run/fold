@@ -76,7 +76,7 @@ jobs:
           go build ./...
           go test ./gateway -run 'Console|Introspection'
 
-      - name: open or update the bump PR
+      - name: open the bump PR
         if: steps.upstream.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -86,12 +86,37 @@ jobs:
             exit 0
           fi
           branch="console-sync/${{ steps.upstream.outputs.short }}"
+
+          # The branch name carries the upstream short SHA, so a branch that
+          # already exists is necessarily this same bump, still awaiting review
+          # from an earlier run. Re-pushing it is at best a no-op and at worst
+          # clobbers the verification commit the PR body asks a reviewer to
+          # push — so stop here instead.
+          #
+          # This step used to `git push --force-with-lease` unconditionally,
+          # which failed every week for as long as a bump PR stayed open:
+          # actions/checkout fetches only the default branch, so there is no
+          # remote-tracking ref for the bump branch, and --force-with-lease
+          # without one refuses with "stale info" rather than pushing. The
+          # weekly red run was that refusal, not a problem with the console.
+          #
+          # To make the bot re-propose a bump it already opened, delete the
+          # branch; closing the PR alone deliberately does not, so a declined
+          # bump stays declined instead of returning every Monday.
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "a bump to ${{ steps.upstream.outputs.short }} is already proposed on $branch"
+            gh pr view "$branch" --json number,state \
+              --jq '"  PR #\(.number) is \(.state)"' 2>/dev/null || true
+            echo "  delete the branch to have this job propose it again"
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
           git add gateway/console gateway/console_source.go scripts/sync-console.sh
           git commit -m "console: sync to fold-console@${{ steps.upstream.outputs.short }}"
-          git push --force-with-lease origin "$branch"
+          git push origin "$branch"
           if ! gh pr view "$branch" >/dev/null 2>&1; then
             gh pr create --head "$branch" \
               --title "console: sync to fold-console@${{ steps.upstream.outputs.short }}" \
