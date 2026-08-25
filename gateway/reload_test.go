@@ -256,3 +256,52 @@ func TestReloadNotifiesClients(t *testing.T) {
 		t.Errorf("refetched list %q missing the added upstream", got)
 	}
 }
+
+// The per-upstream response bound is snapshot state like the rest of an
+// upstream's config, so it must ride the swap in both directions: an
+// identical document keeps the upstream — bound included — without rebuilding
+// it, and a changed bound retires the upstream that carried the old one so
+// the new one is what requests actually meet. A bound that only took effect
+// on restart would be indistinguishable from one that took effect on reload
+// right up until an incident.
+func TestReloadAppliesUpstreamResponseBound(t *testing.T) {
+	up := newBulkUpstream(t, false)
+	bounded := config.Upstream{ID: "u", URL: up.URL, Namespace: "u", MaxResponseBytes: capBytes}
+	ts, gw := startGateway(t, &config.Config{Upstreams: []config.Upstream{bounded}})
+	session := connect(t, ts.URL, nil)
+	ctx := context.Background()
+
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "u__big"}); err == nil {
+		t.Fatal("oversized response was served before any reload")
+	}
+
+	// Unchanged: same upstream instance, same bound, same client session.
+	before := gw.rt().byID["u"]
+	if err := gw.Reload(&config.Config{Upstreams: []config.Upstream{bounded}}); err != nil {
+		t.Fatalf("Reload identical: %v", err)
+	}
+	if gw.rt().byID["u"] != before {
+		t.Error("a config-identical upstream was rebuilt")
+	}
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "u__big"}); err == nil {
+		t.Error("the bound stopped holding across an identical reload")
+	}
+
+	// Changed: the upstream carrying the old bound is retired, and the call
+	// that was refused now succeeds on the surviving client session.
+	raised := bounded
+	raised.MaxResponseBytes = -1
+	if err := gw.Reload(&config.Config{Upstreams: []config.Upstream{raised}}); err != nil {
+		t.Fatalf("Reload raised bound: %v", err)
+	}
+	if gw.rt().byID["u"] == before {
+		t.Error("the upstream carrying the old bound was reused after the bound changed")
+	}
+	out, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "u__big"})
+	if err != nil {
+		t.Fatalf("CallTool after the bound was lifted: %v", err)
+	}
+	if got := len(out.Content[0].(*mcp.TextContent).Text); got != bulkBig {
+		t.Errorf("result was %d bytes, want %d", got, bulkBig)
+	}
+}

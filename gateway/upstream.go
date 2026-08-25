@@ -26,14 +26,21 @@ import (
 
 // Gateway-minted JSON-RPC error codes, documented in the README.
 const (
-	codeRateLimited       = -32040 // per-upstream rate limit exceeded
-	codeUpstreamDown      = -32041 // circuit open or upstream unreachable
-	codeDenied            = -32042 // policy denied the invocation
-	codeUnknownNamespace  = -32043 // name does not resolve to an upstream
-	codeBudgetExhausted   = -32044 // consumption budget exhausted for the period
-	defaultCacheTTL       = 30 * time.Second
-	defaultConnectTimeout = 5 * time.Second
-	defaultRequestTimeout = 60 * time.Second
+	codeRateLimited      = -32040 // per-upstream rate limit exceeded
+	codeUpstreamDown     = -32041 // circuit open or upstream unreachable
+	codeDenied           = -32042 // policy denied the invocation
+	codeUnknownNamespace = -32043 // name does not resolve to an upstream
+	codeBudgetExhausted  = -32044 // consumption budget exhausted for the period
+	defaultCacheTTL      = 30 * time.Second
+
+	// defaultMaxResponseBytes bounds one upstream response. It is deliberately
+	// far above anything a real MCP payload reaches — the inbound cap is 1 MiB
+	// — because this is a backstop against an upstream spending the gateway's
+	// memory, not a size policy. A federation that legitimately needs more
+	// raises it; one that wants the old unbounded behaviour sets it negative.
+	defaultMaxResponseBytes = 64 << 20
+	defaultConnectTimeout   = 5 * time.Second
+	defaultRequestTimeout   = 60 * time.Second
 
 	// bridgedIdleTimeout bounds how long a per-client upstream session
 	// outlives its last use before the sweeper closes it.
@@ -278,6 +285,11 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 	}
 	ct := newCredentialTransport(u.creds, sessionEra, upstreamHosts)
 	ct.streamIdle = streamIdle
+	ct.maxResponse = int64(defaultMaxResponseBytes)
+	if cfg.MaxResponseBytes != 0 {
+		ct.maxResponse = int64(cfg.MaxResponseBytes)
+	}
+	ct.onCapped = func() { u.metrics.observeResponseCapped(u.cfg.ID) }
 	u.httpClient = &http.Client{
 		Transport: ct,
 		// Never follow a redirect that changes host: credentials are attached
@@ -327,6 +339,15 @@ type credentialTransport struct {
 	// streamIdle bounds silence on the standalone SSE stream (see the GET
 	// branch of RoundTrip); 0 disables the bound.
 	streamIdle time.Duration
+
+	// maxResponse bounds one upstream response; 0 disables the bound. On an
+	// event stream it bounds each event rather than the connection, because a
+	// healthy stream is unbounded in total by design.
+	maxResponse int64
+
+	// onCapped is called when a response trips maxResponse, so the event is
+	// counted rather than only surfacing as a failed call.
+	onCapped func()
 }
 
 func newCredentialTransport(creds *auth.UpstreamCredentials, sessionEra bool, upstreamHosts map[string]bool) *credentialTransport {
@@ -415,9 +436,29 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 			strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 			resp.Body = newIdleTimeoutBody(resp.Body, t.streamIdle)
 		}
+		if err == nil {
+			t.capBody(resp)
+		}
 		return resp, err
 	}
-	return t.base.RoundTrip(req)
+	resp, err := t.base.RoundTrip(req)
+	if err == nil {
+		t.capBody(resp)
+	}
+	return resp, err
+}
+
+// capBody bounds what an upstream may return, choosing the unit from the
+// content type. A request/response body is bounded whole; an event stream is
+// bounded per event, because a subscription that stays open for a day is
+// legitimately unbounded in total and a connection-wide cap would cut healthy
+// traffic at an arbitrary hour.
+func (t *credentialTransport) capBody(resp *http.Response) {
+	if t.maxResponse <= 0 || resp == nil || resp.Body == nil {
+		return
+	}
+	perEvent := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
+	resp.Body = newSizeCappedBody(resp.Body, t.maxResponse, perEvent, t.onCapped)
 }
 
 // idleTimeoutBody closes an SSE stream that has gone silent for longer than
@@ -455,6 +496,82 @@ func (b *idleTimeoutBody) Close() error {
 	b.timer.Stop()
 	return b.rc.Close()
 }
+
+// sizeCappedBody closes an upstream response that exceeds its bound. Closing
+// is the whole mechanism: the SDK's pending decode fails, the call surfaces as
+// an upstream failure, and nothing partial is ever handed on — which is the
+// difference between refusing an oversized response and truncating one.
+//
+// perEvent resets the count at each SSE frame boundary ("\n\n"), so the bound
+// applies to a single event rather than to the lifetime of a stream.
+type sizeCappedBody struct {
+	rc       io.ReadCloser
+	limit    int64
+	n        int64
+	perEvent bool
+	tailNL   bool // last byte of the previous read was "\n" (straddled terminator)
+	capped   atomic.Bool
+	onCapped func()
+}
+
+func newSizeCappedBody(rc io.ReadCloser, limit int64, perEvent bool, onCapped func()) *sizeCappedBody {
+	return &sizeCappedBody{rc: rc, limit: limit, perEvent: perEvent, onCapped: onCapped}
+}
+
+func (b *sizeCappedBody) Read(p []byte) (int, error) {
+	n, err := b.rc.Read(p)
+	if n > 0 {
+		if b.perEvent {
+			b.countEvents(p[:n])
+		} else {
+			b.n += int64(n)
+		}
+		if b.n > b.limit && !b.capped.Swap(true) {
+			if b.onCapped != nil {
+				b.onCapped()
+			}
+			_ = b.rc.Close()
+		}
+	}
+	if b.capped.Load() {
+		// Zero bytes, not n: io.Reader lets a caller consume what it was
+		// handed before it looks at the error, and handing back a prefix of
+		// an over-length body is the truncation this bound exists to avoid.
+		// The caller gets nothing and an error, which is the refusal.
+		return 0, fmt.Errorf("upstream response exceeded %d bytes", b.limit)
+	}
+	return n, err
+}
+
+// countEvents advances the byte count, resetting it after each frame
+// terminator. The terminator can straddle two reads, so the last byte of the
+// previous chunk is remembered.
+//
+// Allocation-free on purpose: this runs on every Read of every event stream,
+// and the obvious version — concatenating the carried byte onto the chunk to
+// search the join — would copy the whole chunk on each call. The straddle is
+// instead handled as what it is: a single byte comparison.
+func (b *sizeCappedBody) countEvents(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	// A terminator wholly inside this chunk ends at index >= 2, so it is
+	// always later than one straddling the boundary (which ends at index 0)
+	// — check it first, and only fall back to the straddle when there is
+	// none, or the count would reset to the wrong frame.
+	if i := bytes.LastIndex(chunk, []byte("\n\n")); i >= 0 {
+		b.n = int64(len(chunk) - (i + 2))
+	} else if b.tailNL && chunk[0] == '\n' {
+		// Previous chunk ended "\n", this one begins "\n": the frame ends
+		// at index 0 of this chunk.
+		b.n = int64(len(chunk) - 1)
+	} else {
+		b.n += int64(len(chunk))
+	}
+	b.tailNL = chunk[len(chunk)-1] == '\n'
+}
+
+func (b *sizeCappedBody) Close() error { return b.rc.Close() }
 
 // connect establishes a new session, load-balancing across the upstream's
 // endpoints: candidates come back round-robin with recently-failed replicas

@@ -373,3 +373,22 @@ func TestTrustAnchorClient(t *testing.T) {
 		t.Fatalf("redirect must be refused, got %v", err)
 	}
 }
+
+// An operator's resource URI may carry a trailing slash — RFC 9728 does not
+// forbid one — and the endpoints derived from it must stay single-slashed, or
+// the document a client discovers points at a path fold does not serve.
+func TestAuthorizationServerMetadataEndpointsFromIssuer(t *testing.T) {
+	for _, issuer := range []string{"https://gw.example.com", "https://gw.example.com/"} {
+		m := &EMA{issuer: issuer}
+		doc := m.AuthorizationServerMetadata()
+		if doc["issuer"] != issuer {
+			t.Errorf("issuer = %v, want %q (advertised verbatim)", doc["issuer"], issuer)
+		}
+		if got := doc["token_endpoint"]; got != "https://gw.example.com/oauth/token" {
+			t.Errorf("issuer %q: token_endpoint = %v", issuer, got)
+		}
+		if got := doc["jwks_uri"]; got != "https://gw.example.com/.well-known/jwks.json" {
+			t.Errorf("issuer %q: jwks_uri = %v", issuer, got)
+		}
+	}
+}

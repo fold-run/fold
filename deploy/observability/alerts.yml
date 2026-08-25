@@ -128,6 +128,20 @@ groups:
             upstream; the new definition is already the baseline, so this fires once
             per change.
 
+      - alert: FoldUpstreamResponseCapped
+        expr: increase(fold_upstream_response_capped_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.upstream }} sent a response past maxResponseBytes"
+          description: >-
+            An upstream returned more in one response than the gateway will hold, so the
+            response was refused and the call failed with -32041. fold does not truncate
+            here on purpose: a shortened body would be a response the upstream never sent.
+            Either the upstream is returning something far larger than an MCP payload
+            should be — a runaway list, an unpaginated result — or maxResponseBytes is set
+            below what this federation legitimately needs. Check which before raising it.
+
       - alert: FoldHookErrors
         expr: increase(fold_hook_decisions_total{outcome="error"}[10m]) > 0
         labels:

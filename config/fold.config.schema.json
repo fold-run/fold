@@ -77,6 +77,7 @@
         "budget": { "$ref": "#/definitions/budget" },
         "healthCheck": { "$ref": "#/definitions/healthCheck" },
         "cacheTtlMs": { "type": "integer" },
+        "maxResponseBytes": { "type": "integer" },
         "pinDefinitions": { "enum": ["off", "warn"] }
       }
     },

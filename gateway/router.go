@@ -328,7 +328,7 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 	out, err := u.callTool(ctx, key, opts, &mcp.CallToolParams{
 		Name:      bare,
 		Arguments: args,
-		Meta:      params.Meta,
+		Meta:      sanitizeRequestMeta(params.Meta),
 	})
 	g.drainBridge(key, before)
 	if err != nil {
@@ -404,7 +404,7 @@ func (g *Gateway) getPrompt(ctx context.Context, rt *routes, req mcp.Request, ev
 	out, err := u.getPrompt(ctx, key, opts, &mcp.GetPromptParams{
 		Name:      bare,
 		Arguments: params.Arguments,
-		Meta:      params.Meta,
+		Meta:      sanitizeRequestMeta(params.Meta),
 	})
 	g.drainBridge(key, before)
 	if err != nil {
@@ -505,6 +505,16 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "missing resource uri"}
 	}
 	evt.Name = params.URI
+	// Three branches below forward these params to an upstream — the minted
+	// ui:// owner, the affinity hit, and the probe — so the connection-owned
+	// `_meta` keys come off once, here, rather than at each of them. The copy
+	// is made only when there is something to strip, and the caller's own
+	// params object is left alone for audit and the decision hook.
+	if sanitized := sanitizeRequestMeta(params.Meta); len(sanitized) != len(params.Meta) {
+		forwarded := *params
+		forwarded.Meta = sanitized
+		params = &forwarded
+	}
 	principal := auth.PrincipalFromContext(ctx)
 	tn := tenantFrom(ctx)
 	denied := false
@@ -633,6 +643,7 @@ func (g *Gateway) complete(ctx context.Context, rt *routes, req mcp.Request, evt
 	var u *upstream
 	var method, name string
 	forwarded := *params
+	forwarded.Meta = sanitizeRequestMeta(params.Meta)
 	switch params.Ref.Type {
 	case "ref/prompt":
 		evt.Name = params.Ref.Name
@@ -662,6 +673,14 @@ func (g *Gateway) complete(ctx context.Context, rt *routes, req mcp.Request, evt
 	if err != nil {
 		return nil, err
 	}
+	// The one named-invocation path that does not tag its result, and so does
+	// not get the reverse-direction strip from tagUpstream. It still needs it:
+	// the SDK stamps fold's own identity onto a result only when the key is
+	// absent, so an upstream's serverInfo left in place would both reach the
+	// caller and suppress fold's. Stripped rather than tagged, because adding
+	// an upstream marker to completion results would be new caller-visible
+	// metadata rather than a fix.
+	stripResultMeta(&out.Meta)
 	return out, nil
 }
 
@@ -800,10 +819,15 @@ func (g *Gateway) authorizeServerInitiated(ctx context.Context, u *upstream, met
 	}, nil
 }
 
+// tagUpstream marks a proxied result with the upstream that served it. It is
+// also where the reverse-direction connection key is dropped: every path that
+// returns an upstream's own result meta passes through here, so the strip has
+// one home rather than four.
 func tagUpstream(meta *mcp.Meta, u *upstream) {
 	if *meta == nil {
 		*meta = mcp.Meta{}
 	}
+	stripResultMeta(meta)
 	(*meta)[metaUpstream] = u.cfg.ID
 }
 
