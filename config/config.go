@@ -503,6 +503,15 @@ func (c *Config) validateTenants() error {
 		}
 		fingerprints[string(fp)] = t.ID
 
+		// Same reasoning as the policy rules: an empty scope names nothing,
+		// and a tenant selector that can never match would leave its
+		// principals ungoverned rather than fail loudly.
+		for _, sc := range t.Subjects.Scopes {
+			if strings.TrimSpace(sc) == "" {
+				return fmt.Errorf("tenant %q: scopes must not contain empty values", t.ID)
+			}
+		}
+
 		if err := t.Budget.validate(fmt.Sprintf("tenant %q", t.ID)); err != nil {
 			return err
 		}
@@ -649,6 +658,20 @@ type PolicySubjects struct {
 	// JSON scalars (string, number, bool). Combines with subs/groups as an
 	// additional requirement, like issuers.
 	Claims map[string]any `json:"claims,omitempty"`
+
+	// Scopes gates the rule on the OAuth scopes the token carries: the
+	// principal must hold *every* scope named. That is conjunctive, unlike
+	// groups and subs, which are alternatives — a scope is an authorization
+	// the token was granted rather than an identity it has, so "requires
+	// read and write" is the only reading of a list of them that matches
+	// what an operator writing it means.
+	//
+	// It exists as its own field rather than as a claims entry because the
+	// standard spelling cannot be matched by the claims matcher: RFC 6749
+	// makes "scope" a space-delimited string, so `claims: {"scope": "write"}`
+	// does not match a token carrying "read write". Scopes are read from
+	// "scope" or "scp", as a string or an array — see auth.ScopesFromClaims.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // PolicyAllow grants methods/names on one upstream. Names support "*" globs.
@@ -1239,6 +1262,15 @@ func (c *Config) Validate() error {
 						// semantics nobody can predict from a config file;
 						// scalar-or-membership is the whole contract.
 						return fmt.Errorf("policy rule %q: claim %q must be a JSON scalar (string, number, or bool)", r.ID, k)
+					}
+				}
+				// An empty scope would be held by nobody, so a rule carrying
+				// one can never match — and it would read as a typo that
+				// silently narrowed a grant to nothing rather than as an
+				// error.
+				for _, sc := range r.Subjects.Scopes {
+					if strings.TrimSpace(sc) == "" {
+						return fmt.Errorf("policy rule %q: scopes must not contain empty values", r.ID)
 					}
 				}
 			}

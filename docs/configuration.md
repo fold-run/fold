@@ -209,6 +209,19 @@ Scope a rule to specific token issuers with `"subjects": { "issuers": ["https://
 
 Attribute-based rules match on verified token claims: `"subjects": { "claims": { "dept": "eng", "mfa": true } }`. Every listed claim must match — the token claim equals the value, or, when the token carries an array (like an entitlements list), contains it. Values are JSON scalars (string, number, bool). Claims gate like issuers: they combine with `subs`/`groups` as an additional requirement, or stand alone as the whole subject. The same issuer-pinning caveat applies — claim names mean whatever each IdP says they mean, so pin claim-based rules to an issuer when more than one is trusted. Richer conditions (device posture, network location) belong in the IdP, surfaced to fold as claims — that is what token claims are for.
 
+Scope-based rules match on the OAuth scopes the token carries: `"subjects": { "scopes": ["reports:write"] }`. Every listed scope must be held — **scopes are conjunctive**, where `subs` and `groups` are alternatives. That asymmetry is the point: `subs` and `groups` answer *who is this*, and one identity is enough, while a scope answers *what were they granted*, and a list of those is a set of requirements rather than a choice. Like claims, scopes gate — they combine with `subs`/`groups` as an additional requirement, or stand alone as the whole subject.
+
+Scopes are their own field rather than a `claims` entry because the standard spelling cannot be matched as a claim: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749#section-3.3) makes `scope` a *space-delimited string*, so `"claims": { "scope": "write" }` does not match a token carrying `scope: "read write"` — it compares whole values. fold reads `scope` first and `scp` only if that yields nothing, and accepts either as a space-delimited string or a JSON array, so a rule is written once against the concept rather than against an issuer's spelling. The two are never merged: an issuer sending both is sending the same set twice, and merging would silently union two claims that disagreed.
+
+**A scope denial says what would fix it.** When a caller is refused and the *only* thing standing between them and a rule was scopes, the `-32042` error names them — in the message, and in `data.missingScopes` for a client that reads structured errors — and the audit event carries `missingScopes`. An agent can then re-authorize for exactly what it lacks instead of retrying blind.
+
+Two rules bound that disclosure, and they matter more than the convenience:
+
+- **Only scopes the caller lacks are named**, never the full requirement. Re-authorizing accumulates permissions rather than replacing them, so a caller holding `read` who needs `read` and `write` is told to obtain `write` alone — asking for the pair risks an IdP issuing a token that drops what they already had.
+- **A rule contributes only when scopes were the sole obstacle and it targets that exact invocation.** If a non-scope condition rejected the caller first, or the rule was about a different tool, the denial names nothing — disclosing a scope requirement guarding something the caller could not reach anyway would leak that the thing exists. This is the same discipline `args` already follows, which reports *which* argument path failed and never the value the rule wanted.
+
+Scopes work in [`tenants`](#tenants) selectors too, with the same semantics.
+
 ## `hook`
 
 The external decision endpoint — fold's one out-of-process seam, and its answer to the plugin runtime it [declines](roadmap.md#non-goals). Absent by default; nothing on the request path changes without it.

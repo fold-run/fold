@@ -243,6 +243,7 @@
         "groups": { "type": "array", "items": { "type": "string" } },
         "subs": { "type": "array", "items": { "type": "string" } },
         "issuers": { "type": "array", "items": { "type": "string" } },
+        "scopes": { "type": "array", "items": { "type": "string" } },
         "claims": {
           "type": "object",
           "additionalProperties": { "type": ["string", "number", "boolean"] }
