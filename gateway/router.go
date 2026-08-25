@@ -261,6 +261,7 @@ func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, ev
 		return nil, err
 	}
 	out := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Meta: meta}
+	applyCacheHints(&out.Cacheable, rt.listScope)
 	filter := newListFilter(principal, rt.policy, "tools/call")
 	for i, u := range ups {
 		// Visibility is decided on the bare name, the item emitted is the
@@ -356,6 +357,7 @@ func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, 
 		return nil, err
 	}
 	out := &mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}, Meta: meta}
+	applyCacheHints(&out.Cacheable, rt.listScope)
 	filter := newListFilter(principal, rt.policy, "prompts/get")
 	for i, u := range ups {
 		public := u.namespacedPrompts(ctx, lists[i]) // index-aligned — see listTools
@@ -428,6 +430,7 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 	}
 	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourcesResult{Resources: []*mcp.Resource{}, Meta: meta}
+	applyCacheHints(&out.Cacheable, rt.listScope)
 	filter := newListFilter(principal, rt.policy, "resources/read")
 	for i, u := range ups {
 		// Visibility is decided on the upstream's own URI, the item emitted is
@@ -474,6 +477,7 @@ func (g *Gateway) listResourceTemplates(ctx context.Context, rt *routes, req mcp
 	}
 	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}, Meta: meta}
+	applyCacheHints(&out.Cacheable, rt.listScope)
 	filter := newListFilter(principal, rt.policy, "resources/read")
 	for i, u := range ups {
 		for _, tpl := range lists[i] {

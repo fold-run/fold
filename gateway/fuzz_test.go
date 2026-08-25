@@ -203,3 +203,38 @@ func FuzzSanitizeRawMeta(f *testing.F) {
 		}
 	})
 }
+
+// FuzzListCacheScope feeds arbitrary config documents through the caching
+// hint fold stamps on every list it builds. The property is the one the
+// specification states and the one fold got wrong: the scope is "public" or
+// "private" and nothing else — not the empty string, and not a value derived
+// from anything a document happens to contain. Nothing about a configuration
+// can talk fold into a third answer.
+func FuzzListCacheScope(f *testing.F) {
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}]}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"defaultDecision":"deny"}}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"defaultDecision":"allow"}}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"defaultDecision":"allow","rules":[{"id":"r","allow":[{"server":"a"}]}]}}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"tenants":[{"id":"t","subjects":{"groups":["eng"]}}]}`))
+	// A decision fold does not define: neither "deny" nor "allow" may become
+	// a third scope.
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"defaultDecision":"public"}}`))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var cfg config.Config
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return
+		}
+		// Both an unvalidated document and one fold would accept: the hint is
+		// read off the snapshot on the request path, so the property has to
+		// hold before validation has had a say as well as after.
+		for _, got := range []string{
+			listCacheScope(&cfg, nil),
+			listCacheScope(&cfg, []*upstream{{}}),
+		} {
+			if got != cacheScopePublic && got != cacheScopePrivate {
+				t.Fatalf("listCacheScope = %q for %q, which is not a scope the specification defines", got, data)
+			}
+		}
+	})
+}
