@@ -16,6 +16,10 @@ same guardrails.
 | `/update-docs` | Map the working diff to the doc surfaces that track it and fix drift via the docs-sync agent. The Stop hook nudges toward this when code changes without doc changes. |
 | `/perf` | Proxy-path latency work: measure via the bench-profiler agent, apply the move-to-snapshot-build fix pattern, verify with bench + race. |
 | `/watch-ci` | Post-push CI watching: find the run, watch in background, triage failures back to local make targets. |
+| `/mcp-spec` | Look up the normative spec text for a method, field, header, or error code before changing wire behavior — pinned to revision `2026-07-28`. |
+| `/mcp-inspector` | Drive the official Inspector CLI against a running fold to see what a real client sees: the invisibility diff, namespacing round-trip, policy pair, `ui://` reads. |
+| `/spec-drift` | Compare a new protocol revision against what fold implements and land each gap in code, README "Not implemented", or the roadmap. |
+| `/console-sync` | The vendored `gateway/console` assets: reviewing a weekly bump PR as a supply-chain change, the `console-check` gate, the manifest allowlist, and failure triage. |
 
 Claude also loads these automatically when a task matches the skill's
 description.
@@ -37,6 +41,12 @@ description.
   `docs/security-model.md`: inbound chain order, deny-by-default pair,
   credential confinement, tenant isolation, SSRF/parser surface, audit
   completeness.
+- **mcp-spec-auditor** (cyan) — read-only audit against the MCP
+  specification itself rather than fold's own invariants: error-code
+  allocation, required fields surviving the list merge, the caching and
+  opacity rules that bind fold as a *shared intermediary*, and deprecations
+  on the clock. Driven by `/spec-drift`; grounds every finding in fetched
+  spec text.
 
 ## Hooks (`hooks/`, wired in `settings.json`)
 
