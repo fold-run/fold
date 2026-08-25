@@ -195,6 +195,10 @@ type Tracing struct {
 	RecordPrincipal bool `json:"recordPrincipal,omitempty"`
 }
 
+// minMaxResponseBytes floors upstreams[].maxResponseBytes. See the validation
+// that uses it for why a too-small cap is refused rather than honoured.
+const minMaxResponseBytes = 64 << 10
+
 // Upstream describes one MCP server folded into the gateway.
 type Upstream struct {
 	ID  string `json:"id"`
@@ -241,6 +245,22 @@ type Upstream struct {
 	// resources) for this upstream. 0 uses the gateway default (30s);
 	// negative disables caching.
 	CacheTTLMs int `json:"cacheTtlMs,omitempty"`
+
+	// MaxResponseBytes bounds a single response from this upstream. 0 uses
+	// the gateway default (64 MiB); negative disables the bound.
+	//
+	// The inbound direction has had server.maxBodyBytes since v1, and every
+	// other thing fold fetches — tokens, JWKS, the discovery document, the
+	// decision hook — is already bounded. The upstream data path was the one
+	// place with no limit at all, which made a buggy or hostile upstream able
+	// to spend the gateway's memory: an oversized list is decoded, cached,
+	// and (with Redis configured) pushed into shared fleet state. It is the
+	// internal/bounded rule applied to bytes rather than to keys.
+	//
+	// The bound refuses rather than truncates. A shortened body would be the
+	// response rewriting fold declines, so an upstream that exceeds it is
+	// reported as unavailable (-32041) — which is what it is.
+	MaxResponseBytes int `json:"maxResponseBytes,omitempty"`
 
 	// PinDefinitions notices when this upstream changes what it advertises —
 	// a tool's description, schema, or annotations rewritten after the
@@ -973,6 +993,16 @@ func (c *Config) Validate() error {
 		}
 		if u.HealthCheck != nil && u.HealthCheck.IntervalMs <= 0 {
 			return fmt.Errorf("upstream %q: healthCheck.intervalMs must be positive", u.ID)
+		}
+		// A cap below any real MCP response is refused rather than honoured,
+		// because the failure it produces does not look like a config error:
+		// every call to the upstream fails with -32041, the breaker opens on
+		// the failures, and the federation reports the upstream as
+		// unavailable. "maxResponseBytes": 64 — meaning MiB — would read as
+		// an outage. Negative is a deliberate "no bound" and stays legal.
+		if u.MaxResponseBytes > 0 && u.MaxResponseBytes < minMaxResponseBytes {
+			return fmt.Errorf("upstream %q: maxResponseBytes must be at least %d bytes (64 KiB) or negative to disable; %d is below any real MCP response and would fail every call",
+				u.ID, minMaxResponseBytes, u.MaxResponseBytes)
 		}
 		// Negative durations and thresholds were silently treated as "use
 		// the default", which the schema already forbids (minimum 0) — the

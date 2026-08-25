@@ -14,6 +14,12 @@ import (
 func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}]}`))
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","namespace":"a"},{"id":"b","url":"http://b/mcp","namespace":"b"}],"routing":{"namespaceSeparator":"::"}}`))
+	// The response bound: default (absent), an explicit value, and the
+	// negative that disables it — a numeric field whose zero, positive, and
+	// negative ranges all mean different things.
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":1048576}]}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":-1}]}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":2048}]}`)) // below the floor
 	f.Add([]byte(`{"upstreams":[]}`))
 	f.Add([]byte(`{`))
 	f.Add([]byte(`null`))

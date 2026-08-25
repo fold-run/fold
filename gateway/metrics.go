@@ -62,7 +62,8 @@ type metricsSet struct {
 	// served them. Labelled by upstream and list kind only: the tool name is
 	// upstream-chosen and therefore unbounded, so it belongs in the audit
 	// event rather than in a label set.
-	drift *prometheus.CounterVec
+	drift      *prometheus.CounterVec
+	respCapped *prometheus.CounterVec
 
 	// stateDegr counts rate-limit/breaker decisions made per-instance
 	// because Redis was unreachable — the limiter/breaker peer of
@@ -139,6 +140,10 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_definition_drift_total",
 			Help: "Definitions an upstream rewrote after fold had served them, by upstream and list kind. Non-zero means a tool's instructions or annotations changed after the federation was approved — legitimate or not, it is a change nobody reviewed.",
 		}, []string{"upstream", "kind"}),
+		respCapped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_upstream_response_capped_total",
+			Help: "Upstream responses refused for exceeding maxResponseBytes, by upstream. Non-zero means an upstream sent more than the gateway will hold in memory; the call failed rather than being truncated, so alert on it.",
+		}, []string{"upstream"}),
 		panics: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fold_panics_total",
 			Help: "Panics recovered by the gateway, by site. The process survives them by design, but every one is a bug — alert on non-zero.",
@@ -151,7 +156,7 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
 		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems, m.panics, m.drift, m.hookDecisions, m.hookLatency,
-		m.stateDegr,
+		m.stateDegr, m.respCapped,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -334,4 +339,13 @@ func (m *metricsSet) discoverySync(outcome string) {
 
 func (m *metricsSet) handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
+}
+
+// observeResponseCapped counts one upstream response refused for exceeding its
+// size bound.
+func (m *metricsSet) observeResponseCapped(upstream string) {
+	if m == nil || m.respCapped == nil {
+		return
+	}
+	m.respCapped.WithLabelValues(upstream).Inc()
 }

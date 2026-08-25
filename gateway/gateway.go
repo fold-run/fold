@@ -1304,6 +1304,14 @@ func (g *Gateway) buildHandler() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", g.protectedResourceHandler())
 		if g.ema != nil {
 			mux.HandleFunc("/.well-known/jwks.json", g.ema.ServeJWKS)
+			// RFC 8414. fold names itself in `authorization_servers` above
+			// whenever EMA is on, so a client that follows that pointer must
+			// find a document rather than a 404 — at the root path, and also
+			// at the path-scoped form when auth.resource carries a path,
+			// since that is where §3.1 sends the client.
+			for _, path := range g.ema.AuthorizationServerMetadataPaths() {
+				mux.HandleFunc(path, g.ema.ServeAuthorizationServerMetadata)
+			}
 			mux.Handle("/oauth/token", g.tokenRateLimit(http.HandlerFunc(g.ema.ServeToken)))
 		}
 	}

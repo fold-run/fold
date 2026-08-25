@@ -254,6 +254,12 @@ func extractTaskID(raw json.RawMessage) string {
 // route to the owning upstream by affinity, falling back to a probe.
 func (g *Gateway) routeTask(ctx context.Context, method string, raw json.RawMessage) (json.RawMessage, error) {
 	rt := g.rt()
+	// Task params reach the upstream as the bytes the caller sent, so the
+	// connection-owned `_meta` keys the typed paths strip have to be removed
+	// here too — and here fold is the only thing that can, because the SDK
+	// does not model these methods and so never stamps its own values over
+	// them. Done once, before any branch: every route below forwards this.
+	raw = sanitizeRawMeta(raw)
 	caller := taskOwnerKey(auth.PrincipalFromContext(ctx))
 	if method == methodTasksList {
 		return g.listTasks(ctx, rt, caller, raw)

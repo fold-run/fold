@@ -37,6 +37,7 @@ decision in [defaults.md](defaults.md). A full working document is
 | `budget` | none | `{ period, upstreamCalls }` — a consumption allowance that **accumulates** until the calendar period rolls over, unlike `rateLimit`, which smooths a burst and forgets it. `period` is `hour`, `day`, or `month` (default), aligned to UTC. Requires shared state to mean anything across a fleet; without it each instance enforces its own allowance and the gateway warns at startup. |
 | `healthCheck` | none | `{ intervalMs }` — actively probe every endpoint (full MCP connect) on this interval, ejecting dead replicas before client traffic hits them and restoring recovered ones immediately. Absent → passive health (connect failures eject, cooldown restores). |
 | `cacheTtlMs` | `30000` | TTL for cached list results. Negative disables caching. |
+| `maxResponseBytes` | `67108864` (64 MiB) | Bounds a single response from this upstream. An upstream that exceeds it is reported unavailable (`-32041`) rather than truncated — a shortened body would be a response the upstream never sent. On an event stream the bound applies per event, not per connection. Negative disables it. See below. |
 | `pinDefinitions` | `off` | `"warn"` records the digest of every tool and prompt definition this upstream advertises and reports a change — a description, schema, or annotation rewritten after the federation was approved. See below. |
 
 **Definition pinning.** A tool's description and input schema are the instruction set a model acts on, and its annotations are what policy decides with; fold re-reads them from the upstream on every cache refill. With `pinDefinitions: "warn"`, it also remembers them: the digest of each definition goes to shared state, a difference emits the `upstream/definitionChanged` audit event and increments `fold_definition_drift_total{upstream,kind}`, and the new definition becomes the baseline — so a change is one alert, not one per refill. Nothing is withheld; this reports.
@@ -60,6 +61,35 @@ List freshness works end to end: when an upstream emits a `list_changed` notific
 `passthrough` and `token-exchange` derive per-principal credentials, so they require `auth.mode: "required"` — without a verified caller identity there is no subject to exchange for, and passthrough would forward whatever header an anonymous caller supplied.
 
 `clientAuth`: `{ "type": "client_secret_post" | "client_secret_basic", "secretRef": "..." }`. Token endpoints must use `https` (loopback exempt). Upstream credentials are attached per request and bound to the configured upstream host: the gateway refuses cross-host redirects and never re-attaches a credential to another host, so a hostile upstream cannot capture the API key (or a passthrough caller's token) with a 3xx. Exchanged tokens are cached per `(upstream, issuer, subject)`. List results are not cached for `passthrough`/`token-exchange` upstreams, since those may be per-user, and such upstreams hold **one MCP session per principal** rather than the single session an upstream with a gateway-configured credential shares: the session is established by whoever opens it and keeps that identity for its whole life, so sharing it would present one caller to the upstream while carrying another's token. Those per-caller sessions age out on the same idle sweep as bridged sessions, and `healthCheck` is ignored for them — a probe holds no caller credential, so it could only ever fail.
+
+### Bounding what an upstream may return
+
+`maxResponseBytes` is the outbound peer of `server.maxBodyBytes`. The inbound
+direction has been bounded since v1, and everything else the gateway fetches —
+tokens, JWKS, the discovery document, the decision hook — carries its own
+limit; the upstream data path was the one place with none. Without it, an
+upstream that returns a runaway `tools/list` spends the gateway's memory
+twice: once decoding it, and again storing it in the list cache, which with
+`server.redisUrl` set pushes it into shared fleet state. It is the same rule
+`internal/bounded` applies to keys, applied to bytes.
+
+The bound **refuses rather than truncates**. A shortened body would be a
+response the upstream never sent, which is the response rewriting fold
+declines everywhere else, so an upstream that exceeds it is reported
+unavailable (`-32041`) and nothing partial is cached or served. The refusal is
+counted by `fold_upstream_response_capped_total{upstream}` and has its own
+alert in the shipped rules.
+
+On a `text/event-stream` response the bound applies to **each event**, not to
+the connection. A subscription that stays open for a day is legitimately
+unbounded in total, so a connection-wide cap would cut healthy traffic at an
+arbitrary hour; what the bound is actually protecting against is a single
+oversized payload.
+
+The default is 64 MiB — far above any real MCP payload, because this is a
+backstop against an upstream spending the gateway's memory rather than a size
+policy. A federation that legitimately serves more raises it; one that wants
+the pre-v1.15 unbounded behaviour sets it negative.
 
 ## `auth`
 
@@ -108,7 +138,7 @@ one-grant-wide MCP Authorization Server: `POST /oauth/token` exchanges an enterp
 }
 ```
 
-An assertion must be issued by `idpIssuer` for the `resource` audience and carry `exp` and `jti`; each `jti` is single-use until it expires (recorded fleet-wide via Redis when configured), so a captured ID-JAG cannot be redeemed twice. Issuers with `mode: "exchange"` are excluded from direct token presentation and from the advertised `authorization_servers` — fold itself is the authorization server for those, publishing its minting key at `/.well-known/jwks.json` and announcing the `io.modelcontextprotocol/enterprise-managed-authorization` extension in the protected-resource metadata. The token endpoint is unauthenticated by design (the assertion is the credential) and rate-limited against amplification. Generate a key with `openssl ecparam -genkey -name prime256v1 | openssl pkcs8 -topk8 -nocrypt`.
+An assertion must be issued by `idpIssuer` for the `resource` audience and carry `exp` and `jti`; each `jti` is single-use until it expires (recorded fleet-wide via Redis when configured), so a captured ID-JAG cannot be redeemed twice. fold publishes RFC 8414 authorization-server metadata at `/.well-known/oauth-authorization-server` whenever EMA is enabled, so a client that follows the `authorization_servers` pointer in the protected-resource document can discover the token endpoint and key set rather than being configured with them out of band. The document is narrow on purpose: it describes the one grant this server implements and claims nothing else. Issuers with `mode: "exchange"` are excluded from direct token presentation and from the advertised `authorization_servers` — fold itself is the authorization server for those, publishing its minting key at `/.well-known/jwks.json` and announcing the `io.modelcontextprotocol/enterprise-managed-authorization` extension in the protected-resource metadata. The token endpoint is unauthenticated by design (the assertion is the credential) and rate-limited against amplification. Generate a key with `openssl ecparam -genkey -name prime256v1 | openssl pkcs8 -topk8 -nocrypt`.
 
 ## `policy`
 

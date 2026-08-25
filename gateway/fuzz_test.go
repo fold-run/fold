@@ -1,6 +1,9 @@
 package gateway
 
 import (
+	"bytes"
+	"encoding/json"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -126,5 +129,77 @@ func FuzzDiscoveryDoc(f *testing.F) {
 		merged := *base
 		merged.Upstreams = append(append([]config.Upstream{}, base.Upstreams...), ups...)
 		_ = merged.Validate()
+	})
+}
+
+// FuzzSanitizeRawMeta feeds arbitrary bytes through the task-params
+// sanitizer. Task params are the one params object fold forwards as opaque
+// JSON, so this is a caller-controlled parser on the proxy path, and the
+// properties it must hold are unconditional: never panic; never mutate the
+// caller's bytes; hand back an unparsable blob exactly as it arrived (fold
+// does not interpret this path, so it cannot start failing calls over it);
+// and, for anything it does rewrite, emit a params object that still parses,
+// still carries every other field, and carries none of the connection-owned
+// keys.
+func FuzzSanitizeRawMeta(f *testing.F) {
+	f.Add([]byte(`{"taskId":"t-1"}`))
+	f.Add([]byte(`{"taskId":"t-1","_meta":{"io.modelcontextprotocol/clientInfo":{"name":"x"}}}`))
+	f.Add([]byte(`{"taskId":"t-1","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","example.com/vendor":"keep"}}`))
+	f.Add([]byte(`{"taskId":"t-1","_meta":{"io.modelcontextprotocol/clientCapabilities":{}}}`))
+	f.Add([]byte(`{"_meta":{"io.modelcontextprotocol/clientInfo":{"name":"x"}},"_meta":{"a":1}}`)) // duplicate key
+	f.Add([]byte(`{"taskId":"t-1","_meta":"io.modelcontextprotocol/clientInfo"}`))                 // _meta is not an object
+	f.Add([]byte(`{"taskId":"io.modelcontextprotocol/clientInfo"}`))                               // namespace outside _meta
+	f.Add([]byte(`{"taskId":"t-1","_meta":{"io.modelcontextprotocol/clientInfo":`))                // truncated
+	f.Add([]byte(`[]`))
+	f.Add([]byte(``))
+	f.Add([]byte(`io.modelcontextprotocol/`))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		original := append([]byte(nil), data...)
+		out := sanitizeRawMeta(data)
+		if !bytes.Equal(data, original) {
+			t.Fatalf("sanitizeRawMeta mutated the caller's bytes: %q became %q", original, data)
+		}
+
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(data, &params); err != nil {
+			if !bytes.Equal(out, data) {
+				t.Fatalf("params fold cannot parse were rewritten: %q → %q", data, out)
+			}
+			return
+		}
+		var got map[string]json.RawMessage
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("sanitized params no longer parse: %v (%q → %q)", err, data, out)
+		}
+		var meta map[string]json.RawMessage
+		if raw, ok := got["_meta"]; ok && json.Unmarshal(raw, &meta) == nil {
+			for _, k := range connectionRequestMetaKeys {
+				if _, bad := meta[k]; bad {
+					t.Fatalf("connection key %q survived: %q → %q", k, data, out)
+				}
+			}
+			// An already-empty `_meta` is the caller's to send; only one
+			// fold emptied itself must be dropped rather than left behind.
+			if len(meta) == 0 && !bytes.Equal(out, data) {
+				t.Fatalf("an emptied _meta was kept rather than removed: %q → %q", data, out)
+			}
+		}
+		for k, want := range params {
+			if k == "_meta" {
+				continue
+			}
+			var wantAny, gotAny any
+			if err := json.Unmarshal(want, &wantAny); err != nil {
+				continue // a value fold's own decoder rejects is not the property under test
+			}
+			raw, ok := got[k]
+			if !ok {
+				t.Fatalf("field %q was dropped: %q → %q", k, data, out)
+			}
+			if err := json.Unmarshal(raw, &gotAny); err != nil || !reflect.DeepEqual(wantAny, gotAny) {
+				t.Fatalf("field %q changed: %q → %q", k, data, out)
+			}
+		}
 	})
 }
