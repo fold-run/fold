@@ -192,6 +192,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/design-policy-depth.md](docs/design-policy-depth.md) — design record (proposed): deny rules, argument constraints, and destructive-operation gating — with the precedence, visibility, and trust questions each one raises settled before implementation.
 - [docs/design-mcp-apps.md](docs/design-mcp-apps.md) — design record: MCP Apps through a federating gateway — why a client-declared extension needs capability-keyed upstream sessions, why `ui://` URIs are the one kind fold rewrites, and the two gaps that belong to the extension's specification rather than to fold.
 - [docs/design-tenancy.md](docs/design-tenancy.md) — design record: the tenant object — a named set of principals and the governance that applies to them, why it never becomes a trust anchor, and the two corrections implementation forced on the design.
+- [docs/design-egress-oauth.md](docs/design-egress-oauth.md) — design record (proposed): per-user upstream credentials — how a caller reaches a third-party SaaS MCP server as themselves without the credential ever touching their laptop, why the consent prompt is URL-mode elicitation rather than anything fold invents, and where the line sits between brokering credentials and becoming a secrets manager.
 
 ## Deploying
 
