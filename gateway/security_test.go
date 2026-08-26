@@ -394,7 +394,7 @@ func TestForbiddenHostWithMalformedPort(t *testing.T) {
 	}
 }
 
-// TestUpstreamDownMessageRedacted: a fold-minted -32041 must not carry the
+// TestUpstreamDownMessageRedacted: a fold-minted -31041 must not carry the
 // raw transport error — it names internal endpoints and can name secret
 // env vars, the same strings /health redacts for untrusted callers.
 func TestUpstreamDownMessageRedacted(t *testing.T) {
@@ -410,7 +410,7 @@ func TestUpstreamDownMessageRedacted(t *testing.T) {
 	err := u.ping(context.Background())
 	var wire *jsonrpc.Error
 	if !asWireError(err, &wire) || wire.Code != codeUpstreamDown {
-		t.Fatalf("expected -32041, got %v", err)
+		t.Fatalf("expected -31041, got %v", err)
 	}
 	if strings.Contains(wire.Message, "secret-internal-host") {
 		t.Fatalf("minted error leaks the endpoint: %q", wire.Message)

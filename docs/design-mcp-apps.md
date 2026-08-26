@@ -111,7 +111,7 @@ first.
 `AppBridge` installs `oncalltool` as a verbatim forward of `tools/call` to the
 server — no name validation, no visibility check. Replaying what it would
 send, `{"name":"get-time"}` through fold returns
-`-32043 unknown name "get-time": no upstream owns this namespace`, while
+`-31043 unknown name "get-time": no upstream owns this namespace`, while
 `alpha__get-time` succeeds. So §3 is a real break with a fold-shaped error on
 it. Two mitigating facts: the same bridge exposes `tools/list` to the app, so
 an app that resolves names dynamically can adapt, and `ui/initialize` hands
@@ -283,7 +283,7 @@ form to resolve back.
 ## 3. An app that hardcodes a tool name cannot call it through fold
 
 An app calls its server's tools by name. Through fold the tool is
-`{namespace}__{name}`, and `resolve` answers a bare name with `-32043`
+`{namespace}__{name}`, and `resolve` answers a bare name with `-31043`
 (`gateway/router.go:177`). There is nothing to rewrite: the name lives inside
 the app's HTML bundle, which fold serves as opaque bytes.
 
@@ -295,7 +295,7 @@ unmodified. An app with `callTool("get_data")` written into it does not.
 
 The reference host does not rescue it. `AppBridge` forwards an app's
 `tools/call` to the server verbatim, so the failure surfaces as fold's
-`-32043` rather than as a host-side rejection — measured above.
+`-31043` rather than as a host-side rejection — measured above.
 
 **Recommendation: still do not build a local fix.** The obvious one — accept
 an unambiguous bare name as a fallback resolution — weakens the namespace
@@ -305,7 +305,7 @@ federation, which is the cross-upstream reach §4 is already uncomfortable
 about. The answer belongs in the extension: a way for an app to learn the name
 its host knows the tool by. A federating gateway is a case the MVP did not
 consider, and the report is worth more than a patch. What fold can do
-meanwhile is make the failure legible — a `-32043` whose message says the name
+meanwhile is make the failure legible — a `-31043` whose message says the name
 looks unnamespaced, which is a message change rather than a routing change.
 
 ## 4. Federation collapses the host's cross-server app boundary

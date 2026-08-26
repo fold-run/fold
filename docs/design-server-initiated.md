@@ -118,7 +118,7 @@ rejects in [policy depth](design-policy-depth.md).
 ## 4. Refusal on the wire
 
 A denied reverse request returns a JSON-RPC error **to the upstream**, not to
-the client, and reuses `-32042` (policy denied). No new code is minted: the
+the client, and reuses `-31042` (policy denied). No new code is minted: the
 semantics are identical and the [registry](../README.md) stays at four.
 
 This is spec-shaped rather than adversarial. A client is entitled to decline a
@@ -274,7 +274,7 @@ exactly as it does today.
 ## Implementation phases
 
 1. **Decide and refuse** — `bridgeFor(req, u)`, the policy check in both
-   handlers, `serverInitiatedDecision`, `-32042` to the upstream, audit events
+   handlers, `serverInitiatedDecision`, `-31042` to the upstream, audit events
    with `direction`. Integration tests with a real SDK upstream that samples.
    **Shipped.** Two things implementation added to this plan. `bridgeFor` grew
    a `bridgeKey` sibling, because `logging/setLevel` bridges to every visible

@@ -18,7 +18,7 @@ as already accurate.
   - "Configuration" — a summary table only; it changes when a whole
     top-level section is added or removed. Field-level prose lives in
     `docs/configuration.md`.
-  - "Error codes" — exactly the six minted codes (-32040..-32044, -32002) plus
+  - "Error codes" — exactly the six minted codes (-31040..-31044, -31045) plus
     pass-through semantics
   - "Not implemented" — deliberate gaps; update if a change closes or widens
     one

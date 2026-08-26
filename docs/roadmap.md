@@ -91,7 +91,7 @@ configured. Budgets need a fixed, calendar-aligned accumulating counter, so
 they arrive as a new `state.Budget` primitive alongside the limiter rather than
 as a parameter on it. The record also settles what counts as one unit (upstream
 invocations, since one `tools/list` fans out to every upstream) and why an
-exhausted budget earns its own error code rather than reusing `-32040`.
+exhausted budget earns its own error code rather than reusing `-31040`.
 
 ### 2. Consumption metering — **shipped**
 

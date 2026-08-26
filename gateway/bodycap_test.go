@@ -173,7 +173,7 @@ func newBulkUpstream(t *testing.T, jsonResponse bool) *httptest.Server {
 }
 
 // An upstream that returns more than it was allowed to is unavailable, not
-// truncated: the caller gets -32041, the refusal is counted per upstream, and
+// truncated: the caller gets -31041, the refusal is counted per upstream, and
 // it leaves an audit event like every other terminal response.
 func TestUpstreamResponseCapRefusesOversized(t *testing.T) {
 	for _, tc := range []struct {

@@ -69,7 +69,7 @@ groups:
         annotations:
           summary: circuit open for upstream {{ $labels.upstream }}
           description: >-
-            fold has stopped sending requests to this upstream and is answering -32041 for
+            fold has stopped sending requests to this upstream and is answering -31041 for
             it. The federation still serves everything else; lists degrade with a
             partialFailure marker rather than failing.
 
@@ -136,7 +136,7 @@ groups:
           summary: "{{ $labels.upstream }} sent a response past maxResponseBytes"
           description: >-
             An upstream returned more in one response than the gateway will hold, so the
-            response was refused and the call failed with -32041. fold does not truncate
+            response was refused and the call failed with -31041. fold does not truncate
             here on purpose: a shortened body would be a response the upstream never sent.
             Either the upstream is returning something far larger than an MCP payload
             should be — a runaway list, an unpaginated result — or maxResponseBytes is set
@@ -188,7 +188,7 @@ groups:
         annotations:
           summary: tenant {{ $labels.tenant }} has spent its budget
           description: >-
-            This customer is being refused with -32044 until the period rolls. Nothing is
+            This customer is being refused with -31044 until the period rolls. Nothing is
             broken; someone should decide whether to widen the allowance, which is a reload
             rather than a restart.
 

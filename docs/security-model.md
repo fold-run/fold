@@ -293,7 +293,7 @@ What isolation a tenant actually buys:
 - **Consumption.** `tenants[].budget` is an accumulating, calendar-aligned
   allowance charged in upstream invocations — and charged only for calls that
   reach an upstream, so an outage or a rate limit never spends a customer's
-  month. Exhaustion is `-32044`, distinct from a rate limit because the
+  month. Exhaustion is `-31044`, distinct from a rate limit because the
   remedies differ.
 - **Attribution.** Every audit event a tenant's principals produce carries
   `tenant`, denials and rejections included, and `fold_tenant_requests_total`
@@ -389,7 +389,7 @@ browser page. Each has a deliberate trust story:
   issuer you trust.
 - **The test console** is a plain MCP client running in the browser,
   pointed at `/mcp`. Its traffic is indistinguishable from any other
-  client's: policy filters what it lists, denials answer `-32042`, rate
+  client's: policy filters what it lists, denials answer `-31042`, rate
   limits apply, and every call lands in the audit trail. The console cannot
   bypass governance because there is nothing to bypass with — it holds no
   credential of its own (the user's token lives in page memory only,
