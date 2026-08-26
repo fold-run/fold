@@ -1,6 +1,6 @@
 # Single source of truth for dev/CI commands; CI calls these same targets.
 
-.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance sync-console console-check check fuzz cover helm-check compose-up compose-down compose-logs
+.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance sync-console console-check check fuzz cover helm-check compose-up compose-down compose-logs dev-up dev-down dev-status
 
 build:
 	go build ./...
@@ -83,6 +83,21 @@ helm-check:
 
 # Everything CI gates on except the bench and conformance jobs.
 check: fmt-check tidy-check vet build race lint
+
+# --- local dev stack (scripts/dev-stack.sh) ---------------------------------
+# fold with a real MCP upstream behind it, for talking to the gateway you are
+# working on: the Inspector, your editor, or a Claude Code session via the
+# repo's .mcp.json. Go + node, no Docker. Ports are overridable (see the
+# script); the gateway does NOT use its own default 8080, which is a popular
+# squat.
+dev-up:
+	./scripts/dev-stack.sh up
+
+dev-down:
+	./scripts/dev-stack.sh down
+
+dev-status:
+	./scripts/dev-stack.sh status
 
 # --- local compose stack (compose.yaml) ------------------------------------
 # Not a gate; a one-command way to run the gateway on this host. PROFILES

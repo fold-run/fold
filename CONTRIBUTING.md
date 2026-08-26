@@ -45,6 +45,20 @@ repoints — keep the `area: imperative summary` form (`release: v1.15.0`,
 `docs: repoint the conformance receipt at the v1.14.0 run`). They are
 housekeeping, with no problem to name.
 
+## Running fold while you work on it
+
+```bash
+make dev-up      # the reference everything-server on :8098, fold on :8099
+make dev-status  # health, upstream by upstream
+make dev-down
+```
+
+`scripts/dev-stack.sh` builds the gateway from your working tree and puts a
+real MCP upstream behind it, federated under the namespace `demo` so tools
+arrive as `demo__echo`. Needs Go and node; no Docker. The repo's `.mcp.json`
+points at that address, so an MCP client configured from this directory
+talks to the gateway you are editing.
+
 ## Rules the repo follows
 
 1. **Test with real peers.** Integration tests spin up real MCP servers from

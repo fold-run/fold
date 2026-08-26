@@ -9,6 +9,7 @@ same guardrails.
 
 | Skill | Use |
 | --- | --- |
+| `/dogfood` | Run fold locally (`make dev-up`) and use it as a real client — the dev stack, the repo's `.mcp.json`, and what to look at once it is up. |
 | `/preflight` | Run the local merge gate in order (`make check`, plus the conditional gates the diff warrants: bench, conformance, helm-check, vuln, console-check, image build) and interpret failures. |
 | `/ship` | Land a verified change: branch (`type/slug`), prose PR title naming the problem, commit body as rationale, PR body written for a reviewer, checklist answered rather than ticked. |
 | `/observability` | Add, rename, or retire a metric, span attribute, or audit field: the bidirectional pack lockstep, the v1 freeze on names *and* label sets, the two rule files, the docs that track them. |
@@ -103,6 +104,20 @@ description.
   satisfies it.
 
 Hooks need to stay executable (`chmod +x hooks/*.sh`) and depend on `jq`.
+
+## `.mcp.json` — the session talks to fold
+
+The repo ships an `.mcp.json` pointing at `http://127.0.0.1:8099/mcp`, the
+address `make dev-up` serves on. Approve it and this session's own tool list
+contains fold's federated tools, which makes the gateway's central claim —
+what a client actually experiences — checkable in the loop rather than only
+in tests. See `/dogfood`.
+
+It is opt-in twice over: Claude Code asks before connecting to a project MCP
+server, and nothing connects at all unless the stack is running. fold serves
+streamable HTTP and has no downstream stdio mode, so the entry cannot start
+the gateway for you — a server shown as failed means `make dev-up` has not
+been run, not that anything is broken.
 
 `settings.json` also pre-allows the read-only and gate commands the skills
 and subagents actually run — read-only git (`git diff`, `status`, `log`,
