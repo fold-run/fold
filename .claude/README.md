@@ -55,7 +55,7 @@ description.
   a Deployment that never becomes ready.
 - **release-verifier** (pink) — verifies a published release from an
   operator's position: archives, checksums and their keyless cosign
-  signature, SBOMs, the three ghcr images, the OCI chart, and every
+  signature, SBOMs, the four ghcr images, the OCI chart, and every
   sigstore attestation — plus that the binary, chart `appVersion`, and
   CHANGELOG agree on the version.
 - **flake-triage** (green) — reproduces an intermittent or race-detector
