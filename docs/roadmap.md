@@ -61,7 +61,7 @@ coherent, so it comes first. None of these are "not yet" — they are decisions.
 
 | Pillar | fold today | What the roadmap adds | What fold declines |
 |---|---|---|---|
-| **Security and access control** | The strongest surface. Deny-by-default ABAC policy with the invisibility-plus-denial enforcement pair, first-class tenants (a visibility subset evaluated before policy, a shared bucket, an allowance, and the tenant in every record), five upstream credential strategies including RFC 8693 brokering, EMA, RFC 9728 metadata, host validation, and audit as the single exit door. | Depth, not parity: deny rules, argument-level constraints, destructive-operation gating, and the external decision hook. | Inline content inspection. Structural enforcement instead. |
+| **Security and access control** | The strongest surface. Deny-by-default ABAC policy with the invisibility-plus-denial enforcement pair, first-class tenants (a visibility subset evaluated before policy, a shared bucket, an allowance, and the tenant in every record), five upstream credential strategies including RFC 8693 brokering, EMA, RFC 9728 metadata, host validation, and audit as the single exit door. | Depth, not parity: deny rules, argument-level constraints, destructive-operation gating, the external decision hook, and per-user upstream credentials for the SaaS upstreams no gateway-held credential can reach. | Inline content inspection. Structural enforcement instead. |
 | **Cost and consumption** | Accumulating calendar budgets at three scopes (server, upstream, tenant) alongside the sliding-window limits, metering of fan-out and items served, and per-tenant consumption series — so "what did this customer spend this month" is a query. (This row read "effectively nothing" before the Horizon 1 work below.) | The headline theme: accumulating quotas and budgets, consumption metering, and making the context-cost win fold already has legible. | Billing and monetization. fold measures; something else bills. |
 | **Developer and agent experience** | A read-only console (dashboard plus an MCP test console that is a plain client against `/mcp`), and pull-based discovery for registration. | A searchable federated catalog and an effective-permissions view — both reads — and MCP Apps parity, which is a downgrade to remove rather than a feature to add. | The write registry, the self-serve storefront, and monetization. |
 | **Observability and automation** | Good instrumentation, no interpretation: frozen Prometheus metric names, OTel server and client spans, an opt-in `ServiceMonitor` in the chart, and audit to stdout or a webhook. | Packaged dashboards, alert rules, and SLOs; audit sinks with retry and reach; CRDs and a config-diff CLI. | — |
@@ -486,6 +486,53 @@ most useful thing in it.
 
 The two gaps that remain after all of that are the specification's, and they
 are in the gated horizon below.
+
+### 16. Per-user upstream credentials
+
+fold has five credential strategies and every one of them assumes the upstream
+either takes a shared secret or federates with the enterprise's identity
+provider. A hosted MCP server run by a SaaS vendor does neither: it accepts
+its own OAuth tokens, scoped to its own user accounts, obtainable only by a
+user approving them in a browser. So the upstreams an organization *runs* get
+credential brokering and the upstreams it *buys* get a shared service account
+or a key on every laptop — which is the credential sprawl fold exists to
+remove, surviving in the one place fold could not reach.
+
+`vault-oauth` closes it: fold completes the authorization-code flow as an
+OAuth client on the caller's behalf, seals the resulting tokens under a key
+tuple it already uses for two other things, and attaches them on egress. The
+agent never holds an upstream credential, which is what every other strategy
+already promises.
+
+The reason this is a Horizon 2 item rather than a research project is that
+**the protocol specifies it**. URL-mode elicitation exists for "sensitive
+interactions that must not pass through the MCP client", its worked example is
+this exact pattern, and it comes with the account-takeover attack it invites
+and the normative mitigation — the server MUST verify that whoever completes
+the authorization is whoever started it. The SDK carries the whole mechanism
+(`ElicitParams.Mode`/`URL`/`ElicitationID` and
+`notifications/elicitation/complete`), and fold already elicits on the
+downstream session when relaying an upstream's request. So fold invents no
+error code and no consent UX, and none of it is era-gated: URL mode predates
+the MRTR change and rides the path fold serves today.
+
+Designed in [design-egress-oauth.md](design-egress-oauth.md), which is as
+clear about the boundaries. fold does not become a secrets manager — it stores
+only what it minted through a flow it ran, with no import path and no read
+API. It does not become a write control plane — the console's no-writes rule
+is about *configuration*, and the record adds its own boundary so the
+distinction cannot erode: the only thing a request may write is one credential
+belonging to the authenticated caller who made it. And it leaves one question
+open on purpose, because the answer depends on a provider's real rotation
+behaviour rather than on reasoning: whether `state.Provider` grows a lease so
+a fleet cannot lose a rotating refresh token to a concurrent refresh.
+
+The record also carries a finding that sharpens the case. The specification
+forbids the shape `passthrough` takes against a third party — "the MCP server
+MUST NOT use the client's credentials for the third-party service ... that
+would be token passthrough, which is forbidden" — so for a SaaS upstream
+`passthrough` is both prohibited and useless, and this is the sanctioned
+answer for the case it cannot serve.
 
 ## Horizon 3 — gated
 
