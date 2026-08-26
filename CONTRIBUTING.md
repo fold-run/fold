@@ -31,8 +31,19 @@ Run `make check`. CI gates every merge on those same targets plus:
 
 A single test runs with `go test ./gateway -run TestName -v`.
 
-Commit messages follow `area: imperative summary` (e.g. `gateway: sweep idle
-bridged sessions`, `docs: ...`), matching `git log`.
+## Titles
+
+A PR title is a **prose sentence naming the problem**, with no `area:`
+prefix — *A retry answering an upstream's question arrived looking like a
+first try*, *Every federated list was announcing a cache scope that does not
+exist*. It says what was wrong, not what the diff does; the branch name
+(`fix/forward-mrtr-continuation`) is where the change gets classified.
+Merges are squashed, so the title becomes the commit subject verbatim.
+
+Commits that go straight to `main` — releases, conformance-receipt
+repoints — keep the `area: imperative summary` form (`release: v1.15.0`,
+`docs: repoint the conformance receipt at the v1.14.0 run`). They are
+housekeeping, with no problem to name.
 
 ## Rules the repo follows
 
