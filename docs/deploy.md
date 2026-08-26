@@ -406,8 +406,15 @@ The two output streams are separable by design:
 
 For direct SIEM delivery use the `webhook` sink instead (asynchronous,
 batched; buffered events are dropped on overflow rather than adding request
-latency — keep stdout as the durable copy if that matters). If no `audit`
-section is configured, nothing is emitted.
+latency — pair it with `deadLetterPath` so what a receiver outage refuses is
+kept). If no `audit` section is configured, nothing is emitted.
+
+Whether stdout is durable is a property of your collector, not of fold, which
+is why `audit.requireDurable` does not count it: set that flag and fold
+refuses to start unless a sink it can vouch for — a `file` sink, or a
+`webhook`/`otlp-logs` sink with a `deadLetterPath` — is running. Use it where a
+best-effort trail is not acceptable and you would rather learn at rollout than
+during an incident review.
 
 `GET /metrics` serves Prometheus metrics; the chart has an optional
 ServiceMonitor (`metrics.serviceMonitor.enabled`).
@@ -444,7 +451,9 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 - [ ] `rediss://` for Redis and HTTPS upstream URLs even inside the mesh
 - [ ] TLS terminated in front; SSE timeouts/buffering configured
 - [ ] Redis configured when running more than one replica
-- [ ] An `audit` sink configured and shipped somewhere durable
+- [ ] An `audit` sink configured and shipped somewhere durable — with
+      `requireDurable` set if a best-effort trail is not acceptable, which
+      makes the gateway prove it at startup instead of at audit time
 - [ ] `fold --validate` gating config changes in CI/CD
 - [ ] Kubernetes: PodDisruptionBudget on (the chart's default when
       `replicaCount` ≥ 2), resource limits sized, probe Host header matches

@@ -396,7 +396,8 @@ Denials get their own audit outcome (`hook_denied`) so an operator can tell thei
       "retry": { "maxAttempts": 4, "initialBackoffMs": 500, "maxBackoffMs": 30000 },
       "deadLetterPath": "/var/log/fold/audit-dead.jsonl"
     }
-  ]
+  ],
+  "requireDurable": false
 }
 ```
 
@@ -412,6 +413,10 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 **Delivery is retried, and what it cannot deliver is kept.** A failing POST is retried with exponential backoff and equal jitter — `maxAttempts` 4, `initialBackoffMs` 500, `maxBackoffMs` 30000 by default, so a receiver restarting costs nothing. Retry is on without configuration, because the alternative is losing exactly the events someone will later go looking for. A `4xx` other than `429` is not retried: a receiver that rejects the payload will reject it identically four times. When attempts run out, events are appended to `deadLetterPath` for replay; without one they are counted and gone.
 
 **Losses are visible.** `fold_audit_events_total{sink,outcome}` counts `delivered`, `retried`, `dead_lettered`, and `dropped` — the audit trail cannot report its own gaps, so this is where a gap shows up. The packaged alert `FoldAuditEventsLost` fires on either kind of loss ([observability](operations.md#dashboards-alerts-and-slos)).
+
+**`requireDurable` refuses to start without a trail that survives.** Off by default, because shipping `stdout` to a collector is a legitimate production choice and fold cannot see the far end of it — so this is an assertion the operator makes about their own deployment rather than a default fold is entitled to impose. Set it, and at least one sink must keep what fold could not deliver: a `file` sink qualifies on its own, a `webhook` or `otlp-logs` sink once it has a `deadLetterPath`, and `stdout` never does. A document declaring none is rejected by `fold --validate`; a declared durable sink whose path will not open fails at startup instead, which is the case validation cannot see. It promises that every *abandoned delivery* has somewhere on disk to land — not that nothing is ever lost: a sink whose buffer fills while its receiver is down still drops, because writing to disk from the request path is the latency audit must never add.
+
+**Every record names the replica that wrote it.** The `instance` field is `FOLD_INSTANCE_ID` when set, otherwise the hostname — which Docker sets per container and Kubernetes per pod, so a fleet is attributable with no configuration. It is deliberately an environment variable rather than a config field: the value has to differ per replica, and the config document is the one thing every replica shares. On the `otlp-logs` sink it rides the resource as `service.instance.id`, the attribute OTel backends already group by, rather than being repeated on every record.
 
 ## `server`
 

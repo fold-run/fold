@@ -718,6 +718,20 @@ type PolicyAllow struct {
 // Audit configures audit event emission.
 type Audit struct {
 	Sinks []AuditSink `json:"sinks"`
+
+	// RequireDurable refuses to start unless at least one sink keeps the
+	// events fold could not deliver — see AuditSink.Durable for which
+	// qualify. Off by default: shipping stdout to a collector is a legitimate
+	// production choice and fold cannot see the far end of it, so this is an
+	// assertion an operator makes about their own deployment, not a default
+	// fold is entitled to impose.
+	//
+	// What it buys is narrow and worth stating: every *abandoned delivery*
+	// has somewhere on disk to land. It is not a no-loss guarantee. A sink
+	// whose buffer fills while its receiver is down still drops, counted as
+	// `dropped`, because writing to disk from the request path is the latency
+	// audit is not allowed to add.
+	RequireDurable bool `json:"requireDurable,omitempty"`
 }
 
 // AuditSink is one audit destination.
@@ -1392,8 +1406,32 @@ func (c *Config) Validate() error {
 				return err
 			}
 		}
+		if c.Audit.RequireDurable && !slices.ContainsFunc(c.Audit.Sinks, AuditSink.Durable) {
+			return fmt.Errorf("audit: requireDurable is set but no sink keeps what fold " +
+				"cannot deliver — a \"file\" sink qualifies on its own; a \"webhook\" or " +
+				"\"otlp-logs\" sink needs deadLetterPath; \"stdout\" never does")
+		}
 	}
 	return nil
+}
+
+// Durable reports whether this sink keeps the events fold could not deliver.
+//
+// The line is drawn at what fold can vouch for rather than at what is likely
+// to be safe. A file sink writes to disk itself. A webhook or otlp-logs sink
+// hands records to a receiver whose durability fold cannot see, so it counts
+// only when deadLetterPath gives everything the receiver refused a local
+// home. Nothing collects stdout on fold's behalf, and fold cannot tell
+// whether anything else does.
+func (s AuditSink) Durable() bool {
+	switch s.Type {
+	case "file":
+		return true
+	case "webhook", "otlp-logs":
+		return s.DeadLetterPath != ""
+	default:
+		return false
+	}
 }
 
 func (u *Upstream) validateAuth() error {
