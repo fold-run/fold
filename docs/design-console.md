@@ -177,7 +177,7 @@ browser, pointed at `/mcp` itself. This is the load-bearing decision — it
 keeps every invariant intact by construction:
 
 - Console traffic runs the full pipeline: policy filters the tool list the
-  user sees, denials answer `-32042`, rate limits apply, and **audit logs
+  user sees, denials answer `-31042`, rate limits apply, and **audit logs
   every call** — the console cannot bypass governance because it has no
   privileged path.
 - Nothing new touches the proxy path, so the invisibility rule and the

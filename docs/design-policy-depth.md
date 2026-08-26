@@ -211,7 +211,7 @@ fetch, no new cache.
 Additive under the v1 contract. `deny`, `args`, and `toolKind` are new optional
 fields; a document without them evaluates exactly as it does today, on the same
 first-match short-circuit, with nothing parsed that is not parsed now. The
-minted error-code registry is unchanged: every refusal here is `-32042`, because
+minted error-code registry is unchanged: every refusal here is `-31042`, because
 every refusal here is policy denying an invocation, and inventing codes per
 reason would make clients handle distinctions they cannot act on.
 

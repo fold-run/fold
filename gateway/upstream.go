@@ -25,12 +25,32 @@ import (
 )
 
 // Gateway-minted JSON-RPC error codes, documented in the README.
+//
+// They sit outside the JSON-RPC reserved range (-32768..-32000) because the
+// MCP 2026-07-28 revision partitioned that range and left no room in it for
+// anyone else: -32020..-32099 is "reserved for the MCP specification", which
+// implementations "MUST NOT emit ... [any code] that is not defined by this
+// specification", and -32000..-32019 is legacy, in which "new codes MUST NOT
+// be allocated". The specification's own instruction is to allocate outside
+// the reserved range entirely, which is what these do.
+//
+// fold's previous codes were -32040..-32044, in the middle of the reserved
+// band — and -32042 had already been given a meaning: "URL elicitation
+// required". The SDK fold links against acts on it (mcp/shared.go,
+// CodeURLElicitationRequired), parsing elicitations out of the error and
+// retrying the call, so a policy *denial* could be read by a conforming client
+// as a request to prompt its user and try again. A deny-by-default gateway
+// whose refusals turn into retries is the failure that made this worth a
+// breaking change; see the changelog entry for the migration.
+//
+// The thousands digit is the only thing that moved (-32xxx -> -31xxx), so the
+// mapping from the old codes is mechanical for anyone who had keyed on them.
 const (
-	codeRateLimited      = -32040 // per-upstream rate limit exceeded
-	codeUpstreamDown     = -32041 // circuit open or upstream unreachable
-	codeDenied           = -32042 // policy denied the invocation
-	codeUnknownNamespace = -32043 // name does not resolve to an upstream
-	codeBudgetExhausted  = -32044 // consumption budget exhausted for the period
+	codeRateLimited      = -31040 // per-upstream rate limit exceeded
+	codeUpstreamDown     = -31041 // circuit open or upstream unreachable
+	codeDenied           = -31042 // policy denied the invocation
+	codeUnknownNamespace = -31043 // name does not resolve to an upstream
+	codeBudgetExhausted  = -31044 // consumption budget exhausted for the period
 	defaultCacheTTL      = 30 * time.Second
 
 	// defaultMaxResponseBytes bounds one upstream response. It is deliberately

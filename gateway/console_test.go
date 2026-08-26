@@ -361,7 +361,7 @@ func (c *consoleWire) rpc(method string, params any, notification bool) (json.Ra
 
 // Console traffic is governed like any other client's: the browser-shaped
 // HTTP sequence (initialize → notifications/initialized → tools/list →
-// tools/call) sees policy-filtered lists, gets -32042 for a disallowed
+// tools/call) sees policy-filtered lists, gets -31042 for a disallowed
 // call, and the denial lands in the audit sink under the right principal.
 func TestConsoleClientGovernance(t *testing.T) {
 	events := make(chan []byte, 64)
@@ -446,8 +446,8 @@ func TestConsoleClientGovernance(t *testing.T) {
 	if rpcErr == nil {
 		t.Fatal("expected policy denial for things__delete_thing")
 	}
-	if rpcErr.Code != -32042 {
-		t.Errorf("denial code = %d, want -32042", rpcErr.Code)
+	if rpcErr.Code != -31042 {
+		t.Errorf("denial code = %d, want -31042", rpcErr.Code)
 	}
 
 	// The allowed call still works over the same wire.

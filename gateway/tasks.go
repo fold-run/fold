@@ -35,7 +35,13 @@ const (
 	methodTasksUpdate = "tasks/update"
 
 	// codeTaskNotFound is answered when no upstream owns a task id.
-	codeTaskNotFound = -32002
+	//
+	// Was -32002, which the 2026-07-28 revision now defines as "resource not
+	// found" and tells clients to keep honouring from older servers — so an
+	// unowned *task* id read to a conforming client as a missing *resource*
+	// from a legacy server. It joins the rest of fold's block outside the
+	// JSON-RPC reserved range; see gateway/upstream.go for the allocation.
+	codeTaskNotFound = -31045
 
 	// metaMintedTask is the result _meta key an upstream sets to advertise a
 	// task it just minted, letting fold pin affinity without a probe.

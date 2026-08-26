@@ -216,7 +216,7 @@ a TSDB.
 ## Status
 
 All four phases have landed: the `state.Budget` primitive, config and snapshot
-placement, enforcement with `-32044`, and metering. The per-tenant dimension
+placement, enforcement with `-31044`, and metering. The per-tenant dimension
 noted above still waits on the tenant object.
 
 ## Implementation phases
@@ -230,9 +230,9 @@ noted above still waits on the tenant object.
    value. Run the `/reloadable-state` checklist; budgets are per-upstream and
    per-server, so the snapshot placement is the whole question.
 3. **Enforcement** — the check on the upstream-invocation path, its own audit
-   outcome, and a minted error code. `-32040` is the *rate* limit; an exhausted
+   outcome, and a minted error code. `-31040` is the *rate* limit; an exhausted
    budget is a different condition with a different remedy (wait for the reset,
-   not retry shortly), so it earns **`-32044`** and an entry in the README's
+   not retry shortly), so it earns **`-31044`** and an entry in the README's
    error-code registry.
 4. **Metering** — audit fields and metrics, including the fan-out ratio.
 5. **Docs** — `configuration.md` and the README's error-code section,

@@ -51,7 +51,7 @@ func acmeTenant(budget *config.Budget, rl *config.RateLimit) config.Tenant {
 }
 
 // The tenant's allowance is spent by whoever belongs to it, and exhaustion
-// mints the same -32044 a server or upstream budget does — the remedy is the
+// mints the same -31044 a server or upstream budget does — the remedy is the
 // same (wait for the period to roll), so the code is the same.
 func TestTenantBudgetExhaustionRejectsWith32044(t *testing.T) {
 	up, _ := newUpstreamServer(t, "tool")

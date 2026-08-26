@@ -144,8 +144,8 @@ func TestStdioUpstreamObeysPolicy(t *testing.T) {
 	}
 
 	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "files__write_file"}); err == nil {
-		t.Fatal("denied tool call succeeded, want -32042")
-	} else if !strings.Contains(err.Error(), "-32042") && !strings.Contains(err.Error(), "denied") {
+		t.Fatal("denied tool call succeeded, want -31042")
+	} else if !strings.Contains(err.Error(), "-31042") && !strings.Contains(err.Error(), "denied") {
 		t.Fatalf("error = %v, want a policy denial", err)
 	}
 }

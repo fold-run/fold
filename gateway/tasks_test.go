@@ -55,7 +55,7 @@ func newTaskFixture(t *testing.T, prefix string) *httptest.Server {
 		st, ok := f.tasks[p.TaskID]
 		return st, ok
 	}
-	notFound := &jsonrpc.Error{Code: -32002, Message: "task not found"}
+	notFound := &jsonrpc.Error{Code: -31045, Message: "task not found"}
 
 	mcp.AddReceivingCustomMethod(f.server, "tasks/get", func(ctx context.Context, ss *mcp.ServerSession, p *rawParams) (*rawResult, error) {
 		st, ok := owns(p.raw)
@@ -197,11 +197,11 @@ func TestFederatedTasks(t *testing.T) {
 		t.Errorf("cancel did not take on owner: %s", res)
 	}
 
-	// An unknown task id answers -32002 from no upstream.
+	// An unknown task id answers -31045 from no upstream.
 	_, err = callTaskMethod(t, session, "tasks/get", map[string]any{"taskId": "nonexistent"})
 	if err == nil {
 		t.Error("expected error for unknown task id")
-	} else if !strings.Contains(err.Error(), "-32002") && !strings.Contains(err.Error(), "no upstream owns") {
+	} else if !strings.Contains(err.Error(), "-31045") && !strings.Contains(err.Error(), "no upstream owns") {
 		t.Errorf("unexpected error for unknown task: %v", err)
 	}
 
@@ -257,7 +257,7 @@ func listedTaskIDs(t *testing.T, session *mcp.ClientSession) []string {
 }
 
 // A task minted by one principal is invisible to every other: task-scoped
-// calls answer -32002 exactly like an unknown id (no existence leak, no
+// calls answer -31045 exactly like an unknown id (no existence leak, no
 // probe, no upstream contact), and tasks/list hides it. Tasks fold has no
 // ownership record for (out-of-band or evicted) stay reachable by anyone,
 // matching the locate-by-probe fallback.

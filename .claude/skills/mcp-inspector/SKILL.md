@@ -64,13 +64,13 @@ npx @modelcontextprotocol/inspector --cli "$URL" --transport http \
   --method tools/call --tool-name 'gh__create_issue' --tool-arg title=probe
 ```
 
-`-32043` (unknown namespace) on a name that `tools/list` just returned is
+`-31043` (unknown namespace) on a name that `tools/list` just returned is
 a routing bug. This is also how the MCP Apps gap in README "Not
-implemented" reproduces: the bare, un-namespaced name answers `-32043`.
+implemented" reproduces: the bare, un-namespaced name answers `-31043`.
 
 **Policy filtering is a pair** — invisibility plus call-denial. A tool
 filtered out of `tools/list` for a principal must also refuse the call for
-that principal. List with the token, then call the name anyway; `-32042`
+that principal. List with the token, then call the name anyway; `-31042`
 is correct, a successful call is a policy hole:
 
 ```bash

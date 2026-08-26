@@ -47,9 +47,9 @@ surrounding function before claiming a violation.
    namespacing, list merging, per-principal policy filtering). Resource URIs
    are opaque and never rewritten.
 
-6. **Error codes**: the gateway mints only -32040 (upstream rate limit),
-   -32041 (unavailable/circuit open), -32042 (policy denied), -32043 (unknown
-   namespace), -32044 (consumption budget exhausted), and -32002 (task id owned
+6. **Error codes**: the gateway mints only -31040 (upstream rate limit),
+   -31041 (unavailable/circuit open), -31042 (policy denied), -31043 (unknown
+   namespace), -31044 (consumption budget exhausted), and -31045 (task id owned
    by no upstream). Upstream errors pass through verbatim. Flag new minted
    codes, reuse of these codes for other meanings, and swallowed upstream
    errors. Check this list against the README "Errors" table before calling a
