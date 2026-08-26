@@ -179,7 +179,7 @@ asynchronous and batched, never adding request latency). Fields:
 | `method` | MCP method (`tools/call`, …), `http` for pre-MCP rejections, `oauth/token` for the EMA endpoint, or `upstream/definitionChanged` for pinned-definition drift. |
 | `name` | Namespaced tool/prompt name or resource URI. |
 | `upstream` | Routed upstream id. |
-| `missingScopes` | On a denial where scopes were the only obstacle, the scopes the caller lacked — the same list the `-32042` error carries. Present only when a rule targeting that exact invocation would otherwise have granted it, so it distinguishes "not authorized" from "not authorized *yet*" without re-deriving it from the policy document. |
+| `missingScopes` | On a denial where scopes were the only obstacle, the scopes the caller lacked — the same list the `-31042` error carries. Present only when a rule targeting that exact invocation would otherwise have granted it, so it distinguishes "not authorized" from "not authorized *yet*" without re-deriving it from the policy document. |
 | `decision`, `ruleId` | Policy outcome (`allow`/`deny`) and the matching rule. An explicit `deny` rule names itself here; a refusal that fell through to `defaultDecision` has no `ruleId`, which is how you tell "a rule refused this" from "nothing granted it". |
 | `hookOutcome` | What the external decision hook said: `allow`, `deny`, or `error`. Present only when a hook inspected the request. `error` under `onError: "allow"` means this call was served **uninspected**. |
 | `outcome` | `ok`, `error`, `denied`, `hook_denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`, `warned`. `hook_denied` is kept distinct from `denied` because policy and the inspector are different systems, often owned by different teams. The last is a finding rather than a request outcome — fold noticed something an operator should see and served the request anyway. |
@@ -234,12 +234,12 @@ errors pass through verbatim):
 
 | Code | Meaning | Client action |
 |---|---|---|
-| `-32040` | Per-upstream rate limit exceeded | Back off (message includes retry hint). |
-| `-32041` | Upstream unavailable (circuit open / unreachable / all down) | Retry later; transient. |
-| `-32042` | Policy denied the invocation | Not transient — the principal lacks a grant. |
-| `-32043` | Name resolves to no configured namespace | Refetch the tool list. |
-| `-32044` | Consumption budget exhausted for the period | Not transient within the period — the message names the reset instant. Do **not** treat it as a backoff delay; a monthly reset would mean sleeping for weeks. |
-| `-32002` | Task id not owned by any upstream | The task is unknown or belongs to another principal. |
+| `-31040` | Per-upstream rate limit exceeded | Back off (message includes retry hint). |
+| `-31041` | Upstream unavailable (circuit open / unreachable / all down) | Retry later; transient. |
+| `-31042` | Policy denied the invocation | Not transient — the principal lacks a grant. |
+| `-31043` | Name resolves to no configured namespace | Refetch the tool list. |
+| `-31044` | Consumption budget exhausted for the period | Not transient within the period — the message names the reset instant. Do **not** treat it as a backoff delay; a monthly reset would mean sleeping for weeks. |
+| `-31045` | Task id not owned by any upstream | The task is unknown or belongs to another principal. |
 | `-32602` | Invalid or expired list cursor | Restart the list from the beginning. |
 | `-32603` | Internal gateway error: a recovered panic, or an ambiguous tenant configuration | For a panic, retry is reasonable and the operator's `fold_panics_total` counter plus a `panic recovered` log line correspond to it. An ambiguous tenant match is config, not code — the gateway logs `ambiguous tenant configuration` and refuses rather than guesses; fix the tenant selectors. |
 
@@ -292,7 +292,7 @@ everything else.
 `tenant`, including denials and rate-limit rejections, so the same questions
 are answerable in the SIEM without reconciling against config.
 
-**When an allowance runs out**, callers get `-32044` naming the tenant and the
+**When an allowance runs out**, callers get `-31044` naming the tenant and the
 reset instant, and the event carries `budget_exhausted`. Widening the allowance
 is a reload, not a restart: `tenants[]` is snapshot state, and a tenant whose
 budget block is unchanged keeps its accumulated count across the swap. Watch

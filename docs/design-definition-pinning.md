@@ -115,7 +115,7 @@ new baseline. One alert per change, not one per request — an alert that
 repeats forever is an alert that gets filtered.
 
 `block` withholds the changed tool from lists and denies calls to it, on the
-existing `-32042`. It needs an answer to the next section, and until it has
+existing `-31042`. It needs an answer to the next section, and until it has
 one it should not ship.
 
 ## 5. The adoption problem

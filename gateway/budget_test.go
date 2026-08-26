@@ -222,7 +222,7 @@ func TestBudgetPeriodDefaultsToMonth(t *testing.T) {
 
 // ---- enforcement (phase 3) ----
 
-// The per-upstream allowance stops calls once spent, and says so with -32044
+// The per-upstream allowance stops calls once spent, and says so with -31044
 // rather than the rate-limit code: the remedies differ.
 func TestUpstreamBudgetExhaustionRejectsWith32044(t *testing.T) {
 	up, _ := newUpstreamServer(t, "tool")

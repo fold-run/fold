@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1393,22 +1394,114 @@ func (g *Gateway) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata
 		Resource:               g.cfg.Auth.Resource,
 		AuthorizationServers:   issuers,
 		BearerMethodsSupported: []string{"header"},
+		// RFC 9728 §2 recommends naming the scopes a caller needs. fold can
+		// answer that from the policy it is already enforcing, and until it
+		// did, a client had no way to learn the answer except by being
+		// refused: authorize with whatever scopes it guessed, connect, call a
+		// tool, and read the requirement out of the denial. The scopes are
+		// read from the live snapshot rather than the construction-time
+		// config because policy hot-reloads and this document must not go on
+		// describing the rules fold started with.
+		ScopesSupported: requiredScopes(g.rt()),
 	}
+}
+
+// requiredScopes is every scope the current policy names, deduplicated and
+// ordered so the document is stable between fetches.
+//
+// It is a hint, not a contract: holding all of these does not entitle a caller
+// to anything, because scopes are one gate among several and a rule can also
+// require an identity, an issuer, or a claim. What it does is let a client ask
+// its authorization server for the right things up front, which is the
+// difference between a first call that works and a first call that is denied
+// with a remedy attached.
+//
+// Tenant selectors are deliberately excluded, though they are also scopes a
+// caller needs — the first version of this published them and was wrong twice
+// over. This endpoint is unauthenticated, and a tenant scope is usually a
+// customer's name, so a deployment selecting tenants by scope would have
+// published its customer roster to anyone who fetched the well-known path.
+// That is a different class of secret from a capability name like
+// "docs:write", and fold does not otherwise disclose one caller's governance
+// to another — a denial refuses to name a requirement the caller failed on
+// other grounds for exactly this reason. The second half: a tenant scope is an
+// identity assertion rather than a permission, so an authorization server
+// asked for "tenant:acme" will not mint it on request anyway. Naming it would
+// leak something real in exchange for advice a client cannot act on.
+func requiredScopes(rt *routes) []string {
+	if rt == nil || rt.cfg == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(s *config.PolicySubjects) {
+		if s == nil {
+			return
+		}
+		for _, sc := range s.Scopes {
+			if !seen[sc] {
+				seen[sc] = true
+				out = append(out, sc)
+			}
+		}
+	}
+	if rt.cfg.Policy != nil {
+		for i := range rt.cfg.Policy.Rules {
+			add(rt.cfg.Policy.Rules[i].Subjects)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // protectedResourceHandler serves the RFC 9728 metadata, announcing the EMA
 // extension when the embedded token endpoint is enabled.
+//
+// Built per request rather than once at construction, because the document now
+// reports the scopes policy requires and policy hot-reloads. The rest of it —
+// resource, issuers, bearer methods — is construction-wired and cannot move,
+// so this costs one small marshal on an endpoint a client fetches when it
+// cannot authenticate. It does no I/O and no crypto, which is what makes that
+// acceptable on an unauthenticated path.
 func (g *Gateway) protectedResourceHandler() http.Handler {
-	meta := g.protectedResourceMetadata()
-	if g.ema == nil {
-		return sdkauth.ProtectedResourceMetadataHandler(meta)
-	}
-	doc, _ := json.Marshal(meta)
-	extended := map[string]any{}
-	_ = json.Unmarshal(doc, &extended) // doc was marshaled just above
-	extended["io.modelcontextprotocol/enterprise-managed-authorization"] = map[string]string{"version": "stable"}
-	body, _ := json.Marshal(extended)
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		meta := g.protectedResourceMetadata()
+		if g.ema == nil {
+			sdkauth.ProtectedResourceMetadataHandler(meta).ServeHTTP(w, r)
+			return
+		}
+		// The EMA branch hand-writes the response because it has to add a key
+		// the SDK's type does not carry — but everything *around* the body is
+		// the SDK handler's contract and has to match it, which it did not.
+		// With EMA on, the document went out with no CORS headers (so a
+		// browser-based client's cross-origin discovery fetch failed the
+		// check), answered a preflight with the document instead of 204, and
+		// answered POST. Discovery metadata is public by definition, which is
+		// why allowing any origin is safe here and in the SDK.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		doc, err := json.Marshal(meta)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		extended := map[string]any{}
+		_ = json.Unmarshal(doc, &extended) // doc was marshaled just above
+		extended["io.modelcontextprotocol/enterprise-managed-authorization"] = map[string]string{"version": "stable"}
+		body, err := json.Marshal(extended)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
 	})

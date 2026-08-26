@@ -317,7 +317,7 @@ per-person buckets keep what they have; those who want both get both.
 
    Each surface keeps the refusal posture it already had, which matters more
    than a single uniform answer. Tools, prompts, completion, and resources
-   answer `-32042` — the subset is a coarser cut of the same decision, so it
+   answer `-31042` — the subset is a coarser cut of the same decision, so it
    reuses the policy code rather than minting a fifth. Tasks answer
    "no upstream owns that id", exactly as they already do for another
    principal's task, because on that surface the refusal must not reveal

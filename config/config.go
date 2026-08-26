@@ -259,7 +259,7 @@ type Upstream struct {
 	//
 	// The bound refuses rather than truncates. A shortened body would be the
 	// response rewriting fold declines, so an upstream that exceeds it is
-	// reported as unavailable (-32041) — which is what it is.
+	// reported as unavailable (-31041) — which is what it is.
 	MaxResponseBytes int `json:"maxResponseBytes,omitempty"`
 
 	// PinDefinitions notices when this upstream changes what it advertises —
@@ -1019,7 +1019,7 @@ func (c *Config) Validate() error {
 		}
 		// A cap below any real MCP response is refused rather than honoured,
 		// because the failure it produces does not look like a config error:
-		// every call to the upstream fails with -32041, the breaker opens on
+		// every call to the upstream fails with -31041, the breaker opens on
 		// the failures, and the federation reports the upstream as
 		// unavailable. "maxResponseBytes": 64 — meaning MiB — would read as
 		// an outage. Negative is a deliberate "no bound" and stays legal.

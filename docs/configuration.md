@@ -37,7 +37,7 @@ decision in [defaults.md](defaults.md). A full working document is
 | `budget` | none | `{ period, upstreamCalls }` — a consumption allowance that **accumulates** until the calendar period rolls over, unlike `rateLimit`, which smooths a burst and forgets it. `period` is `hour`, `day`, or `month` (default), aligned to UTC. Requires shared state to mean anything across a fleet; without it each instance enforces its own allowance and the gateway warns at startup. |
 | `healthCheck` | none | `{ intervalMs }` — actively probe every endpoint (full MCP connect) on this interval, ejecting dead replicas before client traffic hits them and restoring recovered ones immediately. Absent → passive health (connect failures eject, cooldown restores). |
 | `cacheTtlMs` | `30000` | TTL for cached list results. Negative disables caching. |
-| `maxResponseBytes` | `67108864` (64 MiB) | Bounds a single response from this upstream. An upstream that exceeds it is reported unavailable (`-32041`) rather than truncated — a shortened body would be a response the upstream never sent. On an event stream the bound applies per event, not per connection. Negative disables it. See below. |
+| `maxResponseBytes` | `67108864` (64 MiB) | Bounds a single response from this upstream. An upstream that exceeds it is reported unavailable (`-31041`) rather than truncated — a shortened body would be a response the upstream never sent. On an event stream the bound applies per event, not per connection. Negative disables it. See below. |
 | `pinDefinitions` | `off` | `"warn"` records the digest of every tool and prompt definition this upstream advertises and reports a change — a description, schema, or annotation rewritten after the federation was approved. See below. |
 
 **Definition pinning.** A tool's description and input schema are the instruction set a model acts on, and its annotations are what policy decides with; fold re-reads them from the upstream on every cache refill. With `pinDefinitions: "warn"`, it also remembers them: the digest of each definition goes to shared state, a difference emits the `upstream/definitionChanged` audit event and increments `fold_definition_drift_total{upstream,kind}`, and the new definition becomes the baseline — so a change is one alert, not one per refill. Nothing is withheld; this reports.
@@ -117,7 +117,7 @@ twice: once decoding it, and again storing it in the list cache, which with
 The bound **refuses rather than truncates**. A shortened body would be a
 response the upstream never sent, which is the response rewriting fold
 declines everywhere else, so an upstream that exceeds it is reported
-unavailable (`-32041`) and nothing partial is cached or served. The refusal is
+unavailable (`-31041`) and nothing partial is cached or served. The refusal is
 counted by `fold_upstream_response_capped_total{upstream}` and has its own
 alert in the shipped rules.
 
@@ -154,6 +154,39 @@ The groups claim must be a JSON **array** of strings; any other shape (a
 single string, a comma-joined value) reads as no groups — fail closed, so a
 misconfigured claim denies rather than grants. Configure the IdP to emit an
 array.
+
+**What a client discovers before it can connect.** An MCP client that meets a
+`401` follows the `WWW-Authenticate` challenge to
+`/.well-known/oauth-protected-resource`, reads `authorization_servers`, and
+goes to that issuer to obtain a token. fold publishes `scopes_supported` in
+that document — every scope named in `policy.rules[].subjects.scopes` — so a
+client can request the right scopes in its authorization request instead of
+discovering them from a `-31042` denial after it has already connected. It is
+a hint rather than a contract: holding every scope listed entitles a caller to
+nothing on its own, because scopes are one gate among several and a rule can
+also require an identity, an issuer, or a claim. The list tracks policy
+reloads.
+
+Scopes used in [`tenants`](#tenants) selectors are deliberately **not**
+published. This endpoint is unauthenticated and a tenant scope is usually a
+customer's name, so advertising them would put a customer roster behind a
+well-known URL — a different class of secret from a capability name like
+`docs:write`, and one fold does not otherwise disclose. A tenant scope is also
+an identity assertion rather than a permission, so an authorization server
+asked for one will not mint it: naming it would leak something real in return
+for advice a client cannot act on.
+
+**The one thing fold cannot supply for you.** The authorization server in that
+chain is your IdP, not fold, and mainstream MCP clients register themselves
+dynamically ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)). An IdP that
+supports dynamic client registration — Auth0, WorkOS, Descope, Keycloak and
+others do — completes the chain with no further work. An IdP that does not
+(Okta and Entra typically require an administrator to pre-register each
+application) leaves the client unable to obtain credentials on its own, and
+the deployment needs either pre-registered client ids distributed out of band
+or an authorization server in front that does support registration. fold is a
+resource server: it validates tokens and tells clients where to get them. See
+[roadmap.md](roadmap.md) for where a DCR-capable front sits in fold's plans.
 
 With `mode: "required"`, every `/mcp` request needs a valid Bearer token: trusted issuer (checked before any network I/O), verified signature via cached JWKS, exact audience match, a non-empty `sub`, asymmetric algorithms only (RS/ES/EdDSA). Failures answer 401 with a `WWW-Authenticate` challenge pointing at `/.well-known/oauth-protected-resource` (RFC 9728), which the gateway publishes. Issuer and JWKS URLs must use `https` (loopback exempt) — they are the inbound trust anchor. The JWKS fetch is single-flighted, size-bounded, and timeout-bounded so an unauthenticated flood of unknown-`kid` tokens cannot be amplified into requests against the IdP.
 
@@ -240,7 +273,7 @@ Two behaviours follow from taking the MCP spec at its word. `readOnlyHint` defau
 
 `"serverInitiatedDecision": "deny"` extends policy to the `sampling/createMessage` and `elicitation/create` requests an upstream makes of the caller's client over a bridged session. Those spend something of the caller's — model budget, or a human's attention — so a rule grants them explicitly: `{ "server": "corpus", "methods": ["sampling/createMessage"] }`, server-and-method only, since neither request has a name.
 
-Enforcement is the invisibility pair pointed the other way: an upstream that may not ask is never told the caller can answer, so it does not ask — and a request arriving on a session whose grant a reload removed is refused with `-32042`, which a client is entitled to say. Those refusals, and every allowed exchange, carry `direction: "server_initiated"` in the audit trail; a capability withheld outright has no event, because nothing was asked.
+Enforcement is the invisibility pair pointed the other way: an upstream that may not ask is never told the caller can answer, so it does not ask — and a request arriving on a session whose grant a reload removed is refused with `-31042`, which a client is entitled to say. Those refusals, and every allowed exchange, carry `direction: "server_initiated"` in the audit trail; a capability withheld outright has no event, because nothing was asked.
 
 It is a separate knob from `defaultDecision`, and it defaults to `"allow"`, for compatibility rather than conviction: this traffic flowed ungoverned before the check existed, so folding it under the existing field would have broken working installs on upgrade. **Production deployments should set it to `"deny"`.** Content-level questions — refusing an elicitation that asks for a password — stay out of the gateway; that is the external decision hook's job. Reasoning: [design-server-initiated.md](design-server-initiated.md).
 
@@ -254,7 +287,7 @@ Scope-based rules match on the OAuth scopes the token carries: `"subjects": { "s
 
 Scopes are their own field rather than a `claims` entry because the standard spelling cannot be matched as a claim: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749#section-3.3) makes `scope` a *space-delimited string*, so `"claims": { "scope": "write" }` does not match a token carrying `scope: "read write"` — it compares whole values. fold reads `scope` first and `scp` only if that yields nothing, and accepts either as a space-delimited string or a JSON array, so a rule is written once against the concept rather than against an issuer's spelling. The two are never merged: an issuer sending both is sending the same set twice, and merging would silently union two claims that disagreed.
 
-**A scope denial says what would fix it.** When a caller is refused and the *only* thing standing between them and a rule was scopes, the `-32042` error names them — in the message, and in `data.missingScopes` for a client that reads structured errors — and the audit event carries `missingScopes`. An agent can then re-authorize for exactly what it lacks instead of retrying blind.
+**A scope denial says what would fix it.** When a caller is refused and the *only* thing standing between them and a rule was scopes, the `-31042` error names them — in the message, and in `data.missingScopes` for a client that reads structured errors — and the audit event carries `missingScopes`. An agent can then re-authorize for exactly what it lacks instead of retrying blind.
 
 Two rules bound that disclosure, and they matter more than the convenience:
 
@@ -389,11 +422,11 @@ Groups principals for governance. A tenant is a label on identity, resolved from
 |---|---|---|
 | `id` | — | Lowercase alphanumeric + hyphens. Appears in every audit event the tenant's principals produce, and as the `tenant` label on `fold_tenant_*` metrics. |
 | `subjects` | — | Required. Which principals belong, using the same shape policy rules use (`groups`, `subs`, `issuers`, `claims`). A tenant with no selector would capture every caller, so it is rejected. |
-| `budget` | none | `{ period, upstreamCalls }` for the tenant as a whole — the dimension a per-upstream or server-wide budget cannot express. Charged in upstream invocations like every other budget, only for calls that reach an upstream; exhaustion mints `-32044` naming the tenant. |
+| `budget` | none | `{ period, upstreamCalls }` for the tenant as a whole — the dimension a per-upstream or server-wide budget cannot express. Charged in upstream invocations like every other budget, only for calls that reach an upstream; exhaustion mints `-31044` naming the tenant. |
 | `rateLimit` | none | `{ requestsPerMinute }`, one bucket shared by the tenant's principals; over it, `429` with `Retry-After`. Distinct from `server.rateLimit.perPrincipalPerMinute`, which gives each *person* a bucket: ten agents on one team get ten allowances there and one here. |
 | `upstreams` | all | Optional visibility subset by upstream id, evaluated before policy. |
 
-**How the four pieces behave.** The budget and the server's are charged narrowest-first (upstream → tenant → server), so a refusal never spends a wider allowance. The rate limit is enforced with its siblings before routing, widest-first (global → tenant → per-principal). The visibility subset filters the *fan-out*: an upstream outside it is never asked, so it costs no request, no budget, and no partial-failure entry when it is down — and a named invocation against it is refused before the policy engine sees it, with `-32042` (`tasks/*` answer "no upstream owns that id" instead, because there a refusal must not reveal existence). A viewer's console shows their tenant's federation, not the operator's.
+**How the four pieces behave.** The budget and the server's are charged narrowest-first (upstream → tenant → server), so a refusal never spends a wider allowance. The rate limit is enforced with its siblings before routing, widest-first (global → tenant → per-principal). The visibility subset filters the *fan-out*: an upstream outside it is never asked, so it costs no request, no budget, and no partial-failure entry when it is down — and a named invocation against it is refused before the policy engine sees it, with `-31042` (`tasks/*` answer "no upstream owns that id" instead, because there a refusal must not reveal existence). A viewer's console shows their tenant's federation, not the operator's.
 
 A principal belongs to at most one tenant. Overlap that validation cannot decide statically — two selectors that only collide for some principals — is caught at request time and **refused**, not guessed: assigning a caller by precedence would hand them another tenant's allowance and visibility. An unmatched principal has no tenant and is governed exactly as before tenancy existed, so an existing deployment behaves identically until it declares one.
 

@@ -146,6 +146,13 @@ func FuzzSanitizeRawMeta(f *testing.F) {
 	f.Add([]byte(`{"taskId":"t-1","_meta":{"io.modelcontextprotocol/clientInfo":{"name":"x"}}}`))
 	f.Add([]byte(`{"taskId":"t-1","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","example.com/vendor":"keep"}}`))
 	f.Add([]byte(`{"taskId":"t-1","_meta":{"io.modelcontextprotocol/clientCapabilities":{}}}`))
+	// The continuation of a multi-round-trip retry (SEP-2322) rides in the
+	// same params object as the `_meta` being stripped. fold is forbidden to
+	// inspect or modify `requestState`, so the sanitizer must leave both
+	// fields exactly as they arrived — including a value that looks like the
+	// namespaced key it is scanning for.
+	f.Add([]byte(`{"taskId":"t-1","requestState":"step=2","_meta":{"io.modelcontextprotocol/clientInfo":{"name":"x"}}}`))
+	f.Add([]byte(`{"requestState":"io.modelcontextprotocol/clientInfo","inputResponses":{"confirm":{"action":"accept","content":{"ok":true}}},"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"example.com/vendor":"keep"}}`))
 	f.Add([]byte(`{"_meta":{"io.modelcontextprotocol/clientInfo":{"name":"x"}},"_meta":{"a":1}}`)) // duplicate key
 	f.Add([]byte(`{"taskId":"t-1","_meta":"io.modelcontextprotocol/clientInfo"}`))                 // _meta is not an object
 	f.Add([]byte(`{"taskId":"io.modelcontextprotocol/clientInfo"}`))                               // namespace outside _meta

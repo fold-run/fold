@@ -85,3 +85,17 @@ func listCacheScope(cfg *config.Config, upstreams []*upstream) string {
 func applyCacheHints(c *mcp.Cacheable, scope string) {
 	c.CacheScope = scope
 }
+
+// One invariant this file does not enforce but the next cache will have to.
+//
+// The specification forbids caching a result produced by an input-required
+// retry: results from "requests carrying `inputResponses` or `requestState`
+// MUST NOT be cached, as they depend on inputs that are not part of the cache
+// key". fold satisfies that today by accident of coverage rather than by
+// design — its only cache holds list results, and the multi-round-trip pattern
+// applies to `tools/call`, `prompts/get` and `resources/read`, none of which
+// fold caches.
+//
+// So the rule has never had to be written down, and a response cache on any of
+// those three methods would break it on its first day. Whoever adds one:
+// a request carrying either field is not cacheable, and neither is its result.

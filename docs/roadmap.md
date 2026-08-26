@@ -91,7 +91,7 @@ configured. Budgets need a fixed, calendar-aligned accumulating counter, so
 they arrive as a new `state.Budget` primitive alongside the limiter rather than
 as a parameter on it. The record also settles what counts as one unit (upstream
 invocations, since one `tools/list` fans out to every upstream) and why an
-exhausted budget earns its own error code rather than reusing `-32040`.
+exhausted budget earns its own error code rather than reusing `-31040`.
 
 ### 2. Consumption metering — **shipped**
 
@@ -377,6 +377,38 @@ the forward path.
 Content questions — "refuse an elicitation that asks for a password" — stay out
 and become a call site for the decision hook above.
 
+**The mechanism this governs is being retired, and the item survives it.** The
+`2026-07-28` revision removed server-initiated requests outright — not
+deprecated, removed: a server "**MUST** send server-to-client requests (such as
+`roots/list`, `sampling/createMessage`, or `elicitation/create`) using the MRTR
+pattern. The previous pattern of server-initiated requests is no longer
+supported. This is a breaking change." Sampling and roots are additionally
+deprecated with an earliest removal of **the first revision on or after
+2027-07-28**; elicitation is not deprecated but exists only in the new shape.
+
+So the governance surface is real and the call site moved. Under multi-round
+trip an upstream does not ask fold anything — it *returns* an input-required
+result carrying the requests it wants fulfilled, and the exchange continues by
+retrying. What this item governs is therefore no longer a handler on a bridged
+session but an inspection of `inputRequests` in a relayed result: the same
+policy dimensions, the same audit event, a different place to stand. The
+per-request handler check that [design-server-initiated.md](design-server-initiated.md)
+argues for as the actual boundary has no meaning there, because there is no
+handler.
+
+Two things follow for whoever builds this. §8 of that design record describes
+the retired mechanism and needs rewriting before it is used as a plan. And the
+whole bridged-session apparatus — `Gateway.callCtx`, per-client upstream
+sessions, the reverse-path handlers — is a **legacy-era compatibility layer**
+rather than the shape of the future, which is worth knowing before adding to
+it. It stays valuable for as long as handshake-era clients exist, which is
+years; it is not where the era fold is moving toward puts this traffic.
+
+Not urgent, and the ordering is the point: the era is currently unreachable
+through fold (the SDK serves `2026-07-28` only on stateless HTTP servers, and
+`gateway/era_test.go` pins the refusal), so nothing here is failing today. It
+becomes urgent the moment that canary does.
+
 ### 14. Pinning upstream definitions
 
 A tool definition is the instruction set a model acts on and the annotations a
@@ -465,10 +497,37 @@ on demand that has not appeared.
 | SEP-2575 `subscriptions/listen` fan-in | The Go SDK serves the 2026-07-28 protocol only on stateless HTTP servers, which session-keyed bridging cannot use. The drift canary in `gateway/listen_test.go` fails when that lifts — the gap is instrumented, not merely noted. |
 | Typed task API | The SDK does not yet model the task lifecycle, so `tasks/*` are forwarded as opaque JSON against fold's documented contract. Swaps to typed wire types when they ship; routing is unchanged. |
 | MCP Apps: app-initiated calls and cross-server app isolation | The extension gives an app no way to learn the name its host knows a tool by, so an app that hardcodes one cannot call it through a namespace; and it defines no marker distinguishing an app-initiated `tools/call` from a model-initiated one, so the host's cross-server block has no analogue behind a gateway where every upstream shares one connection. Both need answers in the extension specification — every aggregator has the second hole and none can close it alone. Parity is item 15 above and is not gated on either. |
-| `roots` | Not implemented, no position taken. Demand-gated. |
+| `roots` | Not implemented, no position taken. Demand-gated — and now deprecated upstream, with an earliest removal of the first revision on or after **2027-07-28**, so the position most likely to be right is to keep not taking one. |
 | mTLS and API-key inbound auth, RFC 7591 dynamic client registration | JWKS bearer is the only inbound credential today. Demand-gated. |
 | `state.Provider` implementations beyond memory and Redis | The interface exists and is the right seam; nothing has asked for a third. |
 | Discovery producers beyond Kubernetes | The document format is public and any producer works — a registry, a script writing to object storage. `fold-discovery` ships because Kubernetes was the common case, not because it is the only supported one. |
+
+## Deprecations on the clock
+
+Not a horizon — a calendar. The `2026-07-28` revision deprecated several things
+fold implements, and a Deprecated feature "remains part of the specification
+but is scheduled for removal: new implementations **SHOULD NOT** adopt it, and
+existing implementations **SHOULD** migrate before the feature's earliest
+removal." These are the windows; none is urgent, and none was written down
+before.
+
+| Feature | Where fold uses it | Earliest removal |
+|---|---|---|
+| Sampling (`sampling/createMessage`) | bridged-session handler; the `serverInitiatedDecision` policy surface; item 13 above | first revision on or after **2027-07-28** |
+| Roots | not implemented — nothing to migrate | **2027-07-28** |
+| Logging | bridged log forwarding, `logging/setLevel`, the advertised capability | **2027-07-28** |
+| OAuth 2.0 Dynamic Client Registration (RFC 7591) | not implemented; relevant to the DCR item in Horizon 3 above | **2027-07-28** |
+| HTTP+SSE transport | not implemented | three months after SEP-2596 is Final |
+
+Two notes the table cannot carry. `logging/setLevel` is in a different
+category from the rest: the feature is deprecated on the clock above, but the
+*method* was removed outright in this revision, with the level moving to a
+per-request `_meta` key — so fold handles a method that no longer exists on the
+new era and has no forwarding path for what replaced it. And the DCR row is the
+one that cuts against a plan rather than an implementation: Horizon 3 holds
+"RFC 7591 dynamic client registration" as demand-gated, and building it after
+the specification deprecated it would be adopting something new implementations
+are told not to adopt.
 
 ## How to read this
 
