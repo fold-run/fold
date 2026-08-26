@@ -112,5 +112,5 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Principal, error) {
 			}
 		}
 	}
-	return &Principal{Subject: sub, Issuer: issuer, Groups: groups, Token: raw, Expiry: expiry, Claims: claims}, nil
+	return &Principal{Subject: sub, Issuer: issuer, Groups: groups, Scopes: ScopesFromClaims(claims), Token: raw, Expiry: expiry, Claims: claims}, nil
 }

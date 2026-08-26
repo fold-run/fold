@@ -126,7 +126,7 @@ field, default, and the reasoning behind each one.
 |---|---|
 | [`upstreams`](docs/configuration.md#upstreams) | **Required.** The federation itself: each upstream's endpoint or replica set, namespace, credential strategy, timeouts, breaker, rate limit, budget, and list-cache TTL. |
 | [`auth`](docs/configuration.md#auth) | Gateway authentication: trusted issuers, JWKS, and the token audience every caller must present — plus the embedded EMA authorization server. |
-| [`policy`](docs/configuration.md#policy) | Deny-by-default authorization: rules over server, method, name, arguments, and tool annotations, filtering lists and refusing calls together, in both directions. |
+| [`policy`](docs/configuration.md#policy) | Deny-by-default authorization: rules over server, method, name, arguments, and tool annotations, gated on principals by group, subject, issuer, claim, or OAuth scope — filtering lists and refusing calls together, in both directions. |
 | [`hook`](docs/configuration.md#hook) | The external decision endpoint: an out-of-process allow/deny on ingress, egress, and server-initiated traffic. Absent by default. |
 | [`audit`](docs/configuration.md#audit) | Where the event per terminal response goes: stdout, rotating file, webhook, or OTLP logs, with retry and dead-lettering. |
 | [`server`](docs/configuration.md#server) | The listener: MCP path, allowed hosts, global and per-principal rate limits, body cap, session expiry, shared state, the metrics listener, introspection, and the console. |
@@ -143,7 +143,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 |---|---|
 | `-32040` | Per-upstream rate limit exceeded |
 | `-32041` | Upstream unavailable (circuit open / unreachable / all upstreams down) |
-| `-32042` | Policy denied the invocation |
+| `-32042` | Policy denied the invocation. When scopes were the only thing missing, `data.missingScopes` names the ones the caller lacks. |
 | `-32043` | Name does not resolve to a configured namespace |
 | `-32044` | Consumption budget exhausted for the period (server or per-upstream) |
 | `-32002` | Task id not owned by any upstream |
@@ -162,6 +162,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - `GET /health` — pings every upstream concurrently; reports per-upstream connectivity, latency, breaker state, owner, and — for multi-endpoint upstreams — the balancer's per-endpoint rotation state. `503` when no upstream is reachable. (`/healthz`, the pre-v1.5 path, was removed in v1.9 — see [API stability](#api-stability).) The fan-out is shared: concurrent callers ride one collection and the result is reused for a second, so probing this unauthenticated endpoint in a loop cannot multiply into upstream traffic. A reload or discovery sync invalidates it immediately.
 - `GET /metrics` — Prometheus metrics (see Observability).
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata (when auth is enabled).
+- `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata for the embedded EMA authorization server (when EMA is enabled). fold names itself in the RFC 9728 document's `authorization_servers` whenever EMA is on, so this is where that pointer resolves: issuer, token endpoint, key set, and the one grant type it accepts.
 - `GET /api/federation` — the federation snapshot (when `server.introspection.enabled`): upstream health and topology, policy shape, audit sinks, discovery status, and the viewer's tenant governance. Authenticates like `/mcp` and shares its rate budgets. Was `/console/api/state` through v1.8.
 - `GET /api/auth-hint` — the deliberately unauthenticated sign-in hint (when `server.introspection.enabled`): issuer, client id, scopes, resource. Public SPA configuration only. Was `/console/api/auth` through v1.8.
 - `GET /console/` — the read-only fold console page (when `server.console.enabled`): an observability dashboard over `/api/federation` plus an MCP test console. The test console is a plain MCP client against the gateway's own `/mcp`, so policy, rate limits, and audit apply to it like any other client — there is no privileged path.

@@ -179,6 +179,7 @@ asynchronous and batched, never adding request latency). Fields:
 | `method` | MCP method (`tools/call`, …), `http` for pre-MCP rejections, `oauth/token` for the EMA endpoint, or `upstream/definitionChanged` for pinned-definition drift. |
 | `name` | Namespaced tool/prompt name or resource URI. |
 | `upstream` | Routed upstream id. |
+| `missingScopes` | On a denial where scopes were the only obstacle, the scopes the caller lacked — the same list the `-32042` error carries. Present only when a rule targeting that exact invocation would otherwise have granted it, so it distinguishes "not authorized" from "not authorized *yet*" without re-deriving it from the policy document. |
 | `decision`, `ruleId` | Policy outcome (`allow`/`deny`) and the matching rule. An explicit `deny` rule names itself here; a refusal that fell through to `defaultDecision` has no `ruleId`, which is how you tell "a rule refused this" from "nothing granted it". |
 | `hookOutcome` | What the external decision hook said: `allow`, `deny`, or `error`. Present only when a hook inspected the request. `error` under `onError: "allow"` means this call was served **uninspected**. |
 | `outcome` | `ok`, `error`, `denied`, `hook_denied`, `rate_limited`, `budget_exhausted`, `unauthenticated`, `upstream_down`, `forbidden`, `warned`. `hook_denied` is kept distinct from `denied` because policy and the inspector are different systems, often owned by different teams. The last is a finding rather than a request outcome — fold noticed something an operator should see and served the request anyway. |

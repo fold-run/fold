@@ -206,6 +206,62 @@ index of a policy selector runs:
   map and by pointee in `reflect.DeepEqual`, and a wrong key is a missed
   match. Everything else falls to the scan.
 
+### Scopes, and why only one of them indexes
+
+Scope selectors (`subjects.scopes`) arrived after this design and settle into
+it asymmetrically, for a reason worth writing down.
+
+They are a **conjunctive** gate: a selector naming `["read","write"]` is
+satisfied only by a principal holding both. Groups are the opposite — naming
+two of them means either will do — and that difference decides what can be
+indexed. The group index works precisely *because* the match is disjunctive:
+a principal holding group `g` matches every tenant naming `g`, so the
+principal's own groups are the lookup keys. Scopes cannot be looked up that
+way in general, because holding `read` says nothing about whether the tenant's
+other requirement is met.
+
+So: a selector naming **exactly one** scope and nothing else is indexed, where
+the conjunction is a single term and the lookup is exact. Anything naming two
+or more falls to the scan. That is not a limitation to fix later; it is what
+the semantics permit.
+
+Scope-bearing selectors are also excluded from the *other* indexes — a
+`{groups: [...], scopes: [...]}` selector falls to the scan rather than filing
+under `byGroup`. That is consistency and defence in depth, **not** a bug fix,
+and the distinction is worth being exact about because the first draft of this
+section got it wrong.
+
+Mis-filing a selector cannot admit anyone it should not. `considerTenants`
+re-runs `policy.MatchSubjects` on every candidate an index produces, so the
+index only ever narrows and the matcher remains the authority — "the index
+narrows; policy decides", above, is load-bearing rather than descriptive. Nor
+can it cause a miss here: a principal satisfying `{groups: ["eng"], scopes:
+[...]}` necessarily holds group `eng`, so the `byGroup` lookup still surfaces
+the tenant and the re-match then checks the scopes. The exclusion costs that
+shape an index and buys nothing today.
+
+It is kept for two reasons. It matches how `claims` are already treated —
+`{groups, claims}` selectors scan too, for no stronger reason — so the
+predicates keep saying one thing rather than each carrying its own exception.
+And it is the safety margin for the one plausible future edit: someone noticing
+that candidates from an exact-match index are re-matched, and removing the
+re-match as redundant. At that moment every mis-filing becomes an admission,
+and the predicates are what stand in the way.
+
+Where an index predicate genuinely *is* correctness-critical is `subs`, and
+for a reason specific to it: `subs` and `groups` are alternatives, so a
+principal can satisfy `{subs: ["u-1"], groups: ["eng"]}` by subject while
+holding no groups at all — and a `byGroup` lookup would never surface it. That
+is a miss, and it is why `indexableGroups` excludes `subs`. Conjunctive
+dimensions (claims, scopes) cannot produce that failure; disjunctive ones can.
+
+**No behavioural test can catch a mis-filing**, precisely because behaviour is
+correct either way. `TestScopeBearingSelectorsAreNotIndexedByAnotherDimension`
+therefore asserts the partitioning itself — which selector lands in which map —
+and is the only thing that fails if a predicate loses a condition. It looks
+redundant next to the cross-product test and is not; the comment on it says
+so.
+
 **What stays linear, stated plainly:** compound selectors — issuer *and*
 claims, or groups *and* claims — are matched one by one, at ~38 ns each. A
 document holding thousands of *those* pays the original cost, and the guidance

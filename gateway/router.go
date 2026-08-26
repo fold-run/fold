@@ -261,6 +261,7 @@ func (g *Gateway) listTools(ctx context.Context, rt *routes, req mcp.Request, ev
 		return nil, err
 	}
 	out := &mcp.ListToolsResult{Tools: []*mcp.Tool{}, Meta: meta}
+	applyCacheHints(&out.Cacheable, rt.listScope)
 	filter := newListFilter(principal, rt.policy, "tools/call")
 	for i, u := range ups {
 		// Visibility is decided on the bare name, the item emitted is the
@@ -328,7 +329,7 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 	out, err := u.callTool(ctx, key, opts, &mcp.CallToolParams{
 		Name:      bare,
 		Arguments: args,
-		Meta:      params.Meta,
+		Meta:      sanitizeRequestMeta(params.Meta),
 	})
 	g.drainBridge(key, before)
 	if err != nil {
@@ -356,6 +357,7 @@ func (g *Gateway) listPrompts(ctx context.Context, rt *routes, req mcp.Request, 
 		return nil, err
 	}
 	out := &mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}, Meta: meta}
+	applyCacheHints(&out.Cacheable, rt.listScope)
 	filter := newListFilter(principal, rt.policy, "prompts/get")
 	for i, u := range ups {
 		public := u.namespacedPrompts(ctx, lists[i]) // index-aligned — see listTools
@@ -404,7 +406,7 @@ func (g *Gateway) getPrompt(ctx context.Context, rt *routes, req mcp.Request, ev
 	out, err := u.getPrompt(ctx, key, opts, &mcp.GetPromptParams{
 		Name:      bare,
 		Arguments: params.Arguments,
-		Meta:      params.Meta,
+		Meta:      sanitizeRequestMeta(params.Meta),
 	})
 	g.drainBridge(key, before)
 	if err != nil {
@@ -428,6 +430,7 @@ func (g *Gateway) listResources(ctx context.Context, rt *routes, req mcp.Request
 	}
 	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourcesResult{Resources: []*mcp.Resource{}, Meta: meta}
+	applyCacheHints(&out.Cacheable, rt.listScope)
 	filter := newListFilter(principal, rt.policy, "resources/read")
 	for i, u := range ups {
 		// Visibility is decided on the upstream's own URI, the item emitted is
@@ -474,6 +477,7 @@ func (g *Gateway) listResourceTemplates(ctx context.Context, rt *routes, req mcp
 	}
 	principal := auth.PrincipalFromContext(ctx)
 	out := &mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}, Meta: meta}
+	applyCacheHints(&out.Cacheable, rt.listScope)
 	filter := newListFilter(principal, rt.policy, "resources/read")
 	for i, u := range ups {
 		for _, tpl := range lists[i] {
@@ -505,6 +509,16 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "missing resource uri"}
 	}
 	evt.Name = params.URI
+	// Three branches below forward these params to an upstream — the minted
+	// ui:// owner, the affinity hit, and the probe — so the connection-owned
+	// `_meta` keys come off once, here, rather than at each of them. The copy
+	// is made only when there is something to strip, and the caller's own
+	// params object is left alone for audit and the decision hook.
+	if sanitized := sanitizeRequestMeta(params.Meta); len(sanitized) != len(params.Meta) {
+		forwarded := *params
+		forwarded.Meta = sanitized
+		params = &forwarded
+	}
 	principal := auth.PrincipalFromContext(ctx)
 	tn := tenantFrom(ctx)
 	denied := false
@@ -633,6 +647,7 @@ func (g *Gateway) complete(ctx context.Context, rt *routes, req mcp.Request, evt
 	var u *upstream
 	var method, name string
 	forwarded := *params
+	forwarded.Meta = sanitizeRequestMeta(params.Meta)
 	switch params.Ref.Type {
 	case "ref/prompt":
 		evt.Name = params.Ref.Name
@@ -662,6 +677,14 @@ func (g *Gateway) complete(ctx context.Context, rt *routes, req mcp.Request, evt
 	if err != nil {
 		return nil, err
 	}
+	// The one named-invocation path that does not tag its result, and so does
+	// not get the reverse-direction strip from tagUpstream. It still needs it:
+	// the SDK stamps fold's own identity onto a result only when the key is
+	// absent, so an upstream's serverInfo left in place would both reach the
+	// caller and suppress fold's. Stripped rather than tagged, because adding
+	// an upstream marker to completion results would be new caller-visible
+	// metadata rather than a fix.
+	stripResultMeta(&out.Meta)
 	return out, nil
 }
 
@@ -736,7 +759,24 @@ func (g *Gateway) authorizeCall(ctx context.Context, evt *audit.Event, rt *route
 		// and a denial is a poor place to disclose it a field at a time.
 		msg += fmt.Sprintf(": argument %q does not satisfy the grant", d.FailedArg)
 	}
-	return nil, &jsonrpc.Error{Code: codeDenied, Message: msg}
+	err := &jsonrpc.Error{Code: codeDenied, Message: msg}
+	if len(d.MissingScopes) > 0 {
+		// Scopes are the one thing a denial *can* name, and the exception is
+		// principled rather than convenient: unlike an argument's expected
+		// value, a scope is a credential the caller goes and obtains, so
+		// naming it is telling them how to succeed rather than describing the
+		// operator's configuration. The engine has already bounded what
+		// appears here — only scopes this caller lacks, and only from a rule
+		// that would otherwise have granted this exact invocation.
+		evt.MissingScopes = d.MissingScopes
+		msg += fmt.Sprintf(": requires scope %s", strings.Join(d.MissingScopes, ", "))
+		err.Message = msg
+		data, mErr := json.Marshal(map[string]any{"missingScopes": d.MissingScopes})
+		if mErr == nil {
+			err.Data = data
+		}
+	}
+	return nil, err
 }
 
 // directionServerInitiated marks the audit events that describe the reverse
@@ -800,10 +840,15 @@ func (g *Gateway) authorizeServerInitiated(ctx context.Context, u *upstream, met
 	}, nil
 }
 
+// tagUpstream marks a proxied result with the upstream that served it. It is
+// also where the reverse-direction connection key is dropped: every path that
+// returns an upstream's own result meta passes through here, so the strip has
+// one home rather than four.
 func tagUpstream(meta *mcp.Meta, u *upstream) {
 	if *meta == nil {
 		*meta = mcp.Meta{}
 	}
+	stripResultMeta(meta)
 	(*meta)[metaUpstream] = u.cfg.ID
 }
 
