@@ -155,6 +155,39 @@ single string, a comma-joined value) reads as no groups — fail closed, so a
 misconfigured claim denies rather than grants. Configure the IdP to emit an
 array.
 
+**What a client discovers before it can connect.** An MCP client that meets a
+`401` follows the `WWW-Authenticate` challenge to
+`/.well-known/oauth-protected-resource`, reads `authorization_servers`, and
+goes to that issuer to obtain a token. fold publishes `scopes_supported` in
+that document — every scope named in `policy.rules[].subjects.scopes` — so a
+client can request the right scopes in its authorization request instead of
+discovering them from a `-32042` denial after it has already connected. It is
+a hint rather than a contract: holding every scope listed entitles a caller to
+nothing on its own, because scopes are one gate among several and a rule can
+also require an identity, an issuer, or a claim. The list tracks policy
+reloads.
+
+Scopes used in [`tenants`](#tenants) selectors are deliberately **not**
+published. This endpoint is unauthenticated and a tenant scope is usually a
+customer's name, so advertising them would put a customer roster behind a
+well-known URL — a different class of secret from a capability name like
+`docs:write`, and one fold does not otherwise disclose. A tenant scope is also
+an identity assertion rather than a permission, so an authorization server
+asked for one will not mint it: naming it would leak something real in return
+for advice a client cannot act on.
+
+**The one thing fold cannot supply for you.** The authorization server in that
+chain is your IdP, not fold, and mainstream MCP clients register themselves
+dynamically ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)). An IdP that
+supports dynamic client registration — Auth0, WorkOS, Descope, Keycloak and
+others do — completes the chain with no further work. An IdP that does not
+(Okta and Entra typically require an administrator to pre-register each
+application) leaves the client unable to obtain credentials on its own, and
+the deployment needs either pre-registered client ids distributed out of band
+or an authorization server in front that does support registration. fold is a
+resource server: it validates tokens and tells clients where to get them. See
+[roadmap.md](roadmap.md) for where a DCR-capable front sits in fold's plans.
+
 With `mode: "required"`, every `/mcp` request needs a valid Bearer token: trusted issuer (checked before any network I/O), verified signature via cached JWKS, exact audience match, a non-empty `sub`, asymmetric algorithms only (RS/ES/EdDSA). Failures answer 401 with a `WWW-Authenticate` challenge pointing at `/.well-known/oauth-protected-resource` (RFC 9728), which the gateway publishes. Issuer and JWKS URLs must use `https` (loopback exempt) — they are the inbound trust anchor. The JWKS fetch is single-flighted, size-bounded, and timeout-bounded so an unauthenticated flood of unknown-`kid` tokens cannot be amplified into requests against the IdP.
 
 ### `auth.ema`
