@@ -29,6 +29,21 @@ type Decision struct {
 	// tell a caller *which* condition they missed without disclosing what the
 	// rule wanted it to be.
 	FailedArg string
+
+	// MissingScopes names the scopes a caller would have needed for a rule
+	// that otherwise granted this exact invocation, empty when no rule came
+	// that close. A denial is more useful when it says what would fix it, and
+	// an agent that reads this can re-authorize for precisely what it lacks
+	// instead of retrying blind.
+	//
+	// Two disclosure rules bound it, both of which matter more than the
+	// feature: only scopes the caller *lacks* appear, so re-authorizing adds
+	// to what they hold rather than replacing it; and a rule contributes only
+	// when scopes were the sole obstacle *and* the rule targets this very
+	// server, method, and name. A shortfall reported for a rule the caller
+	// failed on other grounds would disclose that a rule exists for something
+	// they cannot reach.
+	MissingScopes []string
 }
 
 // Engine evaluates policy rules.
@@ -50,6 +65,11 @@ type Engine struct {
 
 	// hasKind is whether any rule gates on tool annotations.
 	hasKind bool
+
+	// hasScopes is whether any rule gates on scopes. When false the shortfall
+	// accounting below never runs, so a document that names none pays nothing
+	// for the feature — the same shape as hasDeny and hasArgs.
+	hasScopes bool
 
 	// serverInitiatedAllow is the posture for the reverse direction — the
 	// requests an upstream makes of the caller's client. It is a separate
@@ -171,6 +191,9 @@ func New(cfg *config.Policy) *Engine {
 		}
 		if len(cr.deny) > 0 {
 			e.hasDeny = true
+		}
+		if cr.subjects != nil && len(cr.subjects.Scopes) > 0 {
+			e.hasScopes = true
 		}
 		for _, cs := range [][]compiledAllow{cr.allow, cr.deny} {
 			for _, c := range cs {
@@ -422,16 +445,25 @@ func (e *Engine) decide(p *auth.Principal, upstreamID, method, name string, ev E
 				}
 			}
 		}
+		var short scopeShortfall
 		for i := range e.rules {
 			r := &e.rules[i]
-			if !subjectsMatch(r.subjects, p) {
+			ok, unmet := subjectsMatchWhy(r.subjects, p)
+			if !ok {
+				// Only a rule that would have granted *this* invocation
+				// contributes, which is what keeps the shortfall from
+				// naming requirements on things the caller cannot reach.
+				if e.hasScopes && mode == argEnforce && len(unmet) > 0 &&
+					matches(r.allow, upstreamID, method, name) {
+					short.add(unmet)
+				}
 				continue
 			}
 			if matches(r.allow, upstreamID, method, name) {
 				return Decision{Allowed: true, RuleID: r.id, MaxItems: r.maxItems}
 			}
 		}
-		return Decision{Allowed: e.defaultAllow}
+		return Decision{Allowed: e.defaultAllow, MissingScopes: short.list()}
 	}
 	if e.hasDeny {
 		for i := range e.rules {
@@ -449,9 +481,15 @@ func (e *Engine) decide(p *auth.Principal, upstreamID, method, name string, ev E
 		}
 	}
 	var blockedBy string
+	var short scopeShortfall
 	for i := range e.rules {
 		r := &e.rules[i]
-		if !subjectsMatch(r.subjects, p) {
+		subjOK, unmet := subjectsMatchWhy(r.subjects, p)
+		if !subjOK {
+			if e.hasScopes && mode == argEnforce && len(unmet) > 0 &&
+				matches(r.allow, upstreamID, method, name) {
+				short.add(unmet)
+			}
 			continue
 		}
 		ok, failed := matchesArgs(r.allow, upstreamID, method, name, ev, mode)
@@ -462,8 +500,35 @@ func (e *Engine) decide(p *auth.Principal, upstreamID, method, name string, ev E
 			blockedBy = failed
 		}
 	}
-	return Decision{Allowed: e.defaultAllow, FailedArg: blockedBy}
+	return Decision{Allowed: e.defaultAllow, FailedArg: blockedBy, MissingScopes: short.list()}
 }
+
+// scopeShortfall accumulates the unmet scopes across every rule that would
+// have granted this invocation, deduplicated and order-preserving.
+//
+// Every such rule contributes rather than just the first, because a caller
+// told about one rule's requirement would re-authorize, retry, and be refused
+// by the next — turning one round trip into as many as there are rules. The
+// zero value allocates nothing, which is what a document with no scope rule
+// pays.
+type scopeShortfall struct {
+	seen map[string]bool
+	out  []string
+}
+
+func (s *scopeShortfall) add(scopes []string) {
+	if s.seen == nil {
+		s.seen = make(map[string]bool, len(scopes))
+	}
+	for _, sc := range scopes {
+		if !s.seen[sc] {
+			s.seen[sc] = true
+			s.out = append(s.out, sc)
+		}
+	}
+}
+
+func (s *scopeShortfall) list() []string { return s.out }
 
 // DecideServerInitiated checks whether upstreamID may make a server-initiated
 // request — "sampling/createMessage", "elicitation/create" — of principal's
@@ -501,11 +566,25 @@ func MatchSubjects(s *config.PolicySubjects, p *auth.Principal) bool {
 }
 
 func subjectsMatch(s *config.PolicySubjects, p *auth.Principal) bool {
+	ok, _ := subjectsMatchWhy(s, p)
+	return ok
+}
+
+// subjectsMatchWhy is subjectsMatch, additionally reporting the scopes that
+// were the *only* thing standing between this principal and the rule.
+//
+// The second return is non-empty only when every other condition matched, so
+// a caller can say "you would have been allowed had you held these" without
+// having to guess. It is empty whenever something else also failed, which is
+// deliberate: a shortfall reported for a rule the caller could not have
+// satisfied anyway would disclose a requirement guarding something they were
+// never going to reach.
+func subjectsMatchWhy(s *config.PolicySubjects, p *auth.Principal) (bool, []string) {
 	if s == nil {
-		return true
+		return true, nil
 	}
 	if p == nil {
-		return false
+		return false, nil
 	}
 	// When a rule scopes to issuers, the principal's token issuer must be one
 	// of them. Subjects and groups are only unique within an issuer, so a
@@ -513,27 +592,57 @@ func subjectsMatch(s *config.PolicySubjects, p *auth.Principal) bool {
 	// issuer — pin the issuer to keep a lower-assurance IdP from minting a
 	// principal that matches a rule written for another.
 	if len(s.Issuers) > 0 && !contains(s.Issuers, p.Issuer) {
-		return false
+		return false, nil
 	}
 	// Claims gate like issuers: every required claim must match (ABAC).
 	if !claimsMatch(s.Claims, p.Claims) {
-		return false
+		return false, nil
 	}
-	// If only gates (issuers, claims) are named, passing them is sufficient.
+	// Scopes gate too, and conjunctively: every named scope must be held.
+	// Groups and subs below are alternatives because they answer "who is
+	// this", and one identity is enough; a scope answers "what were they
+	// granted", where a list is a set of requirements rather than a choice.
+	missing := missingScopes(s.Scopes, p.Scopes)
+	// If only gates (issuers, claims, scopes) are named, passing them is
+	// sufficient — and failing only on scopes is what the caller is told.
 	if len(s.Subs) == 0 && len(s.Groups) == 0 {
-		return len(s.Issuers) > 0 || len(s.Claims) > 0
+		if len(missing) > 0 {
+			return false, missing
+		}
+		return len(s.Issuers) > 0 || len(s.Claims) > 0 || len(s.Scopes) > 0, nil
 	}
-	if len(s.Subs) > 0 && contains(s.Subs, p.Subject) {
-		return true
-	}
-	if len(s.Groups) > 0 {
+	identity := (len(s.Subs) > 0 && contains(s.Subs, p.Subject))
+	if !identity && len(s.Groups) > 0 {
 		for _, g := range s.Groups {
 			if contains(p.Groups, g) {
-				return true
+				identity = true
+				break
 			}
 		}
 	}
-	return false
+	if !identity {
+		return false, nil
+	}
+	if len(missing) > 0 {
+		return false, missing
+	}
+	return true, nil
+}
+
+// missingScopes returns the required scopes the principal does not hold, in
+// the order the rule names them. Only what is *missing* is returned, never the
+// full requirement: re-authorizing accumulates permissions rather than
+// replacing them, so a caller holding "read" and needing "read write" should
+// be told to obtain "write" alone — asking for the pair risks an IdP issuing a
+// token that drops what they already had.
+func missingScopes(required, held []string) []string {
+	var missing []string
+	for _, want := range required {
+		if !contains(held, want) {
+			missing = append(missing, want)
+		}
+	}
+	return missing
 }
 
 func contains(list []string, v string) bool {

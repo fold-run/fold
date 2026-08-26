@@ -9,7 +9,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/fold-run/fold/auth"
 	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/policy"
 )
 
 // TestReloadAddsAndRemovesUpstreams: the reload swaps the upstream set —
@@ -303,5 +305,64 @@ func TestReloadAppliesUpstreamResponseBound(t *testing.T) {
 	}
 	if got := len(out.Content[0].(*mcp.TextContent).Text); got != bulkBig {
 		t.Errorf("result was %d bytes, want %d", got, bulkBig)
+	}
+}
+
+// TestReloadRecomputesScopeGating: hasScopes is derived at engine
+// construction, so a reload that introduces or removes a scope-gated rule has
+// to rebuild it. A stale flag would be silent in both directions — a
+// newly-scoped document that never reports a shortfall, or a de-scoped one
+// still paying for the accounting — which is why this asserts the observable
+// consequence rather than the flag.
+func TestReloadRecomputesScopeGating(t *testing.T) {
+	up, _ := newUpstreamServer(t, "get_thing")
+	base := []config.Upstream{{ID: "things", URL: up.URL, Namespace: "things"}}
+
+	scoped := &config.Config{
+		Upstreams: base,
+		Policy: &config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID:       "writers",
+				Subjects: &config.PolicySubjects{Scopes: []string{"things:write"}},
+				Allow:    []config.PolicyAllow{{Server: "things", Names: []string{"*"}}},
+			}},
+		},
+	}
+	unscoped := &config.Config{
+		Upstreams: base,
+		Policy: &config.Policy{
+			DefaultDecision: "deny",
+			Rules: []config.PolicyRule{{
+				ID:       "nobody",
+				Subjects: &config.PolicySubjects{Groups: []string{"absent"}},
+				Allow:    []config.PolicyAllow{{Server: "things", Names: []string{"*"}}},
+			}},
+		},
+	}
+
+	// Start without scopes, reload into them: the shortfall must appear.
+	_, gw := startGateway(t, unscoped)
+	p := &auth.Principal{Subject: "u", Issuer: "https://idp"}
+	if d := gw.rt().policy.DecideCall(p, "things", "tools/call", "get_thing", policy.Evidence{}); len(d.MissingScopes) != 0 {
+		t.Fatalf("unscoped document reported a shortfall: %v", d.MissingScopes)
+	}
+	if err := gw.Reload(scoped); err != nil {
+		t.Fatal(err)
+	}
+	d := gw.rt().policy.DecideCall(p, "things", "tools/call", "get_thing", policy.Evidence{})
+	if d.Allowed {
+		t.Fatal("scope-gated rule should not admit a principal holding no scopes")
+	}
+	if len(d.MissingScopes) != 1 || d.MissingScopes[0] != "things:write" {
+		t.Fatalf("after reload into scopes, MissingScopes = %v, want [things:write]", d.MissingScopes)
+	}
+
+	// And back out again: the accounting must stop.
+	if err := gw.Reload(unscoped); err != nil {
+		t.Fatal(err)
+	}
+	if d := gw.rt().policy.DecideCall(p, "things", "tools/call", "get_thing", policy.Evidence{}); len(d.MissingScopes) != 0 {
+		t.Fatalf("after reload out of scopes, MissingScopes = %v, want none", d.MissingScopes)
 	}
 }

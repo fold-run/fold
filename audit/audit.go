@@ -69,11 +69,17 @@ type Event struct {
 	// oauth/token events it carries the exchange outcome verbatim
 	// ("minted", "replayed", "invalid_grant", ...) so a detected replay is
 	// alertable on a structured field.
-	Decision  string  `json:"decision,omitempty"`
-	RuleID    string  `json:"ruleId,omitempty"` // matching policy rule
-	Outcome   Outcome `json:"outcome"`
-	Error     string  `json:"error,omitempty"`
-	LatencyMs int64   `json:"latencyMs"`
+	Decision string `json:"decision,omitempty"`
+	RuleID   string `json:"ruleId,omitempty"`
+
+	// MissingScopes names the scopes a denial said would have satisfied a
+	// rule that otherwise granted the invocation. Present only on denials
+	// where scopes were the sole obstacle, so a trail can distinguish "not
+	// authorized" from "not authorized yet" without re-deriving it.
+	MissingScopes []string `json:"missingScopes,omitempty"` // matching policy rule
+	Outcome       Outcome  `json:"outcome"`
+	Error         string   `json:"error,omitempty"`
+	LatencyMs     int64    `json:"latencyMs"`
 
 	// Consumption metering. fold records what it can observe; a billing
 	// system consumes these. Nothing here is estimated — see

@@ -62,6 +62,47 @@ List freshness works end to end: when an upstream emits a `list_changed` notific
 
 `clientAuth`: `{ "type": "client_secret_post" | "client_secret_basic", "secretRef": "..." }`. Token endpoints must use `https` (loopback exempt). Upstream credentials are attached per request and bound to the configured upstream host: the gateway refuses cross-host redirects and never re-attaches a credential to another host, so a hostile upstream cannot capture the API key (or a passthrough caller's token) with a 3xx. Exchanged tokens are cached per `(upstream, issuer, subject)`. List results are not cached for `passthrough`/`token-exchange` upstreams, since those may be per-user, and such upstreams hold **one MCP session per principal** rather than the single session an upstream with a gateway-configured credential shares: the session is established by whoever opens it and keeps that identity for its whole life, so sharing it would present one caller to the upstream while carrying another's token. Those per-caller sessions age out on the same idle sweep as bridged sessions, and `healthCheck` is ignored for them — a probe holds no caller credential, so it could only ever fail.
 
+### What fold tells clients about caching
+
+Separate from `cacheTtlMs`, which governs what *fold* caches from an upstream:
+every list fold serves carries the MCP caching hints (`ttlMs`, `cacheScope`)
+the [specification](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching)
+requires on a complete list result.
+
+`cacheScope` is computed from the configuration, once per snapshot. It is
+`"private"` whenever two callers can legitimately receive different lists —
+any `policy` rule, any `tenants` entry, or any upstream whose credential is
+caller-derived — and `"public"` only for a federation that genuinely serves
+one list to everyone.
+
+`defaultDecision` deliberately does not affect it: a default with no rules
+serves *every* caller the same list — the whole federation under `allow`,
+nothing at all under `deny` — so neither varies by who is asking. The spec names exactly
+this case: *"private" is appropriate for [...] filtered list results that vary
+per user*, and fold's per-principal filtering is the whole point of the
+enforcement pair.
+
+**One thing the scope cannot express.** A federated list can also vary by what
+the *client* declared it can render: an upstream may register a different tool
+set for a client that supports [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview),
+which is why fold keys root sessions and list-cache entries by capability
+profile. Two callers in the *same* authorization context can therefore receive
+different `tools/list` bytes. That is a content-negotiation axis — an HTTP
+cache would express it with `Vary` — and the MCP caching section defines no
+equivalent, so `cacheScope` cannot say it: `"private"` would be the wrong
+instrument, since it bounds sharing across authorization contexts rather than
+across client capabilities. What contains it in practice is `ttlMs: 0`, which
+tells every conforming cache not to retain the list at all. A cache that
+ignored the TTL and honoured the scope could serve an app-aware list to a plain
+client; nothing fold can put in these two fields would prevent that.
+
+`ttlMs` is `0`, the spec's "immediately stale". fold does not advertise a
+lifetime for a list, because a reload, a discovery sync, or a policy change can
+alter what a caller is entitled to see at any moment. fold emits `list_changed`
+on all three — which is the invalidation signal the spec pairs with a TTL — but
+picking a number here would pick it for every deployment at once, and the
+conservative value is the one that cannot serve a stale entitlement.
+
 ### Bounding what an upstream may return
 
 `maxResponseBytes` is the outbound peer of `server.maxBodyBytes`. The inbound
@@ -208,6 +249,19 @@ It is a separate knob from `defaultDecision`, and it defaults to `"allow"`, for 
 Scope a rule to specific token issuers with `"subjects": { "issuers": ["https://corp.okta.com"], "groups": [...] }`. Subjects and group names are only unique within an issuer, so **when more than one issuer is trusted, pin rules to an issuer** — otherwise a lower-assurance IdP could mint a principal that matches a rule written for another.
 
 Attribute-based rules match on verified token claims: `"subjects": { "claims": { "dept": "eng", "mfa": true } }`. Every listed claim must match — the token claim equals the value, or, when the token carries an array (like an entitlements list), contains it. Values are JSON scalars (string, number, bool). Claims gate like issuers: they combine with `subs`/`groups` as an additional requirement, or stand alone as the whole subject. The same issuer-pinning caveat applies — claim names mean whatever each IdP says they mean, so pin claim-based rules to an issuer when more than one is trusted. Richer conditions (device posture, network location) belong in the IdP, surfaced to fold as claims — that is what token claims are for.
+
+Scope-based rules match on the OAuth scopes the token carries: `"subjects": { "scopes": ["reports:write"] }`. Every listed scope must be held — **scopes are conjunctive**, where `subs` and `groups` are alternatives. That asymmetry is the point: `subs` and `groups` answer *who is this*, and one identity is enough, while a scope answers *what were they granted*, and a list of those is a set of requirements rather than a choice. Like claims, scopes gate — they combine with `subs`/`groups` as an additional requirement, or stand alone as the whole subject.
+
+Scopes are their own field rather than a `claims` entry because the standard spelling cannot be matched as a claim: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749#section-3.3) makes `scope` a *space-delimited string*, so `"claims": { "scope": "write" }` does not match a token carrying `scope: "read write"` — it compares whole values. fold reads `scope` first and `scp` only if that yields nothing, and accepts either as a space-delimited string or a JSON array, so a rule is written once against the concept rather than against an issuer's spelling. The two are never merged: an issuer sending both is sending the same set twice, and merging would silently union two claims that disagreed.
+
+**A scope denial says what would fix it.** When a caller is refused and the *only* thing standing between them and a rule was scopes, the `-32042` error names them — in the message, and in `data.missingScopes` for a client that reads structured errors — and the audit event carries `missingScopes`. An agent can then re-authorize for exactly what it lacks instead of retrying blind.
+
+Two rules bound that disclosure, and they matter more than the convenience:
+
+- **Only scopes the caller lacks are named**, never the full requirement. Re-authorizing accumulates permissions rather than replacing them, so a caller holding `read` who needs `read` and `write` is told to obtain `write` alone — asking for the pair risks an IdP issuing a token that drops what they already had.
+- **A rule contributes only when scopes were the sole obstacle and it targets that exact invocation.** If a non-scope condition rejected the caller first, or the rule was about a different tool, the denial names nothing — disclosing a scope requirement guarding something the caller could not reach anyway would leak that the thing exists. This is the same discipline `args` already follows, which reports *which* argument path failed and never the value the rule wanted.
+
+Scopes work in [`tenants`](#tenants) selectors too, with the same semantics.
 
 ## `hook`
 

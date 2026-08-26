@@ -20,6 +20,13 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":1048576}]}`))
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":-1}]}`))
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":2048}]}`)) // below the floor
+	// Scope subjects, which are shared by policy rules and tenants and are
+	// the one selector whose emptiness is rejected rather than ignored —
+	// both the accepted shape and the refused one, so the mutator has each
+	// side of that boundary to work from.
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"defaultDecision":"deny","rules":[{"id":"r","subjects":{"scopes":["mcp:invoke","docs:read"]},"allow":[{"server":"a"}]}]}}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"rules":[{"id":"r","subjects":{"scopes":[""]},"allow":[{"server":"a"}]}]}}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"tenants":[{"id":"t","subjects":{"groups":["eng"],"scopes":["admin"]}}]}`))
 	f.Add([]byte(`{"upstreams":[]}`))
 	f.Add([]byte(`{`))
 	f.Add([]byte(`null`))

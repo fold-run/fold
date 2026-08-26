@@ -392,3 +392,83 @@ func TestAuthorizationServerMetadataEndpointsFromIssuer(t *testing.T) {
 		}
 	}
 }
+
+// TestScopesFromClaims: there is no single spelling of "what this token was
+// granted", so all four shapes in use are read — and everything else yields
+// nothing, because a scope list nobody can parse must deny rather than admit.
+func TestScopesFromClaims(t *testing.T) {
+	cases := []struct {
+		name   string
+		claims map[string]any
+		want   []string
+	}{
+		{"space-delimited scope (RFC 6749)", map[string]any{"scope": "read write"}, []string{"read", "write"}},
+		{"single scope", map[string]any{"scope": "read"}, []string{"read"}},
+		{"scope as an array", map[string]any{"scope": []any{"read", "write"}}, []string{"read", "write"}},
+		{"scp as an array", map[string]any{"scp": []any{"read", "write"}}, []string{"read", "write"}},
+		{"scp as a string", map[string]any{"scp": "read write"}, []string{"read", "write"}},
+		{"extra whitespace and newlines", map[string]any{"scope": "  read \t write\nadmin  "}, []string{"read", "write", "admin"}},
+		// The fallback is ordered, not merged: an issuer sending both sends
+		// the same set twice, and unioning two claims that disagreed would
+		// grant the caller the larger of them.
+		{"scope wins over scp", map[string]any{"scope": "read", "scp": []any{"admin"}}, []string{"read"}},
+		{"empty scope falls through to scp", map[string]any{"scope": "", "scp": []any{"admin"}}, []string{"admin"}},
+		{"whitespace-only scope falls through", map[string]any{"scope": "   ", "scp": "admin"}, []string{"admin"}},
+		{"empty array falls through", map[string]any{"scope": []any{}, "scp": "admin"}, []string{"admin"}},
+		{"non-string array members are skipped", map[string]any{"scope": []any{"read", 42, nil, true, "write"}}, []string{"read", "write"}},
+		{"empty array members are skipped", map[string]any{"scope": []any{"read", ""}}, []string{"read"}},
+		// Fail closed on every shape that is neither a string nor an array,
+		// the same reading the groups claim takes.
+		{"number", map[string]any{"scope": float64(7)}, nil},
+		{"object", map[string]any{"scope": map[string]any{"read": true}}, nil},
+		{"bool", map[string]any{"scope": true}, nil},
+		{"null", map[string]any{"scope": nil}, nil},
+		{"absent", map[string]any{"sub": "alice"}, nil},
+		{"no claims at all", nil, nil},
+		{"unreadable scope and unreadable scp", map[string]any{"scope": float64(1), "scp": map[string]any{}}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ScopesFromClaims(c.claims)
+			if len(got) != len(c.want) {
+				t.Fatalf("ScopesFromClaims(%v) = %v, want %v", c.claims, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("ScopesFromClaims(%v) = %v, want %v", c.claims, got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// The verified principal carries them, which is what policy and tenancy read.
+// A token whose scope claim is unreadable yields a principal with none rather
+// than a verification failure: the token is still valid, it just grants
+// nothing a scope-gated rule will honour.
+func TestVerifyCapturesScopes(t *testing.T) {
+	const issuer = "https://scopes.example.com"
+	key := newKey(t)
+	v := NewVerifier(&config.Auth{Resource: resource}, http.DefaultClient)
+	v.TrustLocal(issuer, &key.PublicKey)
+
+	claims := baseClaims(issuer)
+	claims["scope"] = "mcp:invoke docs:read"
+	p, err := v.Verify(context.Background(), signToken(t, key, "", claims))
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if strings.Join(p.Scopes, ",") != "mcp:invoke,docs:read" {
+		t.Errorf("scopes = %v, want [mcp:invoke docs:read]", p.Scopes)
+	}
+
+	unreadable := baseClaims(issuer)
+	unreadable["scope"] = float64(3)
+	p, err = v.Verify(context.Background(), signToken(t, key, "", unreadable))
+	if err != nil {
+		t.Fatalf("Verify with an unreadable scope claim: %v", err)
+	}
+	if len(p.Scopes) != 0 {
+		t.Errorf("scopes = %v, want none", p.Scopes)
+	}
+}

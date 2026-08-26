@@ -72,6 +72,11 @@ func TestValidationErrors(t *testing.T) {
 		{"policy unknown server", `{"upstreams":[{"id":"a","url":"http://x.test"}],"policy":{"rules":[{"id":"r","allow":[{"server":"nope"}]}]}}`, "unknown server"},
 		{"claims object value", `{"upstreams":[{"id":"a","url":"http://x.test"}],"policy":{"rules":[{"id":"r","subjects":{"claims":{"dept":{"nested":true}}},"allow":[{"server":"a"}]}]}}`, "JSON scalar"},
 		{"claims array value", `{"upstreams":[{"id":"a","url":"http://x.test"}],"policy":{"rules":[{"id":"r","subjects":{"claims":{"dept":["eng"]}},"allow":[{"server":"a"}]}]}}`, "JSON scalar"},
+		// A scope nobody can hold narrows a grant to nothing, which reads as
+		// a typo rather than as an error unless it is refused here.
+		{"empty policy scope", `{"upstreams":[{"id":"a","url":"http://x.test"}],"policy":{"rules":[{"id":"r","subjects":{"scopes":["read",""]},"allow":[{"server":"a"}]}]}}`, "scopes must not contain empty values"},
+		{"whitespace policy scope", `{"upstreams":[{"id":"a","url":"http://x.test"}],"policy":{"rules":[{"id":"r","subjects":{"scopes":["\t"]},"allow":[{"server":"a"}]}]}}`, "scopes must not contain empty values"},
+		{"empty tenant scope", `{"upstreams":[{"id":"a","url":"http://x.test"}],"tenants":[{"id":"t","subjects":{"scopes":[""]}}]}`, "scopes must not contain empty values"},
 		{"webhook without url", `{"upstreams":[{"id":"a","url":"http://x.test"}],"audit":{"sinks":[{"type":"webhook"}]}}`, "url"},
 		{"unknown field", `{"upstreams":[{"id":"a","url":"http://x.test"}],"nope":true}`, "nope"},
 		{"passthrough without auth", `{"upstreams":[{"id":"a","url":"http://x.test","auth":{"strategy":"passthrough"}}]}`, `auth.mode "required"`},
