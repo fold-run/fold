@@ -431,6 +431,11 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 			return nil, fmt.Errorf("upstream credentials: %w", err)
 		}
 		injectTraceContext(req.Context(), req.Header)
+		// Inside the host check with the credentials, and for the same
+		// reason: these carry caller-supplied values, and nothing
+		// caller-supplied rides a request to a host the upstream did not
+		// configure.
+		injectParamHeaders(req.Context(), req.Header)
 	}
 	if req.Method == http.MethodGet {
 		resp, err := t.sse.RoundTrip(req)

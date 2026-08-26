@@ -39,6 +39,8 @@ func (g *Gateway) federationMiddleware(next mcp.MethodHandler) mcp.MethodHandler
 		if extra := req.GetExtra(); extra != nil {
 			hdr = extra.Header
 			ctx = withTraceContext(ctx, hdr)
+			// Relayed, never read: see gateway/paramheader.go.
+			ctx = withParamHeaders(ctx, hdr)
 		}
 		// Notifications and pings are protocol plumbing; keep audit, metrics,
 		// and spans focused on requests, matching fold's "every request

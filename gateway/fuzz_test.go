@@ -2,9 +2,12 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/fold-run/fold/config"
@@ -241,6 +244,72 @@ func FuzzListCacheScope(f *testing.F) {
 		} {
 			if got != cacheScopePublic && got != cacheScopePrivate {
 				t.Fatalf("listCacheScope = %q for %q, which is not a scope the specification defines", got, data)
+			}
+		}
+	})
+}
+
+// FuzzParamHeaderRelay hammers the one header namespace fold relays with
+// arbitrary caller-controlled names and values. The header name is as
+// attacker-controlled as a list cursor is, and the relay's whole value is that
+// it is narrow, so the properties are the two halves of that narrowness:
+//
+//   - nothing outside `Mcp-Param-*` ever reaches the outgoing request, however
+//     the caller spells it — no credential, no cookie, no identity assertion;
+//   - a value the SDK client set for itself is never replaced, because that
+//     one describes the call fold is actually making.
+//
+// Plus the obvious: neither half ever panics on input off the wire.
+func FuzzParamHeaderRelay(f *testing.F) {
+	f.Add("Mcp-Param-Tenant", "acme", "")
+	f.Add("mcp-param-tenant", "acme", "")           // non-canonical spelling
+	f.Add("Mcp-Param-Tenant", "acme", "from-sdk")   // the no-overwrite case
+	f.Add("Authorization", "Bearer secret", "")     // must not cross
+	f.Add("Cookie", "session=secret", "")           // must not cross
+	f.Add("X-Forwarded-For", "10.0.0.1", "")        // must not cross
+	f.Add("Mcp-Params-X", "no", "")                 // near miss: plural
+	f.Add("Mcp-Param", "no", "")                    // near miss: no suffix
+	f.Add("X-Mcp-Param-Tenant", "no", "")           // near miss: not at the head
+	f.Add("Mcp-Session-Id", "no", "")               // a header fold's own client owns
+	f.Add("Mcp-Param-é", "café", "")                // non-ASCII, which canonicalization leaves alone
+	f.Add("Mcp-Param-Tenant", "a\r\nX-Evil: 1", "") // a value trying to be two headers
+
+	f.Fuzz(func(t *testing.T, name, value, preset string) {
+		// Only names the wire could actually carry: a header map built from a
+		// real request cannot hold a name with a delimiter in it.
+		if name == "" || strings.ContainsAny(name, " \t\r\n:") || strings.ContainsAny(value, "\r\n") {
+			return
+		}
+		in := http.Header{}
+		in.Add(name, value)
+
+		out := http.Header{}
+		if preset != "" {
+			out.Set(name, preset) // Set canonicalizes, as the SDK client's own Set does
+		}
+		injectParamHeaders(withParamHeaders(context.Background(), in), out)
+
+		canonical := http.CanonicalHeaderKey(name)
+		relayed := strings.HasPrefix(canonical, mcpParamPrefix)
+		for got := range out {
+			if !strings.HasPrefix(got, mcpParamPrefix) && got != canonical {
+				t.Fatalf("header %q reached the upstream from caller header %q; fold relays only %s*", got, name, mcpParamPrefix)
+			}
+		}
+		switch {
+		case preset != "":
+			// Whatever the name was, the value already on the outgoing
+			// request is fold's own and must survive untouched.
+			if got := out.Values(canonical); len(got) != 1 || got[0] != preset {
+				t.Fatalf("preset %q for %q became %v; fold's own value must win", preset, name, got)
+			}
+		case relayed:
+			if got := out.Get(canonical); got != value {
+				t.Fatalf("relayed %q = %q, want %q", canonical, got, value)
+			}
+		default:
+			if len(out) != 0 {
+				t.Fatalf("caller header %q produced %v; it is not in the relayed namespace", name, out)
 			}
 		}
 	})
