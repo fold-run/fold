@@ -283,6 +283,15 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		// destination should not take the gateway down — but it is not silent.
 		g.log.Error("audit sink not started", "err", err)
 	}
+	// The exception to that, and the only one: an operator who set
+	// requireDurable has said a best-effort trail is not acceptable here, and
+	// starting anyway would serve traffic against a record they have already
+	// refused. config.Validate rejects the document that declares no durable
+	// sink; this catches the declared one that would not open.
+	if err := g.audit.DurabilityError(); err != nil {
+		g.audit.Close()
+		return nil, err
+	}
 	if cfg.Tracing != nil {
 		if g.tracer, err = newGwTracer(cfg.Tracing); err != nil {
 			return nil, err

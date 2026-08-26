@@ -5,11 +5,13 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,12 +52,18 @@ const (
 
 // Event is one audit record.
 type Event struct {
-	Time      time.Time `json:"time"`
-	Principal string    `json:"principal,omitempty"` // subject, or "" when auth is disabled
-	Issuer    string    `json:"issuer,omitempty"`
-	Method    string    `json:"method"`             // MCP method, e.g. "tools/call"
-	Name      string    `json:"name,omitempty"`     // namespaced tool/prompt name
-	Upstream  string    `json:"upstream,omitempty"` // routed upstream id
+	Time time.Time `json:"time"`
+	// Instance names the gateway replica that emitted this record. A fleet
+	// behind one Redis produces one trail from many processes, and without
+	// this an operator reading it cannot tell which of them saw the request —
+	// which is the first question asked of any record that looks wrong.
+	// Resolved once at construction; see resolveInstance for where from.
+	Instance  string `json:"instance,omitempty"`
+	Principal string `json:"principal,omitempty"` // subject, or "" when auth is disabled
+	Issuer    string `json:"issuer,omitempty"`
+	Method    string `json:"method"`             // MCP method, e.g. "tools/call"
+	Name      string `json:"name,omitempty"`     // namespaced tool/prompt name
+	Upstream  string `json:"upstream,omitempty"` // routed upstream id
 	// Direction is set only on the reverse path — "server_initiated", for the
 	// sampling and elicitation requests an upstream makes of the caller's
 	// client. Its absence means the ordinary client-to-upstream direction, so
@@ -124,6 +132,14 @@ type Logger struct {
 	observer    Observer
 	panicHook   PanicHook
 	startupErrs []error
+	instance    string
+	// requireDurable and durable are the two halves of the startup guard:
+	// what the operator asked for, and whether a sink that delivers on it was
+	// actually built. Both are needed because a declared durable sink can
+	// still fail to construct — a file path that will not open — and that is
+	// precisely the case the guard exists for.
+	requireDurable bool
+	durable        bool
 }
 
 // PanicHook is told about a panic recovered inside a delivery worker: the
@@ -172,12 +188,17 @@ func New(cfg *config.Audit, opts ...Option) *Logger {
 	if cfg == nil || len(cfg.Sinks) == 0 {
 		return nil
 	}
-	l := &Logger{observer: noopObserver}
+	l := &Logger{
+		observer:       noopObserver,
+		instance:       resolveInstance(),
+		requireDurable: cfg.RequireDurable,
+	}
 	for _, opt := range opts {
 		opt(l)
 	}
 	for _, s := range cfg.Sinks {
 		report := func(outcome string, n int) { l.observer(s.Type, outcome, n) }
+		built := len(l.sinks)
 		switch s.Type {
 		case "stdout":
 			l.sinks = append(l.sinks, &stdoutSink{})
@@ -211,7 +232,7 @@ func New(cfg *config.Audit, opts ...Option) *Logger {
 					dl = nil
 				}
 			}
-			o, err := otlpLogsSink(s, dl, report)
+			o, err := otlpLogsSink(s, l.instance, dl, report)
 			if err != nil {
 				l.startupErrs = append(l.startupErrs, err)
 				_ = dl.Close()
@@ -229,8 +250,52 @@ func New(cfg *config.Audit, opts ...Option) *Logger {
 			l.sinks = append(l.sinks, fs)
 			l.closers = append(l.closers, fs)
 		}
+		// Durability is credited to sinks that were actually constructed, not
+		// to the ones the document declared.
+		if len(l.sinks) > built && s.Durable() {
+			l.durable = true
+		}
 	}
 	return l
+}
+
+// resolveInstance names the process that emits the records: FOLD_INSTANCE_ID
+// when set, otherwise the hostname — which Docker sets per container and
+// Kubernetes per pod, so a fleet is attributable with no configuration at all.
+//
+// Deliberately not a config field. The value has to differ per replica, and
+// the config document is the one thing every replica shares; a field there
+// would either be identical across the fleet (useless) or force a
+// per-replica document (worse).
+func resolveInstance() string {
+	if v := strings.TrimSpace(os.Getenv("FOLD_INSTANCE_ID")); v != "" {
+		return v
+	}
+	if h, err := os.Hostname(); err == nil {
+		return h
+	}
+	return ""
+}
+
+// DurabilityError reports the one audit misconfiguration fold refuses to run
+// with: `requireDurable` set, and not one constructed sink that keeps what it
+// could not deliver. The caller makes it fatal — a gateway that starts here
+// serves traffic while producing a trail the operator has already said is not
+// good enough, which is worse than not starting.
+//
+// config.Validate rejects the same shape earlier, so reaching this means a
+// declared durable sink failed to construct.
+func (l *Logger) DurabilityError() error {
+	if l == nil || !l.requireDurable || l.durable {
+		return nil
+	}
+	// The startup errors are folded in rather than left to the log: a refused
+	// startup may be the only output an operator sees, and "no durable sink"
+	// without the path that would not open is a message that sends them
+	// looking in the wrong place.
+	return errors.Join(append([]error{
+		errors.New("audit.requireDurable is set but no durable sink was started"),
+	}, l.startupErrs...)...)
 }
 
 // StartupErrors reports sinks that could not be constructed, so the caller can
@@ -261,6 +326,9 @@ func (l *Logger) Emit(e Event) {
 	}
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
+	}
+	if e.Instance == "" {
+		e.Instance = l.instance
 	}
 	for _, s := range l.sinks {
 		s.Emit(e)

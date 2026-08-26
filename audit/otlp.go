@@ -39,7 +39,7 @@ type otlpSink struct {
 
 // newOTLPSink builds the pipeline. The context bounds only construction; the
 // exporter's own client governs request timeouts.
-func newOTLPSink(rawURL string, headers map[string]string, retry retryPolicy, dead *deadLetter, report func(string, int)) (*otlpSink, error) {
+func newOTLPSink(rawURL string, headers map[string]string, instance string, retry retryPolicy, dead *deadLetter, report func(string, int)) (*otlpSink, error) {
 	// A bare base URL follows the OTEL_EXPORTER_OTLP_ENDPOINT convention: the
 	// default signal path applies. WithEndpointURL would post to "/" instead,
 	// which is silent — the collector 404s and the records are simply gone.
@@ -75,10 +75,17 @@ func newOTLPSink(rawURL string, headers map[string]string, retry retryPolicy, de
 	// schema-URL conflict, and the fallback below would then quietly ship
 	// records labelled unknown_service — which is how this was found, in a
 	// collector's output rather than in a test.
-	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
-		semconv.SchemaURL,
-		semconv.ServiceName("fold"),
-	))
+	// The emitting replica belongs on the resource rather than on each
+	// record: it describes the producer, not the request, and
+	// service.instance.id is the convention every OTel backend already groups
+	// by. The JSON sinks carry the same value as the event's `instance`
+	// field, which is where a plain-JSON reader looks for it.
+	attrs := []attribute.KeyValue{semconv.ServiceName("fold")}
+	if instance != "" {
+		attrs = append(attrs, semconv.ServiceInstanceID(instance))
+	}
+	res, err := resource.Merge(resource.Default(),
+		resource.NewWithAttributes(semconv.SchemaURL, attrs...))
 	if err != nil {
 		res = resource.Default()
 	}
@@ -261,6 +268,6 @@ func (d *deadLetter) writeRecords(records []sdklog.Record) {
 
 // otlpLogsSink builds the sink from config, returning the error for the
 // caller to report and skip on.
-func otlpLogsSink(s config.AuditSink, dead *deadLetter, report func(string, int)) (*otlpSink, error) {
-	return newOTLPSink(s.URL, s.Headers, resolveRetry(s.Retry), dead, report)
+func otlpLogsSink(s config.AuditSink, instance string, dead *deadLetter, report func(string, int)) (*otlpSink, error) {
+	return newOTLPSink(s.URL, s.Headers, instance, resolveRetry(s.Retry), dead, report)
 }

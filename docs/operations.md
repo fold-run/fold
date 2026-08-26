@@ -175,6 +175,7 @@ asynchronous and batched, never adding request latency). Fields:
 | Field | Meaning |
 |---|---|
 | `time` | UTC timestamp. |
+| `instance` | The gateway replica that emitted the record — `FOLD_INSTANCE_ID` when set, otherwise the hostname, which Docker sets per container and Kubernetes per pod. A fleet behind one Redis writes one trail from many processes, and this is what says which of them saw the request. Not a config field: the value has to differ per replica, and the config document is the one thing every replica shares. The `otlp-logs` sink puts the same value on the resource as `service.instance.id` rather than on each record, which is where OTel backends already group by it. |
 | `principal`, `issuer` | Verified subject and token issuer; absent when auth is disabled. |
 | `method` | MCP method (`tools/call`, …), `http` for pre-MCP rejections, `oauth/token` for the EMA endpoint, or `upstream/definitionChanged` for pinned-definition drift. |
 | `name` | Namespaced tool/prompt name or resource URI. |
@@ -226,6 +227,21 @@ started` if a sink seems inert.
 The dead-letter file is a rotating file like any other fold writes — bounded at
 100 MB × 5 by default — for the same reason: a dead-letter file that fills the
 disk turns a delivery problem into an outage.
+
+**`audit.requireDurable` turns the skip into a refusal.** Off by default. Set
+it, and fold will not start unless at least one sink keeps what it could not
+deliver: a `file` sink qualifies on its own, a `webhook` or `otlp-logs` sink
+qualifies once it has a `deadLetterPath`, and `stdout` never does. The document
+that declares no such sink fails `fold --validate`; the one that declares a
+durable sink whose path will not open fails at startup, which is the case
+validation cannot see and the reason the check exists in two places.
+
+Read what it promises precisely: **every abandoned delivery has somewhere on
+disk to land**. It is not a no-loss guarantee. A sink whose buffer fills while
+its receiver is down still drops — counted as `dropped` — because writing to
+disk from the request path is exactly the latency audit is not allowed to add.
+The guard is about what survives a receiver outage, not about surviving
+saturation.
 
 ## Gateway error codes
 

@@ -270,7 +270,8 @@
       "additionalProperties": false,
       "required": ["sinks"],
       "properties": {
-        "sinks": { "type": "array", "items": { "$ref": "#/definitions/auditSink" } }
+        "sinks": { "type": "array", "items": { "$ref": "#/definitions/auditSink" } },
+        "requireDurable": { "type": "boolean" }
       }
     },
     "auditSink": {
