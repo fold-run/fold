@@ -27,6 +27,9 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"defaultDecision":"deny","rules":[{"id":"r","subjects":{"scopes":["mcp:invoke","docs:read"]},"allow":[{"server":"a"}]}]}}`))
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"rules":[{"id":"r","subjects":{"scopes":[""]},"allow":[{"server":"a"}]}]}}`))
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"tenants":[{"id":"t","subjects":{"groups":["eng"],"scopes":["admin"]}}]}`))
+	// Both selectors at once, naming an overlapping scope: the shape the
+	// published RFC 9728 document has to merge into one deduplicated list.
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"policy":{"defaultDecision":"deny","rules":[{"id":"r","subjects":{"scopes":["docs:write","tenant:acme"]},"allow":[{"server":"a"}]}]},"tenants":[{"id":"acme","subjects":{"scopes":["tenant:acme"]}},{"id":"globex","subjects":{"scopes":["docs:read"]}}]}`))
 	f.Add([]byte(`{"upstreams":[]}`))
 	f.Add([]byte(`{`))
 	f.Add([]byte(`null`))
