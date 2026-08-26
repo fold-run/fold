@@ -10,6 +10,8 @@ same guardrails.
 | Skill | Use |
 | --- | --- |
 | `/preflight` | Run the local merge gate in order (`make check`, plus the conditional gates the diff warrants: bench, conformance, helm-check, vuln, console-check, image build) and interpret failures. |
+| `/ship` | Land a verified change: branch (`type/slug`), prose PR title naming the problem, commit body as rationale, PR body written for a reviewer, checklist answered rather than ticked. |
+| `/observability` | Add, rename, or retire a metric, span attribute, or audit field: the bidirectional pack lockstep, the v1 freeze on names *and* label sets, the two rule files, the docs that track them. |
 | `/fold-release` | The release workflow: verify → per-step-approved commit/push → CI watch → tag (goreleaser) → CHANGELOG.md entry. |
 | `/helm-chart` | Chart changes: the three `ci/*.yaml` render shapes, the probe Host-header trap, `Chart.yaml`'s two version lines, the docs that track values. |
 | `/stdio-bridge` | `fold-stdio` and `internal/stdiobridge`: the protocol-blind pump, the argv-only command rule, the narrow-by-default flags. |
