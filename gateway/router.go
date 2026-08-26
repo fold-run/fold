@@ -330,6 +330,17 @@ func (g *Gateway) callTool(ctx context.Context, rt *routes, req mcp.Request, evt
 		Name:      bare,
 		Arguments: args,
 		Meta:      sanitizeRequestMeta(params.Meta),
+		// A retry of an input-required round carries the answers and the
+		// upstream's opaque continuation state. Both must reach the upstream
+		// unchanged: the specification requires a client to "echo back the
+		// exact value" of requestState and forbids inspecting or modifying
+		// it, and it is the only thing carrying the upstream's context across
+		// a round trip that is otherwise stateless. Dropping them — which
+		// building fresh params silently did — makes the upstream see a first
+		// attempt every time, so it asks again, the SDK retries, and the loop
+		// runs to its retry ceiling while re-prompting a human on each pass.
+		InputResponses: params.InputResponses,
+		RequestState:   params.RequestState,
 	})
 	g.drainBridge(key, before)
 	if err != nil {
@@ -407,6 +418,17 @@ func (g *Gateway) getPrompt(ctx context.Context, rt *routes, req mcp.Request, ev
 		Name:      bare,
 		Arguments: params.Arguments,
 		Meta:      sanitizeRequestMeta(params.Meta),
+		// A retry of an input-required round carries the answers and the
+		// upstream's opaque continuation state. Both must reach the upstream
+		// unchanged: the specification requires a client to "echo back the
+		// exact value" of requestState and forbids inspecting or modifying
+		// it, and it is the only thing carrying the upstream's context across
+		// a round trip that is otherwise stateless. Dropping them — which
+		// building fresh params silently did — makes the upstream see a first
+		// attempt every time, so it asks again, the SDK retries, and the loop
+		// runs to its retry ceiling while re-prompting a human on each pass.
+		InputResponses: params.InputResponses,
+		RequestState:   params.RequestState,
 	})
 	g.drainBridge(key, before)
 	if err != nil {
@@ -542,7 +564,16 @@ func (g *Gateway) readResource(ctx context.Context, rt *routes, req mcp.Request,
 		// Unlike the affinity path, a failure here is the answer: the URI
 		// identified one upstream and that upstream refused, so falling back to
 		// probing the others would be asking servers that cannot own it.
-		out, err := u.readResource(ctx, &mcp.ReadResourceParams{URI: original, Meta: params.Meta})
+		// URI and Meta are not the whole of these params: an input-required
+		// retry also carries InputResponses and RequestState, and this is the
+		// one read path that rebuilds rather than forwarding what it was
+		// given. See callTool for why dropping them is not survivable.
+		out, err := u.readResource(ctx, &mcp.ReadResourceParams{
+			URI:            original,
+			Meta:           params.Meta,
+			InputResponses: params.InputResponses,
+			RequestState:   params.RequestState,
+		})
 		if err != nil {
 			return nil, err
 		}
