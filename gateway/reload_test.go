@@ -203,6 +203,15 @@ func TestReloadRejectsNonReloadableSections(t *testing.T) {
 		t.Errorf("console toggle: Reload should fail naming the server section, got %v", err)
 	}
 
+	// And the downstream keepalive: it is wired into the SDK server's
+	// options at construction, so the ticker a live session is being pinged
+	// on cannot be changed underneath it by a reload — or introduced by one
+	// against a fleet that never asked for pings.
+	keepAliveCfg := &config.Config{Upstreams: base, Server: &config.ServerSection{KeepAliveMs: 30000}}
+	if err := gw.Reload(keepAliveCfg); err == nil || !strings.Contains(err.Error(), "server section") {
+		t.Errorf("keepAliveMs change: Reload should fail naming the server section, got %v", err)
+	}
+
 	// An invalid document is rejected by validation before any diffing.
 	if err := gw.Reload(&config.Config{}); err == nil {
 		t.Error("invalid config: Reload should fail")

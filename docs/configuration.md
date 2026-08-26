@@ -132,6 +132,57 @@ backstop against an upstream spending the gateway's memory rather than a size
 policy. A federation that legitimately serves more raises it; one that wants
 the pre-v1.15 unbounded behaviour sets it negative.
 
+### Keeping a stream alive
+
+MCP's own expectation is that a *client* pings if it wants a session kept
+alive. That is reasonable advice to a server and awkward advice to a gateway:
+the idle timeout that cuts the stream usually belongs to a load balancer the
+operator configured, and the gateway is frequently the only thing in that path
+they control. A cut stream is survivable — both ends reconnect, with backoff
+and `Last-Event-ID` — but it is reconnect churn plus a window in which
+notifications are not being delivered.
+
+`keepAliveMs` closes that by sending the pings from fold's side. Three things
+to know before turning it on; all of them were measured rather than assumed,
+and two of them will change a working deployment.
+
+**It disconnects clients that decline the standalone stream.** A server-to-client
+ping needs somewhere to land, and that somewhere is the standalone `GET` SSE
+stream — which the transport makes a MAY, not a MUST. A client that speaks only
+`POST` is healthy, fully functional, and completely correct; with `keepAliveMs`
+set it is also unreachable by a ping, so every tick fails immediately and its
+session is closed once the threshold is reached. Measured: a client that
+declines the stream is disconnected after three ticks, and its next call is
+answered `session not found`. If any of your clients might decline it, this
+setting is not for you.
+
+**The interval must clear twice your slowest round trip, not once.** Each ping
+is given half the interval to be answered. A legitimate client slower than that
+burns a failure on every tick and is closed on the third, so the number to
+reason from is `2 × the slowest legitimate round trip`, floored well above it —
+not merely something smaller than the balancer's timeout.
+
+**It supersedes `sessionIdleTimeoutMs` for any client that answers.** Under
+streamable HTTP a client answers a ping with a `POST`, and a `POST` is exactly
+what resets the idle timer — so fold's own keepalive keeps the session it is
+pinging from ever idling out. Measured: with a 250 ms idle timeout and a 50 ms
+keepalive, a client that sent nothing after connecting was still alive and
+being pinged after 1.8 seconds. What changes is the criterion rather than the
+setting: reclamation moves from *activity* to *liveness*. A client that has
+genuinely gone away is now reclaimed **faster** — three missed pings instead of
+the whole idle timeout — while one that is present but idle is not reclaimed at
+all. If `sessionIdleTimeoutMs` was bounding session-state growth against
+long-lived idle clients, it stops doing that.
+
+fold tolerates three consecutive misses before closing, rather than the one the
+SDK defaults to, because a gateway's clients sit behind whatever network an
+operator has and the specification's guidance is that *multiple* failed pings
+may trigger a reset.
+
+Note also that `ping` is a method the `2026-07-28` revision removed. This is
+therefore another thing that is correct for the era fold serves and has no
+counterpart in the next one; see README "Not implemented".
+
 ## `auth`
 
 Gateway authentication — who may call fold at all, and on whose token.
@@ -371,6 +422,7 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `rateLimit` | none | Global `{ requestsPerMinute }` across all upstreams, plus optional `perPrincipalPerMinute` capping each authenticated principal on its own bucket, so one caller's flood cannot 429 the others. For a bucket shared by a *team* rather than one per person, see [`tenants`](#tenants). |
 | `budget` | none | `{ period, upstreamCalls }` — a consumption allowance across every upstream, accumulating until the calendar period rolls over. Like the rest of this section it is construction-wired: a reload rejects a change to it, so an allowance cannot be widened under a running gateway. |
 | `maxBodyBytes` | 1 MiB | Request body cap; larger bodies are answered `413` (chunked bodies are cut off at the cap). |
+| `keepAliveMs` | off | Pings each connected client on this interval, so a long-lived stream keeps carrying bytes past an intermediary's idle timeout. Off by default, and **read the notes below before enabling** — it disconnects clients that decline the standalone SSE stream, and it supersedes `sessionIdleTimeoutMs` for any client that answers. Construction-wired. |
 | `sessionIdleTimeoutMs` | 30 min | Closes a downstream MCP session after this long without a request from its client. Ending a session with `DELETE` is optional in the protocol and clients routinely reconnect without it; unexpired, each abandoned session would hold gateway state — and the upstream subscriptions it pins — forever. Negative disables expiry. Construction-wired; watch the population via `fold_downstream_sessions`. |
 | `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
 | `metricsAddr` | unset | Moves `/metrics` (and `/health`) to their own listener, e.g. `":9090"`. Absent, they stay on the main port behind `allowedHosts` — which is why a scraper arriving as a pod IP or a service name gets `403` and reads as "target down". A separate listener is the arrangement to prefer whenever something other than the gateway's own host scrapes it: it is not an origin a browser can be steered to, so it needs no Host allowlist, while the public port stops exposing upstream ids, namespaces, tenant ids, and endpoint URLs to a rebinding attempt. **Bind it to an internal interface** — network scope is what protects it. Construction-wired; the Helm chart sets it for you via `metrics.listener.enabled`. |

@@ -20,6 +20,16 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":1048576}]}`))
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":-1}]}`))
 	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp","maxResponseBytes":2048}]}`)) // below the floor
+	// The downstream keepalive interval, the other numeric whose zero,
+	// positive and negative ranges are all meaningful — and which the
+	// schema bounds at zero while the parser does not, so the mutator has
+	// both the documented range and the one the parser will actually take.
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"server":{"keepAliveMs":30000}}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"server":{"keepAliveMs":0}}`))
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"server":{"keepAliveMs":-1}}`))
+	// Both halves of the session-lifetime pair in one document: the ping
+	// that keeps a stream warm and the timeout that reclaims a quiet one.
+	f.Add([]byte(`{"upstreams":[{"id":"a","url":"https://example.com/mcp"}],"server":{"keepAliveMs":15000,"sessionIdleTimeoutMs":60000}}`))
 	// Scope subjects, which are shared by policy rules and tenants and are
 	// the one selector whose emptiness is rejected rather than ignored —
 	// both the accepted shape and the refused one, so the mutator has each

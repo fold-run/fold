@@ -393,6 +393,18 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 			},
 			SubscribeHandler:   g.handleSubscribe,
 			UnsubscribeHandler: g.handleUnsubscribe,
+			// server.keepAliveMs: ping connected clients so a long-lived
+			// stream keeps carrying bytes past a balancer's idle timeout.
+			// Zero leaves it off, which is what fold has always done.
+			//
+			// The threshold is deliberately not the SDK's default of "close
+			// on the first failure". A gateway's clients sit behind whatever
+			// network the operator has, and one missed ping is a hiccup
+			// rather than a dead peer; the specification's own guidance is
+			// that *multiple* failed pings may trigger a reset. Three misses
+			// is a peer that has genuinely stopped answering.
+			KeepAlive:                 g.cfg.KeepAlive(),
+			KeepAliveFailureThreshold: 3,
 		},
 	)
 	g.server.AddReceivingMiddleware(g.federationMiddleware)
