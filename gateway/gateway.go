@@ -198,6 +198,12 @@ type routes struct {
 	// snapshot state so a reload swaps it atomically and in-flight requests
 	// finish against the configuration they started under.
 	hook *decisionHook
+
+	// listScope is the MCP cacheScope fold's list results carry. It depends
+	// only on configuration, so it is resolved once per snapshot rather than
+	// per list — and it lives here so a reload that adds a policy or a tenant
+	// changes it in the same atomic swap that changes the thing it describes.
+	listScope string
 }
 
 // rt returns the current routing snapshot.
@@ -472,6 +478,9 @@ func (g *Gateway) buildRoutes(cfg *config.Config, prev *routes) *routes {
 			rt.byNamespace[ucfg.Namespace] = u
 		}
 	}
+	// After the upstreams: the scope depends on whether any of them derives
+	// its credential from the caller.
+	rt.listScope = listCacheScope(cfg, rt.upstreams)
 	return rt
 }
 
