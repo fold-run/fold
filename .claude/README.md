@@ -9,7 +9,7 @@ same guardrails.
 
 | Skill | Use |
 | --- | --- |
-| `/preflight` | Run the local merge gate in order (`make check`, plus bench / conformance / helm-check when the diff warrants) and interpret failures. |
+| `/preflight` | Run the local merge gate in order (`make check`, plus the conditional gates the diff warrants: bench, conformance, helm-check, vuln, console-check, image build) and interpret failures. |
 | `/fold-release` | The release workflow: verify → per-step-approved commit/push → CI watch → tag (goreleaser) → CHANGELOG.md entry. |
 | `/reloadable-state` | Checklist for adding config/state that must survive hot reload: snapshot placement, schema lockstep, reload/churn test matrix. |
 | `/conformance` | Run, debug, or deliberately bump the pinned MCP conformance suite. |
@@ -52,10 +52,26 @@ description.
 
 - `bash-guard.sh` (PreToolUse: Bash) — blocks force-pushes and
   `--no-verify`; forces an explicit approval prompt on `git tag` / tag
-  pushes, since tags trigger the goreleaser release workflow.
+  pushes, since tags trigger the goreleaser release workflow, and on
+  commands that discard work git cannot recover (`reset --hard`,
+  `checkout --`/`.`, `restore`, `clean -f`, `stash`). The last of these
+  prompts rather than blocks — `bench-profiler` stash-bisects on purpose —
+  and names the number of uncommitted paths at risk, which is the fact
+  `session-start.sh` warns about and nothing else enforced.
+- `pre-edit-guard.sh` (PreToolUse: Edit|Write) — **blocks** writes to
+  `gateway/console/**` and `gateway/console_source.go`. Both are vendored
+  from fold-run/fold-console; CI's `console` job re-vendors from the pin and
+  fails on any difference, so an edit there cannot merge. Blocking at the
+  write is cheaper than learning it from a red PR.
 - `post-edit.sh` (PostToolUse: Edit|Write) — runs `gofmt -w` on touched
-  `.go` files; reminds about the conformance pin and the
-  config.go ↔ schema lockstep when those files change.
+  `.go` files, and speaks up on the repo's lockstep surfaces:
+  config.go ↔ schema, `gateway/metrics.go` ↔ the packaged dashboard and
+  both alert files, `deploy/helm/fold/**` (chart `version` vs `appVersion`,
+  `make helm-check`, the docs that track values), the conformance pin, and
+  the console pin as a supply-chain change. It also compares the `-3104x`
+  codes minted under `gateway/` against README's canonical Errors table —
+  the one lockstep here with no test behind it — and stays silent unless
+  they actually diverge.
 - `session-start.sh` (SessionStart: startup|resume) — injects orientation
   into new sessions: branch/HEAD, uncommitted-work summary (with a
   leave-it-alone warning), and the latest CI conclusion via `gh`
@@ -68,7 +84,12 @@ description.
 
 Hooks need to stay executable (`chmod +x hooks/*.sh`) and depend on `jq`.
 
-`settings.json` also pre-allows the read-only/gate commands (`make check`,
-`go test`, `gh run watch`, …) so routine verification doesn't prompt.
+`settings.json` also pre-allows the read-only and gate commands the skills
+and subagents actually run — read-only git (`git diff`, `status`, `log`,
+`show`), every `make` gate, `helm lint`/`template`, `go tool`, read-only
+`gh`, and the Inspector CLI — so routine verification doesn't prompt. The
+review agents work from the working diff, so `git diff` prompting was the
+single largest source of friction in the set.
+
 Personal overrides go in `settings.local.json` (gitignored by Claude Code
 convention).

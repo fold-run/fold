@@ -9,16 +9,47 @@
       "Bash(make check)",
       "Bash(make fmt)",
       "Bash(make fmt-check)",
+      "Bash(make tidy-check)",
       "Bash(make cover)",
       "Bash(make bench)",
+      "Bash(make vuln)",
+      "Bash(make fuzz)",
+      "Bash(make conformance)",
+      "Bash(make console-check)",
+      "Bash(make helm-check)",
+      "Bash(make loadtest)",
+      "Bash(./scripts/conformance.sh)",
       "Bash(go build:*)",
       "Bash(go vet:*)",
       "Bash(go test:*)",
+      "Bash(go list:*)",
+      "Bash(go doc:*)",
+      "Bash(go tool:*)",
       "Bash(gofmt:*)",
+      "Bash(golangci-lint run:*)",
       "Bash(FOLD_BENCH=1 go test:*)",
+      "Bash(helm lint:*)",
+      "Bash(helm template:*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git rev-parse:*)",
       "Bash(gh run list:*)",
       "Bash(gh run watch:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh release view:*)",
+      "Bash(gh workflow list:*)",
+      "Bash(npx @modelcontextprotocol/inspector:*)"
     ]
   },
   "hooks": {
@@ -29,6 +60,15 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/bash-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-edit-guard.sh"
           }
         ]
       }
