@@ -50,9 +50,9 @@ workflow — the images, the Helm chart, the binary archives, and
 
 ```bash
 # An image (also works for ghcr.io/fold-run/fold-discovery and fold-stdio):
-gh attestation verify oci://ghcr.io/fold-run/fold:v1.11.0 --owner fold-run
+gh attestation verify oci://ghcr.io/fold-run/fold:v1.15.0 --owner fold-run
 
-# The Helm chart:
+# The Helm chart — the tag is required, since the chart repo has no :latest:
 gh attestation verify oci://ghcr.io/fold-run/charts/fold:<chart-version> --owner fold-run
 
 # A downloaded binary archive:
