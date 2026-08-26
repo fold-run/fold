@@ -1,6 +1,6 @@
 ---
 name: fold-release
-description: Cut a fold release — verify gates, write the changelog and bump the Helm chart's appVersion, then with explicit per-step approval commit/push, watch CI, tag to trigger goreleaser, and refresh the conformance receipt. Use when the user asks to release, ship, tag, or publish a version of fold.
+description: Cut a fold release — verify gates, write the changelog and bump the Helm chart's appVersion, then with explicit per-step approval commit/push, watch CI, tag to trigger goreleaser, verify the published artifacts via the release-verifier agent, and refresh the conformance receipt. Use when the user asks to release, ship, tag, or publish a version of fold.
 ---
 
 # fold release workflow
@@ -96,13 +96,22 @@ Never batch commit+push+tag on a single approval.
    release: run the workflow via `workflow_dispatch` with `chart_tag`, which
    checks out that tag and publishes the chart exactly as it shipped.
 
-9. **Refresh the pinned conformance receipt.** The README's "Conformant,
-   provably" paragraph links a specific green `conformance` job by run and
-   job id — the receipt a skeptic clicks. Repoint it at this release's run:
-   `gh run view <ci-run-id> --json jobs --jq '.jobs[] | select(.name=="conformance") | .url'`,
-   then update the link and its version label in the same pass. A receipt
-   naming an old version still verifies, but reads as neglect on the day
-   someone challenges the 40/40 claim.
+9. **Verify what was actually published.** The workflow going green says
+   the jobs succeeded; it does not say an operator can verify the result.
+   Hand this to the **release-verifier** agent: attestations on all three
+   ghcr images and the OCI chart, the keyless cosign signature on
+   `checksums.txt`, SBOMs attached, and — the checks that catch real
+   mistakes — the binary reporting the tag, the published chart's
+   `appVersion` naming it, and `helm template` of the *published* chart
+   resolving to this release's image.
+
+10. **Refresh the pinned conformance receipt.** The README's "Conformant,
+    provably" paragraph links a specific green `conformance` job by run and
+    job id — the receipt a skeptic clicks. Repoint it at this release's run:
+    `gh run view <ci-run-id> --json jobs --jq '.jobs[] | select(.name=="conformance") | .url'`,
+    then update the link and its version label in the same pass. A receipt
+    naming an old version still verifies, but reads as neglect on the day
+    someone challenges the 40/40 claim.
 
 ## Failure handling
 
