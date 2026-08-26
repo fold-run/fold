@@ -40,7 +40,10 @@ Three jobs, three artifact families, all in `.github/workflows/release.yml`:
 gh attestation verify oci://ghcr.io/fold-run/fold:vX.Y.Z --owner fold-run
 gh attestation verify oci://ghcr.io/fold-run/fold-discovery:vX.Y.Z --owner fold-run
 gh attestation verify oci://ghcr.io/fold-run/fold-stdio:vX.Y.Z --owner fold-run
-gh attestation verify oci://ghcr.io/fold-run/charts/fold --owner fold-run
+# The chart's tag is not optional: the chart repo publishes no :latest, so
+# an untagged reference resolves to one and fails MANIFEST_UNKNOWN — which
+# reads exactly like a missing attestation and is not one.
+gh attestation verify oci://ghcr.io/fold-run/charts/fold:<chart-version> --owner fold-run
 ```
 
 **Checksums and the cosign signature** — the path for operators verifying
