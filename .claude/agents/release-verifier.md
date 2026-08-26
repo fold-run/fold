@@ -1,6 +1,6 @@
 ---
 name: release-verifier
-description: Verifies a published fold release end to end from the outside — archives, checksums and their cosign signature, SBOMs, the three ghcr images, the OCI chart, and every sigstore attestation. Use after a tag's release workflow goes green, before announcing a release, or when someone asks whether a published artifact is trustworthy.
+description: Verifies a published fold release end to end from the outside — archives, checksums and their cosign signature, SBOMs, the four ghcr images, the OCI chart, and every sigstore attestation. Use after a tag's release workflow goes green, before announcing a release, or when someone asks whether a published artifact is trustworthy.
 tools: Read, Grep, Glob, Bash
 model: inherit
 color: pink
@@ -22,11 +22,12 @@ check as passing if you could not run it — say the tool is missing instead.
 Three jobs, three artifact families, all in `.github/workflows/release.yml`:
 
 - **binaries** (goreleaser) — archives for `fold` (linux, darwin ×
-  amd64, arm64), `fold-discovery` (linux only), `fold-stdio` (linux,
-  darwin); `checksums.txt`; a **keyless cosign signature and certificate**
+  amd64, arm64), `fold-discovery` (linux only), `fold-stdio` and
+  `fold-registry` (linux, darwin); `checksums.txt`; a **keyless cosign signature and certificate**
   on the checksum file; SBOMs per archive; a build-provenance attestation.
 - **image** — `ghcr.io/fold-run/fold`, `ghcr.io/fold-run/fold-discovery`,
-  `ghcr.io/fold-run/fold-stdio`, each at the tag and at `latest`, each with
+  `ghcr.io/fold-run/fold-stdio`, `ghcr.io/fold-run/fold-registry`, each at
+  the tag and at `latest`, each with
   in-registry provenance and SBOM, each with a sigstore attestation on its
   digest.
 - **chart** — `oci://ghcr.io/fold-run/charts/fold` at the **chart's own
@@ -40,6 +41,7 @@ Three jobs, three artifact families, all in `.github/workflows/release.yml`:
 gh attestation verify oci://ghcr.io/fold-run/fold:vX.Y.Z --owner fold-run
 gh attestation verify oci://ghcr.io/fold-run/fold-discovery:vX.Y.Z --owner fold-run
 gh attestation verify oci://ghcr.io/fold-run/fold-stdio:vX.Y.Z --owner fold-run
+gh attestation verify oci://ghcr.io/fold-run/fold-registry:vX.Y.Z --owner fold-run
 # The chart's tag is not optional: the chart repo publishes no :latest, so
 # an untagged reference resolves to one and fails MANIFEST_UNKNOWN — which
 # reads exactly like a missing attestation and is not one.

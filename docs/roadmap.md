@@ -487,7 +487,28 @@ most useful thing in it.
 The two gaps that remain after all of that are the specification's, and they
 are in the gated horizon below.
 
-### 16. Per-user upstream credentials
+### 16. A second discovery producer — **shipped**
+
+The gated horizon held "discovery producers beyond Kubernetes" on the grounds
+that the document format is public and any producer works — which was true and
+had never been demonstrated, and an extension point with one implementation is
+a claim rather than a seam.
+
+`fold-registry` reads an MCP Registry and writes the same document
+`fold-discovery` does. The gateway cannot tell them apart: whole-document
+validation, the credential allowlists, and the base-config merge all apply
+unchanged, which is the seam working. Registry entries are named in an
+allowlist — there is no federate-everything mode, because which servers an
+organization trusts is a decision to record rather than infer — and the
+producer emits no credentials at all, so an entry needing one is skipped rather
+than federated broken. Documented in
+[registry-discovery.md](registry-discovery.md).
+
+The more interesting deployment is not the public registry. The registry API is
+open source, so `--registry-url` points at an organization's own, and the
+curated internal catalog becomes the thing the gateway tracks.
+
+### 17. Per-user upstream credentials
 
 fold has five credential strategies and every one of them assumes the upstream
 either takes a shared secret or federates with the enterprise's identity
@@ -547,7 +568,6 @@ on demand that has not appeared.
 | `roots` | Not implemented, no position taken. Demand-gated — and now deprecated upstream, with an earliest removal of the first revision on or after **2027-07-28**, so the position most likely to be right is to keep not taking one. |
 | mTLS and API-key inbound auth, RFC 7591 dynamic client registration | JWKS bearer is the only inbound credential today. Demand-gated. |
 | `state.Provider` implementations beyond memory and Redis | The interface exists and is the right seam; nothing has asked for a third. |
-| Discovery producers beyond Kubernetes | The document format is public and any producer works — a registry, a script writing to object storage. `fold-discovery` ships because Kubernetes was the common case, not because it is the only supported one. |
 
 ## Deprecations on the clock
 

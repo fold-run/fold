@@ -183,6 +183,7 @@ Gateway-minted JSON-RPC errors (upstream errors pass through verbatim):
 - [docs/security-model.md](docs/security-model.md) — the architecture: trust anchors, the inbound chain, the enforcement pair, credential containment, tenant isolation.
 - [docs/discovery-controller.md](docs/discovery-controller.md) — `fold-discovery`, the Kubernetes producer: label a Service and it joins the federation.
 - [docs/stdio.md](docs/stdio.md) — `fold-stdio`, the shim that puts a local stdio MCP server behind the gateway as an ordinary http upstream.
+- [docs/registry-discovery.md](docs/registry-discovery.md) — `fold-registry`, the MCP Registry producer: name the servers you trust and the gateway tracks their endpoints, versions, and retirements.
 - [docs/benchmarks.md](docs/benchmarks.md) — the latency gate and the throughput sweep: methodology, numbers, how to reproduce.
 - [docs/embedding.md](docs/embedding.md) — the Go embedding surface, with CI-compiled examples.
 - [docs/defaults.md](docs/defaults.md) — the v1.0 defaults review, every default a decision on record.
@@ -210,6 +211,7 @@ fold is a single static binary with no local state — see [docs/deploy.md](docs
 | `cmd/fold` | The `fold` CLI |
 | `cmd/fold-discovery` | The Kubernetes discovery-document producer (`internal/kubediscovery`) |
 | `cmd/fold-stdio` | The stdio shim: runs one local MCP server over streamable HTTP (`internal/stdiobridge`) |
+| `cmd/fold-registry` | The MCP Registry discovery-document producer (`internal/mcpregistry`) |
 | `gateway` | Gateway engine: pipeline, federation routing, proxying, health |
 | `config` | Config schema + validation |
 | `auth` | OAuth resource server (JWKS verifier) + upstream credential strategies |

@@ -1,6 +1,6 @@
 ---
 name: deploy-reviewer
-description: Reviews fold's deployment surface — the Helm chart's rendered output, Kubernetes security posture, the three Dockerfiles, and the compose stack — for what only shows up in the manifest rather than in the templates. Use after changes under deploy/, before a chart release, or when auditing how fold actually runs in a cluster.
+description: Reviews fold's deployment surface — the Helm chart's rendered output, Kubernetes security posture, the four Dockerfiles, and the compose stack — for what only shows up in the manifest rather than in the templates. Use after changes under deploy/, before a chart release, or when auditing how fold actually runs in a cluster.
 tools: Read, Grep, Glob, Bash
 model: inherit
 color: orange

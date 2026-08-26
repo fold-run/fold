@@ -99,3 +99,19 @@ func TestRequireDurableRejectsADocumentWithNoDurableSink(t *testing.T) {
 		t.Errorf("requireDurable unset should not constrain sinks: %v", err)
 	}
 }
+
+// A gateway whose federation arrives entirely from a discovery producer has
+// no static upstreams to declare, and a placeholder would be an endpoint
+// existing only to satisfy validation. Zero upstreams stays an error when
+// nothing else can supply them.
+func TestDiscoveryOnlyDocumentNeedsNoStaticUpstream(t *testing.T) {
+	discovery := &Config{Discovery: &Discovery{URL: "https://producer.example.com/upstreams.json"}}
+	if err := discovery.Validate(); err != nil {
+		t.Errorf("discovery-only document rejected: %v", err)
+	}
+	empty := &Config{}
+	err := empty.Validate()
+	if err == nil || !strings.Contains(err.Error(), "at least one upstream") {
+		t.Errorf("empty document should still be refused, got %v", err)
+	}
+}

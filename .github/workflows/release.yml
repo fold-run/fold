@@ -239,3 +239,25 @@ jobs:
           subject-name: ghcr.io/fold-run/fold-stdio
           subject-digest: ${{ steps.stdio.outputs.digest }}
           push-to-registry: true
+
+      - name: build and push registry-producer image
+        id: registry
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/registry.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: VERSION=${{ github.ref_name }}
+          tags: |
+            ghcr.io/fold-run/fold-registry:${{ github.ref_name }}
+            ghcr.io/fold-run/fold-registry:latest
+
+      - name: attest registry-producer image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/fold-run/fold-registry
+          subject-digest: ${{ steps.registry.outputs.digest }}
+          push-to-registry: true

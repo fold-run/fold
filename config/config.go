@@ -1002,8 +1002,13 @@ func Parse(data []byte) (*Config, error) {
 
 // Validate checks cross-field invariants.
 func (c *Config) Validate() error {
-	if len(c.Upstreams) == 0 {
-		return fmt.Errorf("config: at least one upstream is required")
+	if len(c.Upstreams) == 0 && (c.Discovery == nil || c.Discovery.URL == "") {
+		// Zero upstreams is a mistake in a static document and the normal
+		// shape of a discovery-driven one: a gateway whose whole federation
+		// arrives from a producer has nothing to write here, and requiring a
+		// placeholder upstream would mean routing traffic to an endpoint that
+		// exists only to satisfy validation.
+		return fmt.Errorf("config: at least one upstream is required, or discovery.url to obtain them")
 	}
 	seenID := map[string]bool{}
 	seenNS := map[string]bool{}

@@ -46,6 +46,22 @@ builds:
       - -s -w -X main.version={{ .Tag }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  # The MCP Registry producer. Like fold-discovery it is a long-running
+  # producer rather than a developer tool, but it is not linux-only: it reads
+  # a registry over HTTPS from anywhere, including a laptop pointed at a
+  # private registry.
+  - id: fold-registry
+    main: ./cmd/fold-registry
+    binary: fold-registry
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
   # Keep the pre-goreleaser naming: fold_v1.2.3_linux_amd64.tar.gz
   - id: fold
@@ -76,6 +92,14 @@ archives:
       - LICENSE
       - src: docs/stdio.md
         dst: stdio.md
+
+  - id: fold-registry
+    ids: [fold-registry]
+    name_template: "fold-registry_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - src: docs/registry-discovery.md
+        dst: registry-discovery.md
 
 checksum:
   name_template: checksums.txt
