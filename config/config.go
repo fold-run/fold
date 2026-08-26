@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Config is the root configuration document.
@@ -813,6 +814,25 @@ type ServerSection struct {
 	// memory one request can pin. Default 1 MiB.
 	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
 
+	// KeepAliveMs makes the gateway ping each connected client on an
+	// interval, so a long-lived stream keeps carrying bytes.
+	//
+	// Absent (0) it is off, which is what fold has always done. The SDK's
+	// own note is that it expects clients to ping if they want a session
+	// kept alive — reasonable for a server, and less so for a gateway,
+	// which is typically the one thing in the path an operator controls
+	// while the idle timeout cutting the stream belongs to a load balancer
+	// they configured separately. A cut stream is survivable (both ends
+	// reconnect) but it is reconnect churn and a window where notifications
+	// are not being delivered.
+	//
+	// The peer that fails to answer has its session closed, which is the
+	// point — an unanswered ping is how a dead client is noticed — so this
+	// is not free to turn on: set it longer than the round trip to your
+	// slowest legitimate client, not merely shorter than the balancer's
+	// idle timeout.
+	KeepAliveMs int `json:"keepAliveMs,omitempty"`
+
 	// SessionIdleTimeoutMs closes a downstream MCP session after this long
 	// without a request from its client. Ending a session with DELETE is
 	// optional in the protocol and clients routinely reconnect without it;
@@ -1464,6 +1484,15 @@ func (c *Config) MCPPath() string {
 		return c.Server.MCPPath
 	}
 	return "/mcp"
+}
+
+// KeepAlive resolves server.keepAliveMs. Zero — the default — disables the
+// ping loop entirely.
+func (c *Config) KeepAlive() time.Duration {
+	if c == nil || c.Server == nil || c.Server.KeepAliveMs <= 0 {
+		return 0
+	}
+	return time.Duration(c.Server.KeepAliveMs) * time.Millisecond
 }
 
 // Endpoints returns the upstream's endpoint URLs: urls when set, else the
