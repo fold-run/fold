@@ -198,6 +198,12 @@ type routes struct {
 	// snapshot state so a reload swaps it atomically and in-flight requests
 	// finish against the configuration they started under.
 	hook *decisionHook
+
+	// listScope is the MCP cacheScope fold's list results carry. It depends
+	// only on configuration, so it is resolved once per snapshot rather than
+	// per list — and it lives here so a reload that adds a policy or a tenant
+	// changes it in the same atomic swap that changes the thing it describes.
+	listScope string
 }
 
 // rt returns the current routing snapshot.
@@ -472,6 +478,9 @@ func (g *Gateway) buildRoutes(cfg *config.Config, prev *routes) *routes {
 			rt.byNamespace[ucfg.Namespace] = u
 		}
 	}
+	// After the upstreams: the scope depends on whether any of them derives
+	// its credential from the caller.
+	rt.listScope = listCacheScope(cfg, rt.upstreams)
 	return rt
 }
 
@@ -1304,6 +1313,14 @@ func (g *Gateway) buildHandler() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", g.protectedResourceHandler())
 		if g.ema != nil {
 			mux.HandleFunc("/.well-known/jwks.json", g.ema.ServeJWKS)
+			// RFC 8414. fold names itself in `authorization_servers` above
+			// whenever EMA is on, so a client that follows that pointer must
+			// find a document rather than a 404 — at the root path, and also
+			// at the path-scoped form when auth.resource carries a path,
+			// since that is where §3.1 sends the client.
+			for _, path := range g.ema.AuthorizationServerMetadataPaths() {
+				mux.HandleFunc(path, g.ema.ServeAuthorizationServerMetadata)
+			}
 			mux.Handle("/oauth/token", g.tokenRateLimit(http.HandlerFunc(g.ema.ServeToken)))
 		}
 	}

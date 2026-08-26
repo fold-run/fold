@@ -146,6 +146,20 @@ spec:
               Confirm the change with whoever runs that upstream; the new definition is
               already the baseline, so this fires once per change.
 
+        - alert: FoldUpstreamResponseCapped
+          expr: increase(fold_upstream_response_capped_total[15m]) > 0
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: "{{ "{{" }} $labels.upstream {{ "}}" }} sent a response past maxResponseBytes"
+            description: >-
+              An upstream returned more in one response than the gateway will hold, so the
+              response was refused and the call failed with -32041. fold does not truncate
+              here on purpose: a shortened body would be a response the upstream never sent.
+              Either the upstream is returning far more than an MCP payload should be, or
+              maxResponseBytes is below what this federation legitimately needs.
+
         # The hook is the one place fold adds latency deliberately, so its
         # failures and its cost both get a rule. The error rule matters most
         # under onError "allow": those calls proceeded uninspected.

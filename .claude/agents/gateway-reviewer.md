@@ -49,8 +49,11 @@ surrounding function before claiming a violation.
 
 6. **Error codes**: the gateway mints only -32040 (upstream rate limit),
    -32041 (unavailable/circuit open), -32042 (policy denied), -32043 (unknown
-   namespace). Upstream errors pass through verbatim. Flag new minted codes,
-   reuse of these codes for other meanings, and swallowed upstream errors.
+   namespace), -32044 (consumption budget exhausted), and -32002 (task id owned
+   by no upstream). Upstream errors pass through verbatim. Flag new minted
+   codes, reuse of these codes for other meanings, and swallowed upstream
+   errors. Check this list against the README "Errors" table before calling a
+   code unregistered — the table is canonical and this copy can lag it.
 
 7. **Proxy path stays allocation-light**: the bench gate fails merges at
    added p50 ≥ 5 ms. Flag per-request allocations on the hot path that could

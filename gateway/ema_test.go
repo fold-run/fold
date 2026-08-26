@@ -292,3 +292,141 @@ func TestEMAExchangeIsAudited(t *testing.T) {
 		t.Fatalf("garbage event = %+v", garbage)
 	}
 }
+
+// getJSON fetches a well-known document and returns its status and body.
+func getJSON(t *testing.T, url string) (int, map[string]any) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	doc := map[string]any{}
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+			t.Fatalf("%s: %v", url, err)
+		}
+	} else {
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
+	return resp.StatusCode, doc
+}
+
+// With EMA on, fold is an authorization server, so it publishes the RFC 8414
+// document describing the one grant it implements.
+func TestEMAAuthorizationServerMetadata(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	idp := newFixtureIssuer(t)
+	setEMAKey(t)
+	ts, _ := startGateway(t, emaConfig(idp, []config.Upstream{{ID: "u", URL: up.URL}}))
+
+	status, doc := getJSON(t, ts.URL+"/.well-known/oauth-authorization-server")
+	if status != http.StatusOK {
+		t.Fatalf("authorization server metadata = %d, want 200", status)
+	}
+	if doc["issuer"] != emaResource {
+		t.Errorf("issuer = %v, want %q", doc["issuer"], emaResource)
+	}
+	tokenEndpoint, _ := doc["token_endpoint"].(string)
+	if !strings.HasSuffix(tokenEndpoint, "/oauth/token") {
+		t.Errorf("token_endpoint = %q, want a %q path", tokenEndpoint, "/oauth/token")
+	}
+	jwksURI, _ := doc["jwks_uri"].(string)
+	if !strings.HasSuffix(jwksURI, "/.well-known/jwks.json") {
+		t.Errorf("jwks_uri = %q, want a %q path", jwksURI, "/.well-known/jwks.json")
+	}
+	grants, _ := doc["grant_types_supported"].([]any)
+	found := false
+	for _, g := range grants {
+		if g == "urn:ietf:params:oauth:grant-type:jwt-bearer" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("grant_types_supported = %v, want the assertion grant", grants)
+	}
+	// The assertion is the credential, so a client that reads this document
+	// must learn there is no client credential to present.
+	methods, _ := doc["token_endpoint_auth_methods_supported"].([]any)
+	if len(methods) != 1 || methods[0] != "none" {
+		t.Errorf("token_endpoint_auth_methods_supported = %v, want [none]", methods)
+	}
+}
+
+// The pointer must resolve. A client's whole discovery path is
+// protected-resource metadata → authorization_servers → that server's RFC
+// 8414 document → token endpoint; fold advertises itself in the middle step,
+// so an unserved document there ends the walk and forces every operator to
+// configure the token endpoint out of band.
+func TestEMAAdvertisedAuthorizationServerIsReachable(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	idp := newFixtureIssuer(t)
+	setEMAKey(t)
+	ts, _ := startGateway(t, emaConfig(idp, []config.Upstream{{ID: "u", URL: up.URL}}))
+
+	status, prm := getJSON(t, ts.URL+"/.well-known/oauth-protected-resource")
+	if status != http.StatusOK {
+		t.Fatalf("protected resource metadata = %d, want 200", status)
+	}
+	servers, _ := prm["authorization_servers"].([]any)
+	if len(servers) == 0 {
+		t.Fatal("no authorization_servers advertised")
+	}
+	walked := 0
+	for _, entry := range servers {
+		issuer, _ := entry.(string)
+		if issuer != prm["resource"] {
+			// Someone else's authorization server: fold does not serve its
+			// metadata and cannot vouch for it.
+			continue
+		}
+		// The advertised issuer is the configured public resource URI, which
+		// is not the address this test server listens on — so the document is
+		// fetched from fold's own origin and checked to claim that issuer,
+		// which is the pair a client actually needs to agree.
+		walked++
+		status, as := getJSON(t, ts.URL+"/.well-known/oauth-authorization-server")
+		if status != http.StatusOK {
+			t.Fatalf("advertised authorization server %q: metadata = %d, want 200", issuer, status)
+		}
+		if as["issuer"] != issuer {
+			t.Errorf("advertised %q but its metadata claims issuer %v", issuer, as["issuer"])
+		}
+		tokenEndpoint, _ := as["token_endpoint"].(string)
+		if !strings.HasPrefix(tokenEndpoint, issuer) {
+			t.Errorf("token_endpoint %q is not under the issuer %q", tokenEndpoint, issuer)
+		}
+		// And the endpoint it names is the one fold actually serves: same
+		// path, on this origin, answering the exchange.
+		path := strings.TrimPrefix(tokenEndpoint, issuer)
+		if status, body := redeem(t, ts.URL+strings.TrimSuffix(path, "/oauth/token"), idJAG(t, idp, "alice", "jag-discovery")); status != http.StatusOK {
+			t.Errorf("token endpoint named by the metadata: %d %v", status, body)
+		}
+	}
+	if walked == 0 {
+		t.Fatalf("fold did not advertise itself in authorization_servers: %v", servers)
+	}
+}
+
+// Without EMA there is no authorization server to describe, and fold must not
+// claim to be one: the endpoint is absent, not empty.
+func TestAuthorizationServerMetadataAbsentWithoutEMA(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	iss := newFixtureIssuer(t)
+	ts, _ := startGateway(t, authedConfig(iss, []config.Upstream{{ID: "u", URL: up.URL}}, nil))
+
+	if status, _ := getJSON(t, ts.URL+"/.well-known/oauth-authorization-server"); status != http.StatusNotFound {
+		t.Errorf("authorization server metadata without EMA = %d, want 404", status)
+	}
+	// The pointer is absent too, so nothing sends a client looking for it.
+	status, prm := getJSON(t, ts.URL+"/.well-known/oauth-protected-resource")
+	if status != http.StatusOK {
+		t.Fatalf("protected resource metadata = %d, want 200", status)
+	}
+	servers, _ := prm["authorization_servers"].([]any)
+	for _, entry := range servers {
+		if entry == prm["resource"] {
+			t.Errorf("fold advertised itself as an authorization server with EMA off: %v", servers)
+		}
+	}
+}

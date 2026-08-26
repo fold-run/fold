@@ -10,7 +10,9 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -23,6 +25,40 @@ import (
 // accepts — the ID-JAG exchange.
 const idJAGGrant = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 
+// accessTokenTypes are JOSE "typ" values that an OAuth 2.0 access token
+// carries (RFC 9068 §2.1 makes "at+jwt" a MUST, with the media-type spelling
+// permitted). Nothing legitimately presented here as an identity assertion
+// has one, so refusing them costs no compatibility.
+//
+// SEP-990 §5.1 says an assertion MUST carry typ "oauth-id-jag+jwt", and fold
+// does not require that — a positive check is the stronger control and this
+// is deliberately the weaker one. The reason is that a strict requirement
+// cannot be turned on by default under the v1 contract: JWT libraries stamp
+// typ "JWT" unless told otherwise, and fold cannot know from here how the
+// operator's IdP mints its assertions. A deny-list closes the half of the
+// problem that is unambiguous while a positive requirement waits for a
+// config field.
+//
+// What remains open, stated plainly because the guards below hold less than
+// they look like they do: /oauth/token accepts any JWT signed by a key at
+// idpJwksUri with iss == idpIssuer, aud == auth.resource, a sub, a jti, and
+// an exp. An IdP-issued token that is not an access token — an ID token, or
+// a token minted for an application whose identifier URI happens to equal
+// the gateway's resource URI — satisfies every one of those. That matters
+// because issuers with mode "exchange" are excluded from direct presentation
+// at /mcp precisely so the IdP's own tokens are not accepted as fold tokens,
+// and this endpoint is the one place that admits them again. The intended
+// gate is the IdP's own admin-approved assertion grant, which fold cannot
+// see. Closing it properly needs either the positive typ requirement or a
+// client_id allowlist — client_id is copied into the minted token but never
+// checked. Tracked, not solved here.
+var accessTokenTypes = [...]string{"at+jwt", "application/at+jwt"}
+
+// idJAGGrantProfile is the grant profile advertised in the authorization
+// server metadata, so a client can tell that this token endpoint speaks the
+// identity-assertion profile rather than bare RFC 7523.
+const idJAGGrantProfile = "urn:ietf:params:oauth:grant-profile:id-jag"
+
 // EMA is fold's embedded MCP Authorization Server, deliberately one grant
 // wide: exchange an enterprise-IdP-issued ID-JAG (Identity Assertion JWT
 // Authorization Grant) for a short-lived fold-signed access token
@@ -34,9 +70,13 @@ type EMA struct {
 	key      *ecdsa.PrivateKey
 	kid      string // RFC 7638 thumbprint of the public key
 	jwksJSON []byte // public JWK set, served at /.well-known/jwks.json
-	jwks     *jwksCache
-	replay   state.Once
-	ttl      time.Duration
+	// asMetadataJSON is the RFC 8414 document, marshalled once at
+	// construction like jwksJSON: it is a static document, and rebuilding it
+	// per request would put a map allocation on an unauthenticated endpoint.
+	asMetadataJSON []byte
+	jwks           *jwksCache
+	replay         state.Once
+	ttl            time.Duration
 
 	// OnExchange, when set, is told the outcome of every token exchange —
 	// including the refusals. The gateway wires it into the audit trail:
@@ -82,7 +122,7 @@ func NewEMA(cfg *config.Auth, client *http.Client, replay state.Once) (*EMA, err
 	if err != nil {
 		return nil, fmt.Errorf("ema: encode public key: %w", err)
 	}
-	return &EMA{
+	m := &EMA{
 		issuer:   cfg.Resource,
 		cfg:      cfg.EMA,
 		key:      key,
@@ -91,7 +131,13 @@ func NewEMA(cfg *config.Auth, client *http.Client, replay state.Once) (*EMA, err
 		jwks:     newJWKSCache(client),
 		replay:   replay,
 		ttl:      time.Duration(cfg.EMA.ResolvedTokenTTLSec()) * time.Second,
-	}, nil
+	}
+	doc, err := json.Marshal(m.AuthorizationServerMetadata())
+	if err != nil {
+		return nil, fmt.Errorf("ema: build authorization server metadata: %w", err)
+	}
+	m.asMetadataJSON = doc
+	return m, nil
 }
 
 // Issuer returns the issuer string of fold-minted tokens (the resource URI).
@@ -150,6 +196,16 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 		jwt.WithExpirationRequired(),
 		jwt.WithLeeway(30*time.Second),
 	).ParseWithClaims(assertion, claims, func(t *jwt.Token) (any, error) {
+		// Refuse before fetching a key: a token of the wrong type is not a
+		// key-resolution problem, and rejecting it here keeps one from
+		// costing a JWKS lookup.
+		if typ, ok := t.Header["typ"].(string); ok {
+			for _, bad := range accessTokenTypes {
+				if strings.EqualFold(typ, bad) {
+					return nil, fmt.Errorf("assertion typ %q is an access token, not an authorization grant", typ)
+				}
+			}
+		}
 		kid, _ := t.Header["kid"].(string)
 		return m.jwks.key(r.Context(), jwksURI, kid)
 	})
@@ -254,4 +310,79 @@ func publicJWKS(pub *ecdsa.PublicKey) (kid string, jwksJSON []byte, err error) {
 		}},
 	})
 	return kid, doc, nil
+}
+
+// AuthorizationServerMetadata is the RFC 8414 document for the embedded
+// authorization server.
+//
+// fold lists itself in `authorization_servers` of its RFC 9728 protected-
+// resource metadata whenever EMA is on, which tells a client to discover this
+// document — so not serving it left the advertisement pointing at a 404 and
+// forced every operator to configure the token endpoint out of band. The
+// document is deliberately narrow: it describes the one grant this server
+// implements and claims nothing else.
+func (m *EMA) AuthorizationServerMetadata() map[string]any {
+	// issuer is reported exactly as configured, because RFC 8414 §3.3 makes a
+	// client reject a document whose issuer is not the identifier it derived
+	// the request URL from — so "normalizing" it here would break the very
+	// clients this endpoint exists to serve.
+	//
+	// The endpoints, by contrast, are derived from the issuer's *origin*. A
+	// canonical MCP resource identifier commonly carries a path
+	// ("https://gw.example.com/mcp"), and fold serves the token endpoint and
+	// the key set at fixed root paths regardless — so concatenating onto the
+	// full issuer would advertise ".../mcp/oauth/token", which 404s.
+	origin := m.issuer
+	if u, err := url.Parse(m.issuer); err == nil && u.Scheme != "" && u.Host != "" {
+		origin = u.Scheme + "://" + u.Host
+	}
+	origin = strings.TrimSuffix(origin, "/")
+	return map[string]any{
+		"issuer":                   m.issuer,
+		"token_endpoint":           origin + "/oauth/token",
+		"jwks_uri":                 origin + "/.well-known/jwks.json",
+		"grant_types_supported":    []string{idJAGGrant},
+		"grant_profiles_supported": []string{idJAGGrantProfile},
+		// The assertion is the credential, so the endpoint authenticates no
+		// client of its own. Saying so explicitly is the difference between a
+		// client sending no credential and a client guessing at one.
+		"token_endpoint_auth_methods_supported": []string{"none"},
+		"response_types_supported":              []string{},
+	}
+}
+
+// AuthorizationServerMetadataPaths returns every well-known path this document
+// must be reachable at.
+//
+// RFC 8414 §3.1 locates the document by inserting the well-known segment
+// *before* the issuer's path, so an issuer with a path is discovered at
+// "/.well-known/oauth-authorization-server/{path}" rather than at the root.
+// fold advertises itself in the RFC 9728 document using whatever
+// auth.resource says, so whichever form that takes has to resolve — hence
+// both, when they differ.
+func (m *EMA) AuthorizationServerMetadataPaths() []string {
+	const root = "/.well-known/oauth-authorization-server"
+	paths := []string{root}
+	u, err := url.Parse(m.issuer)
+	if err != nil {
+		return paths
+	}
+	if p := strings.Trim(u.Path, "/"); p != "" {
+		paths = append(paths, root+"/"+p)
+	}
+	return paths
+}
+
+// ServeAuthorizationServerMetadata answers the RFC 8414 well-known paths.
+//
+// CORS mirrors what the SDK sets on the protected-resource document: a
+// browser-based MCP client discovers this from script, so without the header
+// it can read fold's RFC 9728 metadata and then fail on the authorization
+// server it points at.
+func (m *EMA) ServeAuthorizationServerMetadata(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	_, _ = w.Write(m.asMetadataJSON)
 }

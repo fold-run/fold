@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/fold-run/fold/auth"
@@ -488,5 +489,370 @@ func TestToolKindFiltersLists(t *testing.T) {
 	}
 	if e.DecideList(nil, "u", "tools/call", "delete", anno(false, true)).Allowed {
 		t.Error("a destructive tool was listed under a read-only grant")
+	}
+}
+
+// ---- scope subjects ----
+//
+// A scope is not another way to name an identity, which is what makes it the
+// odd one out among subject selectors: subs and groups are alternatives, and
+// holding any one of them is enough, but a list of scopes is a list of
+// requirements. These pin that reading, and the disclosure rules that bound
+// what a denial is allowed to say about it.
+
+// scopedEngine builds a deny-by-default document from one scope-gated rule.
+func scopedEngine(subjects *config.PolicySubjects, allow ...config.PolicyAllow) *Engine {
+	return New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules:           []config.PolicyRule{{ID: "scoped", Subjects: subjects, Allow: allow}},
+	})
+}
+
+// held builds a principal carrying scopes and nothing else worth matching.
+func held(scopes ...string) *auth.Principal {
+	return &auth.Principal{Subject: "alice", Scopes: scopes}
+}
+
+// Every named scope must be held: a subset is not a match, and a superset is.
+// The subset case is the one that matters — read as alternatives, "read and
+// write" would be satisfied by "read", which is the grant an operator was
+// trying to withhold.
+func TestScopesAreConjunctive(t *testing.T) {
+	e := scopedEngine(&config.PolicySubjects{Scopes: []string{"read", "write"}},
+		config.PolicyAllow{Server: "docs"})
+
+	cases := []struct {
+		name    string
+		scopes  []string
+		allowed bool
+	}{
+		{"holds both", []string{"read", "write"}, true},
+		{"holds both, in the other order", []string{"write", "read"}, true},
+		{"holds a superset", []string{"admin", "write", "read"}, true},
+		{"holds a subset", []string{"read"}, false},
+		{"holds the other half", []string{"write"}, false},
+		{"holds none", nil, false},
+		{"holds something else entirely", []string{"admin"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := e.Decide(held(c.scopes...), "docs", "tools/call", "read_doc").Allowed; got != c.allowed {
+				t.Errorf("allowed = %v, want %v", got, c.allowed)
+			}
+		})
+	}
+}
+
+// A selector naming only scopes is sufficient on its own, the way issuers and
+// claims are: it says "whoever was granted this", which is a complete answer
+// to who a rule covers. The alternative reading — that a scope only qualifies
+// a sub or group match — would make a scopes-only rule match nobody, which is
+// the failure mode that silently withdraws a grant.
+func TestScopeOnlySelectorIsSufficient(t *testing.T) {
+	e := scopedEngine(&config.PolicySubjects{Scopes: []string{"mcp:invoke"}},
+		config.PolicyAllow{Server: "docs"})
+
+	if !e.Decide(held("mcp:invoke"), "docs", "tools/call", "read_doc").Allowed {
+		t.Error("a scopes-only rule matched nobody; it must stand on its own like issuers and claims")
+	}
+	if e.Decide(held("other"), "docs", "tools/call", "read_doc").Allowed {
+		t.Error("a caller without the scope was allowed")
+	}
+	// A nil principal (auth disabled) holds no scopes, so it never matches.
+	if e.Decide(nil, "docs", "tools/call", "read_doc").Allowed {
+		t.Error("a nil principal satisfied a scope requirement")
+	}
+}
+
+// The denial names only what the caller lacks, never the whole requirement.
+// Re-authorizing accumulates: a caller told to obtain "read write" may come
+// back with a token that dropped something else they held, so the remedy has
+// to be stated as the delta.
+func TestMissingScopesNameOnlyWhatIsLacked(t *testing.T) {
+	e := scopedEngine(&config.PolicySubjects{Scopes: []string{"read", "write", "admin"}},
+		config.PolicyAllow{Server: "docs"})
+
+	d := e.DecideCall(held("read"), "docs", "tools/call", "edit_doc", Evidence{})
+	if d.Allowed {
+		t.Fatal("a caller holding one of three scopes was allowed")
+	}
+	if got := strings.Join(d.MissingScopes, ","); got != "write,admin" {
+		t.Errorf("missing scopes = %q, want %q — only the shortfall, in the order the rule names it", got, "write,admin")
+	}
+	// Holding everything means no shortfall to report.
+	if d := e.DecideCall(held("read", "write", "admin"), "docs", "tools/call", "edit_doc", Evidence{}); !d.Allowed {
+		t.Fatal("a caller holding every scope was denied")
+	} else if len(d.MissingScopes) > 0 {
+		t.Errorf("an allowed decision reported missing scopes %v", d.MissingScopes)
+	}
+}
+
+// Every rule that would have granted contributes, deduplicated. Reporting
+// only the first rule's shortfall turns one re-authorization into as many
+// round trips as there are rules — the caller obtains what they were told to,
+// retries, and is refused by the next.
+func TestMissingScopesUnionAcrossRules(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{
+			{
+				ID:       "writers",
+				Subjects: &config.PolicySubjects{Scopes: []string{"read", "write"}},
+				Allow:    []config.PolicyAllow{{Server: "docs", Names: []string{"edit_*"}}},
+			},
+			{
+				ID:       "admins",
+				Subjects: &config.PolicySubjects{Scopes: []string{"read", "admin"}},
+				Allow:    []config.PolicyAllow{{Server: "docs"}},
+			},
+		},
+	})
+
+	d := e.DecideCall(held("read"), "docs", "tools/call", "edit_doc", Evidence{})
+	if d.Allowed {
+		t.Fatal("allowed with neither rule satisfied")
+	}
+	if got := strings.Join(d.MissingScopes, ","); got != "write,admin" {
+		t.Errorf("missing scopes = %q, want %q — both rules' shortfalls, deduplicated", got, "write,admin")
+	}
+	// "read" is lacked by neither rule and must appear once at most; a caller
+	// holding nothing sees it exactly once even though both rules want it.
+	d = e.DecideCall(held(), "docs", "tools/call", "edit_doc", Evidence{})
+	seen := map[string]int{}
+	for _, s := range d.MissingScopes {
+		seen[s]++
+	}
+	if seen["read"] != 1 {
+		t.Errorf("missing scopes = %v, want \"read\" exactly once", d.MissingScopes)
+	}
+}
+
+// The first disclosure rule: a rule contributes only when it targets this
+// exact invocation. A shortfall reported for a rule about another server
+// would tell the caller a rule exists for something they cannot reach — and
+// would name the scope guarding it.
+func TestMissingScopesStayWithTheirTarget(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{
+			{
+				ID:       "payroll-admins",
+				Subjects: &config.PolicySubjects{Scopes: []string{"payroll:admin"}},
+				Allow:    []config.PolicyAllow{{Server: "payroll"}},
+			},
+			{
+				ID:       "docs-writers",
+				Subjects: &config.PolicySubjects{Scopes: []string{"docs:write"}},
+				Allow:    []config.PolicyAllow{{Server: "docs", Methods: []string{"tools/call"}, Names: []string{"edit_*"}}},
+			},
+		},
+	})
+	p := held("docs:read")
+
+	// A call on docs learns about the docs rule and nothing about payroll.
+	d := e.DecideCall(p, "docs", "tools/call", "edit_doc", Evidence{})
+	if got := strings.Join(d.MissingScopes, ","); got != "docs:write" {
+		t.Errorf("missing scopes = %q, want only docs:write — the payroll rule is not about this call", got)
+	}
+	// A call on the other server that no rule targets discloses nothing.
+	if d := e.DecideCall(p, "docs", "tools/call", "delete_doc", Evidence{}); len(d.MissingScopes) > 0 {
+		t.Errorf("missing scopes = %v for a name no rule grants, want none", d.MissingScopes)
+	}
+	if d := e.DecideCall(p, "docs", "prompts/get", "edit_doc", Evidence{}); len(d.MissingScopes) > 0 {
+		t.Errorf("missing scopes = %v for a method no rule grants, want none", d.MissingScopes)
+	}
+	// And the payroll rule stays silent for a caller who could never satisfy
+	// the rest of it either.
+	if d := e.DecideCall(p, "payroll", "tools/call", "run_payroll", Evidence{}); strings.Join(d.MissingScopes, ",") != "payroll:admin" {
+		t.Errorf("missing scopes = %v on the payroll call, want payroll:admin", d.MissingScopes)
+	}
+}
+
+// The second disclosure rule: scopes must have been the *sole* obstacle. A
+// caller in the wrong group learns nothing, because a shortfall named for a
+// rule they failed on other grounds discloses a requirement guarding
+// something they were never going to reach.
+func TestMissingScopesRequireEveryOtherConditionMet(t *testing.T) {
+	e := scopedEngine(
+		&config.PolicySubjects{Groups: []string{"finance"}, Scopes: []string{"payroll:admin"}},
+		config.PolicyAllow{Server: "payroll"},
+	)
+	call := func(p *auth.Principal) Decision {
+		return e.DecideCall(p, "payroll", "tools/call", "run_payroll", Evidence{})
+	}
+
+	// Wrong group and missing scope: nothing is disclosed.
+	wrong := &auth.Principal{Subject: "mallory", Groups: []string{"sales"}}
+	if d := call(wrong); d.Allowed || len(d.MissingScopes) > 0 {
+		t.Errorf("decision = %+v, want a denial disclosing nothing to an out-of-group caller", d)
+	}
+	// Wrong group but holding the scope: still nothing, because the group is
+	// what refused them.
+	if d := call(&auth.Principal{Subject: "mallory", Groups: []string{"sales"}, Scopes: []string{"payroll:admin"}}); d.Allowed || len(d.MissingScopes) > 0 {
+		t.Errorf("decision = %+v, want a denial disclosing nothing", d)
+	}
+	// Right group, missing scope: this is the caller the shortfall is for.
+	d := call(&auth.Principal{Subject: "alice", Groups: []string{"finance"}})
+	if d.Allowed {
+		t.Fatal("an in-group caller without the scope was allowed")
+	}
+	if got := strings.Join(d.MissingScopes, ","); got != "payroll:admin" {
+		t.Errorf("missing scopes = %q, want payroll:admin", got)
+	}
+	// The same asymmetry for issuers, the other gate that runs before scopes.
+	issuerGated := scopedEngine(
+		&config.PolicySubjects{Issuers: []string{"https://corp.idp"}, Scopes: []string{"payroll:admin"}},
+		config.PolicyAllow{Server: "payroll"},
+	)
+	partner := &auth.Principal{Subject: "mallory", Issuer: "https://partner.example"}
+	if d := issuerGated.DecideCall(partner, "payroll", "tools/call", "run_payroll", Evidence{}); len(d.MissingScopes) > 0 {
+		t.Errorf("missing scopes = %v for a principal from another issuer, want none", d.MissingScopes)
+	}
+}
+
+// Lists never disclose. There is no denial message for a filtered item — the
+// item simply is not there — so computing a shortfall for one would be work
+// nobody reads, and a Decision carrying it could only leak by being logged.
+func TestListDecisionsDiscloseNoScopes(t *testing.T) {
+	e := scopedEngine(&config.PolicySubjects{Scopes: []string{"docs:write"}},
+		config.PolicyAllow{Server: "docs", Methods: []string{"tools/call"}, Names: []string{"edit_doc"}})
+	p := held("docs:read")
+
+	if d := e.Decide(p, "docs", "tools/call", "edit_doc"); d.Allowed || len(d.MissingScopes) > 0 {
+		t.Errorf("Decide = %+v, want a denial with no shortfall", d)
+	}
+	if d := e.DecideList(p, "docs", "tools/call", "edit_doc", nil); d.Allowed || len(d.MissingScopes) > 0 {
+		t.Errorf("DecideList = %+v, want a denial with no shortfall", d)
+	}
+	if e.Visible(p, "docs", "tools/call", "edit_doc") {
+		t.Error("a tool the caller lacks the scope for was visible")
+	}
+	// The enforcement pair: invisible and denied, with the remedy only on
+	// the call.
+	d := e.DecideCall(p, "docs", "tools/call", "edit_doc", Evidence{})
+	if d.Allowed || len(d.MissingScopes) != 1 {
+		t.Errorf("DecideCall = %+v, want a denial naming the one missing scope", d)
+	}
+}
+
+// A document naming no scope pays nothing and says nothing: the accounting is
+// gated on the engine having seen one, so every denial in every existing
+// document keeps the shape it had.
+func TestDocumentWithoutScopeRulesReportsNoShortfall(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID:       "eng",
+			Subjects: &config.PolicySubjects{Groups: []string{"engineering"}},
+			Allow:    []config.PolicyAllow{{Server: "docs"}},
+		}},
+	})
+	if e.hasScopes {
+		t.Error("a document naming no scope reported hasScopes")
+	}
+	for _, p := range []*auth.Principal{
+		nil,
+		held("read", "write"),
+		{Subject: "bob", Groups: []string{"sales"}},
+	} {
+		if d := e.DecideCall(p, "docs", "tools/call", "edit_doc", Evidence{}); len(d.MissingScopes) > 0 {
+			t.Errorf("principal %v: missing scopes = %v, want none", p, d.MissingScopes)
+		}
+	}
+	// And a scope-gated document sets it, so the gate is not simply always
+	// false.
+	if !scopedEngine(&config.PolicySubjects{Scopes: []string{"read"}}, config.PolicyAllow{Server: "docs"}).hasScopes {
+		t.Error("a scope-gated document did not report hasScopes")
+	}
+}
+
+// Deny is unaffected: it is a rule like any other, so a scope selector scopes
+// it to the callers who hold those scopes, and it still wins over an allow.
+// A denial by an explicit deny discloses nothing — there is no shortfall that
+// would fix it.
+func TestDenyRulesWithScopeSubjects(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{
+			{
+				ID:       "everyone-reads",
+				Subjects: &config.PolicySubjects{Scopes: []string{"docs:read"}},
+				Allow:    []config.PolicyAllow{{Server: "docs"}},
+			},
+			{
+				ID:       "no-deletes-for-interns",
+				Subjects: &config.PolicySubjects{Scopes: []string{"docs:read", "intern"}},
+				Deny:     []config.PolicyAllow{{Server: "docs", Names: []string{"delete_*"}}},
+			},
+		},
+	})
+	intern := held("docs:read", "intern")
+	staff := held("docs:read")
+
+	d := e.DecideCall(intern, "docs", "tools/call", "delete_doc", Evidence{})
+	if d.Allowed {
+		t.Fatal("the scope-gated deny did not apply to the caller holding its scopes")
+	}
+	if d.RuleID != "no-deletes-for-interns" {
+		t.Errorf("denying rule = %q, want no-deletes-for-interns", d.RuleID)
+	}
+	if len(d.MissingScopes) > 0 {
+		t.Errorf("an explicit deny disclosed missing scopes %v; there is nothing the caller could obtain", d.MissingScopes)
+	}
+	if !e.DecideCall(intern, "docs", "tools/call", "read_doc", Evidence{}).Allowed {
+		t.Error("the carve-out swallowed the rest of the grant")
+	}
+	// The deny's own scope selector scopes it: staff hold "docs:read" but not
+	// "intern", so it has nothing to say about them.
+	if !e.DecideCall(staff, "docs", "tools/call", "delete_doc", Evidence{}).Allowed {
+		t.Error("a deny scoped to interns refused staff")
+	}
+}
+
+// TestSubjectMatchedBySubStillGatesOnScopes closes the arm the scope tests
+// otherwise miss: subs and groups are alternatives, so a principal can satisfy
+// the identity half by subject while holding no groups — and the scope gate
+// must still apply to them, and still report its shortfall. A gate that only
+// ran on the groups branch would let anyone named in `subs` past it.
+func TestSubjectMatchedBySubStillGatesOnScopes(t *testing.T) {
+	e := New(&config.Policy{
+		DefaultDecision: "deny",
+		Rules: []config.PolicyRule{{
+			ID: "named-writers",
+			Subjects: &config.PolicySubjects{
+				Subs:   []string{"u-named"},
+				Scopes: []string{"things:write"},
+			},
+			Allow: []config.PolicyAllow{{Server: "things", Names: []string{"*"}}},
+		}},
+	})
+
+	named := func(scopes ...string) *auth.Principal {
+		return &auth.Principal{Subject: "u-named", Issuer: "https://idp", Scopes: scopes}
+	}
+
+	// Named, but without the scope: refused, and told exactly what is missing.
+	d := e.DecideCall(named(), "things", "tools/call", "t", Evidence{})
+	if d.Allowed {
+		t.Fatal("a named subject without the required scope must not be allowed")
+	}
+	if len(d.MissingScopes) != 1 || d.MissingScopes[0] != "things:write" {
+		t.Fatalf("MissingScopes = %v, want [things:write]", d.MissingScopes)
+	}
+
+	// Named and holding it: allowed.
+	if d := e.DecideCall(named("things:write"), "things", "tools/call", "t", Evidence{}); !d.Allowed {
+		t.Fatal("a named subject holding the scope should be allowed")
+	}
+
+	// Not named, but holding the scope: refused on identity, and told nothing —
+	// the scope was never the obstacle.
+	other := &auth.Principal{Subject: "u-other", Issuer: "https://idp", Scopes: []string{"things:write"}}
+	d = e.DecideCall(other, "things", "tools/call", "t", Evidence{})
+	if d.Allowed {
+		t.Fatal("an unnamed subject must not be allowed by holding the scope")
+	}
+	if len(d.MissingScopes) != 0 {
+		t.Fatalf("identity denial disclosed scopes: %v", d.MissingScopes)
 	}
 }

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -20,8 +21,12 @@ func tenantRoutes(t *testing.T, tenants ...config.Tenant) *routes {
 	return &routes{tenants: buildTenants(&config.Config{Tenants: tenants}, state.NewMemory(), tenantSet{})}
 }
 
-func principal(sub, issuer string, groups []string, claims map[string]any) *auth.Principal {
-	return &auth.Principal{Subject: sub, Issuer: issuer, Groups: groups, Claims: claims}
+// principal builds a caller. Scopes are variadic and trailing because most
+// selectors do not name any, and a caller that holds none is the common shape
+// — but every generated principal in the cross-product below carries them, so
+// the index cannot be exercised only by the tests that remembered to.
+func principal(sub, issuer string, groups []string, claims map[string]any, scopes ...string) *auth.Principal {
+	return &auth.Principal{Subject: sub, Issuer: issuer, Groups: groups, Claims: claims, Scopes: scopes}
 }
 
 // A principal resolves to the tenant whose selector it satisfies.
@@ -248,6 +253,18 @@ func TestIndexedResolutionAgreesWithFullScan(t *testing.T) {
 		Claims:  map[string]any{"org_id": "initech"},
 		Groups:  []string{"eng"},
 	})
+	// The four shapes a scope can appear in, because they partition
+	// differently and only one of them is indexable. A selector that names a
+	// scope *and* something else must fall to the scan: filing it under the
+	// other dimension alone would drop the scope requirement, and dropping a
+	// requirement is how a caller ends up in a tenant they were kept out of.
+	add("scope-one", &config.PolicySubjects{Scopes: []string{"read"}})
+	add("scope-both", &config.PolicySubjects{Scopes: []string{"read", "write"}})
+	add("group-scope", &config.PolicySubjects{Groups: []string{"ops"}, Scopes: []string{"admin"}})
+	add("claim-scope", &config.PolicySubjects{
+		Claims: map[string]any{"tier": float64(2)},
+		Scopes: []string{"admin"},
+	})
 	rt := tenantRoutes(t, tenants...)
 
 	subs := []string{"u-1", "u-special"}
@@ -261,40 +278,192 @@ func TestIndexedResolutionAgreesWithFullScan(t *testing.T) {
 		{"tier": float64(3), "beta": true},
 		{"org_id": map[string]any{"not": "a scalar"}},
 	}
+	scopeSets := [][]string{nil, {"read"}, {"read", "write"}, {"admin"}, {"unknown"}}
 	for _, sub := range subs {
 		for _, iss := range issuers {
 			for _, groups := range groupSets {
 				for _, claims := range claimSets {
-					p := principal(sub, iss, groups, claims)
-					var want []string
-					for i := range tenants {
-						if policy.MatchSubjects(tenants[i].Subjects, p) {
-							want = append(want, tenants[i].ID)
-						}
-					}
-					got, err := rt.resolveTenant(p)
-					switch {
-					case len(want) > 1:
-						if err == nil {
-							t.Fatalf("principal %v resolved to %q, want refusal (matches %v)", p, got.id(), want)
-						}
-						for _, id := range want {
-							if !strings.Contains(err.Message, id) {
-								t.Fatalf("message = %q, want it to name %q", err.Message, id)
+					for _, scopes := range scopeSets {
+						p := principal(sub, iss, groups, claims, scopes...)
+						var want []string
+						for i := range tenants {
+							if policy.MatchSubjects(tenants[i].Subjects, p) {
+								want = append(want, tenants[i].ID)
 							}
 						}
-					case len(want) == 1:
-						if err != nil || got.id() != want[0] {
-							t.Fatalf("principal %v resolved to (%q, %v), want %q", p, got.id(), err, want[0])
-						}
-					default:
-						if err != nil || got != nil {
-							t.Fatalf("principal %v resolved to (%q, %v), want no tenant", p, got.id(), err)
+						got, err := rt.resolveTenant(p)
+						switch {
+						case len(want) > 1:
+							if err == nil {
+								t.Fatalf("principal %v resolved to %q, want refusal (matches %v)", p, got.id(), want)
+							}
+							for _, id := range want {
+								if !strings.Contains(err.Message, id) {
+									t.Fatalf("message = %q, want it to name %q", err.Message, id)
+								}
+							}
+						case len(want) == 1:
+							if err != nil || got.id() != want[0] {
+								t.Fatalf("principal %v resolved to (%q, %v), want %q", p, got.id(), err, want[0])
+							}
+						default:
+							if err != nil || got != nil {
+								t.Fatalf("principal %v resolved to (%q, %v), want no tenant", p, got.id(), err)
+							}
 						}
 					}
 				}
 			}
 		}
+	}
+}
+
+// The partitioning itself, asserted rather than inferred. The cross-product
+// above can only catch an index that produces a *wrong* answer, and it cannot
+// catch a selector filed in the wrong partition while the matcher covers for
+// it — resolveTenant re-runs policy.MatchSubjects on every candidate an index
+// produces, so a mis-filed selector still resolves correctly today. That
+// makes this the only test that fails if indexableGroups or indexableClaim
+// stops excluding scope-bearing selectors, and the re-match is the only thing
+// standing between that and admitting a caller to a tenant on their group
+// alone.
+func TestScopeBearingSelectorsAreNotIndexedByAnotherDimension(t *testing.T) {
+	ts := buildTenants(&config.Config{Tenants: []config.Tenant{
+		{ID: "scope-one", Subjects: &config.PolicySubjects{Scopes: []string{"read"}}},
+		{ID: "scope-both", Subjects: &config.PolicySubjects{Scopes: []string{"read", "write"}}},
+		{ID: "group-scope", Subjects: &config.PolicySubjects{Groups: []string{"eng"}, Scopes: []string{"admin"}}},
+		{ID: "claim-scope", Subjects: &config.PolicySubjects{Claims: map[string]any{"org_id": "acme"}, Scopes: []string{"admin"}}},
+	}}, state.NewMemory(), tenantSet{})
+
+	// A single scope and nothing else is the one indexable shape: the
+	// principal's held scopes are the lookup keys.
+	if got := ts.byScope["read"]; len(got) != 1 || got[0].id() != "scope-one" {
+		t.Fatalf("byScope[read] = %v, want just scope-one", ids(got))
+	}
+	// A conjunctive requirement cannot be answered by a held-scope lookup —
+	// holding "read" is not holding "read write" — so it must not be filed
+	// under either of its scopes.
+	if got := ts.byScope["write"]; len(got) != 0 {
+		t.Fatalf("byScope[write] = %v, want nothing: a multi-scope selector is not satisfied by one of its scopes", ids(got))
+	}
+	// And a scope alongside another dimension belongs to neither index.
+	if got := ts.byGroup["eng"]; len(got) != 0 {
+		t.Fatalf("byGroup[eng] = %v, want nothing: the scope requirement would be dropped by the lookup", ids(got))
+	}
+	if got := ts.byClaim["org_id"][any("acme")]; len(got) != 0 {
+		t.Fatalf("byClaim[org_id=acme] = %v, want nothing: the scope requirement would be dropped by the lookup", ids(got))
+	}
+	if got := ids(ts.scan); len(got) != 3 {
+		t.Fatalf("scan partition = %v, want the three unindexable selectors", got)
+	}
+}
+
+func ids(ts []*tenant) []string {
+	var out []string
+	for _, t := range ts {
+		out = append(out, t.id())
+	}
+	return out
+}
+
+// The bug the index predicates exist to prevent, stated as behaviour: a
+// selector naming a group *and* a scope admits nobody who holds only the
+// group. Scopes are conjunctive — they say what the token was granted, not
+// who holds it — so they are a requirement on top of the identity match, not
+// another way to satisfy it.
+func TestTenantSelectorRequiresBothGroupAndScope(t *testing.T) {
+	rt := tenantRoutes(t,
+		config.Tenant{ID: "acme-admins", Subjects: &config.PolicySubjects{
+			Groups: []string{"eng"}, Scopes: []string{"admin"},
+		}},
+	)
+	cases := []struct {
+		name   string
+		p      *auth.Principal
+		tenant string
+	}{
+		{"group without the scope", principal("u1", "https://idp", []string{"eng"}, nil), ""},
+		{"scope without the group", principal("u2", "https://idp", []string{"sales"}, nil, "admin"), ""},
+		{"another scope entirely", principal("u3", "https://idp", []string{"eng"}, nil, "read"), ""},
+		{"both", principal("u4", "https://idp", []string{"eng"}, nil, "admin"), "acme-admins"},
+		{"both, among others", principal("u5", "https://idp", []string{"sales", "eng"}, nil, "read", "admin"), "acme-admins"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := rt.resolveTenant(c.p)
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if got.id() != c.tenant {
+				t.Fatalf("tenant = %q, want %q", got.id(), c.tenant)
+			}
+		})
+	}
+}
+
+// The same for a claim alongside a scope, which is the other index.
+func TestTenantSelectorRequiresBothClaimAndScope(t *testing.T) {
+	rt := tenantRoutes(t,
+		config.Tenant{ID: "acme-admins", Subjects: &config.PolicySubjects{
+			Claims: map[string]any{"org_id": "acme"}, Scopes: []string{"admin"},
+		}},
+	)
+	acme := map[string]any{"org_id": "acme"}
+	if got, err := rt.resolveTenant(principal("u1", "https://idp", nil, acme)); err != nil || got != nil {
+		t.Fatalf("resolve = (%q, %v), want no tenant: the claim alone must not admit", got.id(), err)
+	}
+	if got, err := rt.resolveTenant(principal("u2", "https://idp", nil, nil, "admin")); err != nil || got != nil {
+		t.Fatalf("resolve = (%q, %v), want no tenant: the scope alone must not admit", got.id(), err)
+	}
+	got, err := rt.resolveTenant(principal("u3", "https://idp", nil, acme, "admin"))
+	if err != nil || got.id() != "acme-admins" {
+		t.Fatalf("resolve = (%q, %v), want acme-admins", got.id(), err)
+	}
+}
+
+// A multi-scope selector matches conjunctively, and it is the scan that says
+// so — holding one of its scopes is not holding the set.
+func TestMultiScopeTenantSelectorIsConjunctive(t *testing.T) {
+	rt := tenantRoutes(t,
+		config.Tenant{ID: "writers", Subjects: &config.PolicySubjects{Scopes: []string{"read", "write"}}},
+	)
+	for _, held := range [][]string{nil, {"read"}, {"write"}, {"read", "admin"}} {
+		got, err := rt.resolveTenant(principal("u", "https://idp", nil, nil, held...))
+		if err != nil || got != nil {
+			t.Fatalf("scopes %v resolved to (%q, %v), want no tenant", held, got.id(), err)
+		}
+	}
+	for _, held := range [][]string{{"read", "write"}, {"write", "read"}, {"admin", "read", "write"}} {
+		got, err := rt.resolveTenant(principal("u", "https://idp", nil, nil, held...))
+		if err != nil || got.id() != "writers" {
+			t.Fatalf("scopes %v resolved to (%q, %v), want writers", held, got.id(), err)
+		}
+	}
+}
+
+// A single-scope selector resolves out of a document large enough that a scan
+// would be the thing being measured rather than the index — the behavioural
+// statement of "this shape is indexed", which is what the byScope partition
+// is for. A miss here is a caller silently governed as though they had no
+// tenant.
+func TestSingleScopeTenantResolvesAcrossManyDeclarations(t *testing.T) {
+	var tenants []config.Tenant
+	for i := range 5000 {
+		tenants = append(tenants, config.Tenant{
+			ID:       fmt.Sprintf("t-%05d", i),
+			Subjects: &config.PolicySubjects{Scopes: []string{fmt.Sprintf("scope-%05d", i)}},
+		})
+	}
+	rt := tenantRoutes(t, tenants...)
+	if n := len(rt.tenants.scan); n != 0 {
+		t.Fatalf("scan partition holds %d single-scope selectors, want 0", n)
+	}
+	got, err := rt.resolveTenant(principal("u", "https://idp", nil, nil, "openid", "scope-04999"))
+	if err != nil || got.id() != "t-04999" {
+		t.Fatalf("resolve = (%q, %v), want t-04999", got.id(), err)
+	}
+	if got, err := rt.resolveTenant(principal("u", "https://idp", nil, nil, "scope-99999")); err != nil || got != nil {
+		t.Fatalf("resolve = (%q, %v), want no tenant", got.id(), err)
 	}
 }
 
@@ -336,6 +505,14 @@ func TestTenantValidationRejects(t *testing.T) {
 		{"bad budget", tenantCfg(up.URL,
 			config.Tenant{ID: "a", Subjects: subj, Budget: &config.Budget{Period: "fortnight", UpstreamCalls: 1}}),
 			"budget.period"},
+		// A scope nobody can hold selects nobody, and a tenant that selects
+		// nobody leaves its principals ungoverned rather than failing loudly.
+		{"empty scope", tenantCfg(up.URL,
+			config.Tenant{ID: "a", Subjects: &config.PolicySubjects{Scopes: []string{"read", ""}}}),
+			"scopes must not contain empty values"},
+		{"whitespace scope", tenantCfg(up.URL,
+			config.Tenant{ID: "a", Subjects: &config.PolicySubjects{Scopes: []string{"  "}}}),
+			"scopes must not contain empty values"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
