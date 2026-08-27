@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -361,4 +362,64 @@ func TestIconsSurviveReload(t *testing.T) {
 				res.Status)
 		}
 	})
+}
+
+// TestIconLeaderRechecksCacheBeforeFetching pins the window that made
+// TestIconCachedAndSingleFlighted flaky on CI and not here: a request whose
+// cache miss happened *before* another request's fetch completed, but whose
+// entry into the flight happened *after* that flight ended. It finds the
+// waiting map empty, becomes a leader in its own right, and fetches bytes the
+// gateway is already holding.
+//
+// It is deliberately not written as a concurrency test. The interleaving
+// needs a goroutine to lag between two adjacent statements, which a fast
+// machine will not do on demand — 160 racing runs under CPU contention never
+// reproduced it locally, while a two-core CI runner hit it on the first
+// merge. So the state that window produces is set up directly instead: the
+// bytes are in the cache, no flight is in progress, and fetchIcon is called
+// exactly as a stale-miss caller would call it.
+func TestIconLeaderRechecksCacheBeforeFetching(t *testing.T) {
+	up := newIconUpstream(t, "alpha", nil)
+	ts, gw := iconGateway(t, func(u string) *config.Config {
+		return &config.Config{
+			Upstreams: []config.Upstream{{ID: "a", URL: up.url, Namespace: "a"}},
+			Server:    &config.ServerSection{PublicURL: u, AllowedHosts: []string{"*"}},
+		}
+	})
+	session := connect(t, ts.URL, nil)
+	url := toolIcons(t, session, "a__search")[0].Source
+
+	// One real request, so the cache is warm and the flight has ended.
+	if res := getIcon(t, url, nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("first fetch answered %s", res.Status)
+	}
+	if n := up.hits.Load(); n != 1 {
+		t.Fatalf("warm-up caused %d fetches, want 1", n)
+	}
+
+	// Now enter fetchIcon exactly as a caller whose Load missed before that
+	// store would: no flight in progress, bytes already cached.
+	parsed, err := neturl.Parse(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, src, ok := gw.iconOwner(gw.rt(), parsed.Path)
+	if !ok {
+		t.Fatal("the minted URL no longer resolves to an upstream")
+	}
+	entry, served := gw.fetchIcon(context.Background(), u, src,
+		u.cfg.ID+"\x00"+iconDigest(src), httptest.NewRecorder())
+	if !served {
+		t.Fatal("fetchIcon refused a request for an icon already in the cache")
+	}
+	if string(entry.body) != iconPNG {
+		t.Errorf("returned %d bytes that are not the cached icon", len(entry.body))
+	}
+	if n := up.hits.Load(); n != 1 {
+		t.Errorf("a leader fetched again for bytes already cached: %d upstream fetches, want 1. "+
+			"After taking the flight, fetchIcon must re-check the cache — the caller's miss is "+
+			"stale by then, and without that second check a request arriving just after a "+
+			"completed flight leads a redundant fetch. This is what made the concurrency test "+
+			"fail on CI and pass here.", n)
+	}
 }
