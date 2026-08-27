@@ -132,6 +132,84 @@ backstop against an upstream spending the gateway's memory rather than a size
 policy. A federation that legitimately serves more raises it; one that wants
 the pre-v1.15 unbounded behaviour sets it negative.
 
+### Icons survive federation
+
+MCP lets a server hang an icon off a tool, prompt, or resource, and it tells
+the *client* how to handle one: fetch only `https` or `data:`, reject unsafe
+schemes and cross-origin redirects, fetch without credentials, sniff the bytes
+rather than trust the declared type — and **verify that icon URIs are from the
+same origin as the server**.
+
+That last rule is what makes an icon a federation problem rather than a field.
+An upstream's icon points at the upstream's origin, which behind a gateway is
+neither the origin the client connected to nor, for the cluster-internal
+upstream that is the ordinary enterprise case, an origin the client can reach
+at all. So a conforming client rejects every federated icon and a lenient one
+fails to load it, and fold looks like a server whose upstreams have no icons —
+the invisibility rule broken in the direction nobody reports.
+
+fold mints its own URL for each one, `{publicUrl}/icons/{namespace}/{digest}`,
+and serves the bytes. It is the same move [MCP Apps](#) `ui://` minting makes
+and it is safe for the same reason: an icon `src` is not an identifier a client
+persists, it is republished on every list.
+
+Four bounds, and they are why this is not an open proxy:
+
+- **Only an icon on one of that upstream's own configured endpoint hosts is
+  minted.** That is the same host bound credential attachment uses — nothing
+  rides to a host the upstream did not configure — checked when the URL is
+  minted and again immediately before the fetch, so a hand-built digest cannot
+  smuggle a request somewhere else. An icon on any other host is republished
+  exactly as sent: it is already a public URL, and withholding it would only
+  take an icon away from a client lenient enough to have rendered it.
+- **Unsafe schemes are dropped** — `javascript:`, `file:`, `ftp:`, `ws:`. A
+  client MUST reject these anyway, so dropping costs a conforming client
+  nothing; what it avoids is fold putting its own name on one. This is the only
+  place the feature removes data.
+- **`data:` URIs pass through untouched.** Already same-origin-safe, already
+  reachable; proxying would re-serve bytes fold is holding. `maxResponseBytes`
+  is the bound on an oversized one, as it is for everything else an upstream
+  sends.
+- **Passthrough mints nothing**, exactly like `ui://`. A single un-namespaced
+  upstream is not a federation.
+
+The fetch carries no credentials — not by policy but by construction, since the
+client used for it has a plain transport with no path to upstream credentials
+at all — refuses redirects outright, is bounded by `maxBytes` and refuses
+rather than truncates, and identifies the image from its magic bytes rather
+than the declared type. The allowlist is `image/png`, `image/jpeg`,
+`image/webp`, and `image/gif`.
+
+**`image/svg+xml` is refused**, and the refusal is worth stating rather than
+discovering. Two arguments, either sufficient. fold would be serving the SVG
+from *fold's own origin*, where an SVG's embedded script runs same-origin with
+`/console/`, `/api/federation`, and `/oauth/token` — strictly worse than the
+upstream serving it, because the upstream's origin holds nothing of fold's.
+And structurally: SVG is XML and has no magic bytes, so the strict magic-byte
+allowlist the specification asks a consumer to maintain cannot admit it at all;
+doing so would mean trusting the declared content type or parsing the XML, and
+the second is the inline content inspection the roadmap
+[declines](roadmap.md#non-goals). An upstream whose only icon is an SVG renders
+as no icon.
+
+The endpoint is **unauthenticated**, and that is forced rather than chosen: the
+specification has clients fetch icons without credentials, and a browser
+`<img>` carries no bearer token, so an authenticated endpoint would serve
+nothing to the clients it exists for. What that discloses is bounded to match —
+the path names no tool, prompt, or resource, only a namespace and a digest, and
+the bytes are branding artwork identical for every caller, the same class as
+the console's static assets. Note what it is *not*: policy filtering is
+preserved here by unguessability rather than by authentication. A principal who
+cannot see a tool is never handed its icon URL, but one who guesses a URL gets
+the bytes — which is why the endpoint serves images and nothing else. An
+operator who does not accept that sets `icons.enabled: false`. The reasoning in
+full is in [security-model.md](security-model.md).
+
+`identity.icons` are fold's own and are **not** proxied: an operator sets a URL
+they own. A client enforcing the same-origin rule will render only a `data:`
+icon or one hosted at the gateway's own origin, so **prefer `data:`** — it
+needs no fetch, no cache, and no machinery.
+
 ### Keeping a stream alive
 
 MCP's own expectation is that a *client* pings if it wants a session kept
@@ -433,13 +511,16 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `metricsAddr` | unset | Moves `/metrics` (and `/health`) to their own listener, e.g. `":9090"`. Absent, they stay on the main port behind `allowedHosts` — which is why a scraper arriving as a pod IP or a service name gets `403` and reads as "target down". A separate listener is the arrangement to prefer whenever something other than the gateway's own host scrapes it: it is not an origin a browser can be steered to, so it needs no Host allowlist, while the public port stops exposing upstream ids, namespaces, tenant ids, and endpoint URLs to a rebinding attempt. **Bind it to an internal interface** — network scope is what protects it. Construction-wired; the Helm chart sets it for you via `metrics.listener.enabled`. |
 | `introspection` | disabled | `{ "enabled": true }` serves the read-only APIs: `GET /api/federation` (the federation snapshot — health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts, and the viewer's tenant governance) and `GET /api/auth-hint` (the unauthenticated sign-in hint). With auth enabled, `/api/federation` requires the same Bearer token as `/mcp` and shares its rate budgets; add `"groups": ["platform-ops"]` to further restrict reading to principals carrying one of those groups (403 otherwise, audited) — the fix for deployments where any valid token holder is too wide an audience. (A viewer who resolves to a tenant sees that tenant's federation rather than the whole one; see [`tenants`](#tenants).) |
 | `console` | disabled | `{ "enabled": true }` serves the read-only fold console page at `/console`: an observability dashboard plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. The dashboard renders what `/api/federation` reports, so it requires `introspection.enabled`. Add `"oauth": { "clientId": "fold-console" }` and the console signs users in with Authorization Code + PKCE against a trusted issuer (register `{origin}/console/` as the redirect URI at the IdP; `issuer` picks among multiple trusted issuers, `scopes` adds authorization scopes) instead of a pasted token. The page's assets are maintained in [fold-run/fold-console](https://github.com/fold-run/fold-console) and vendored here at a pinned commit. |
+| `publicUrl` | falls back to `auth.resource` | The absolute base URL clients reach this gateway at, e.g. `https://mcp.acme.example`. fold has no other way to know it — it terminates no TLS of its own and reads no forwarded-proto header — and a `Host` taken from the request cannot stand in, because `allowedHosts: ["*"]` is a supported posture behind a trusted proxy and a caller-supplied `Host` would then be injected into every URL fold mints for that caller. Today one feature needs it: federated icons, below. Must use `https` (loopback exempt). Construction-wired. |
+| `icons` | enabled | `{ enabled, maxBytes, timeoutMs, cacheTtlMs }` — how fold serves the icons its upstreams advertise. See below. Default on, which is a no-op until there is a `publicUrl` to mint under. |
+| `identity` | none | `{ websiteUrl, icons }` — what fold says about *itself* at `initialize`, alongside the name, title, and version it always reports. Each icon is `{ src, mimeType?, sizes?, theme? }`; `src` must be `https:` or `data:`. Construction-wired. |
 
 ## `routing`
 
 | Field | Default | Notes |
 |---|---|---|
 | `namespaceSeparator` | `__` | Separator between namespace and bare name in public tool/prompt names. Must not contain lowercase letters, digits, or hyphens (the namespace alphabet). |
-| `pageSize` | `200` | Per-page bound on federated list results (tools, prompts, resources, templates, tasks). Fold merges and policy-filters every upstream's full list, then serves it in pages; cursors are opaque, bound to the calling principal, and expire when the underlying snapshot changes (the client receives `-32602` and restarts the list — `list_changed` notifications already prompt refetches). Negative disables pagination (single merged page). |
+| `pageSize` | `200` | Per-page bound on federated list results (tools, prompts, resources, templates, tasks). Fold merges and policy-filters every upstream's full list, then serves it in pages; cursors are opaque, bound to the calling principal, and expire when the underlying snapshot changes (the client receives `-32602` and restarts the list — `list_changed` notifications already prompt refetches). Negative disables pagination (single merged page). Lists merge in **configuration order**, each upstream's own order preserved — which is what makes an offset cursor meaningful, and what the `2026-07-28` revision asks for when it says a server SHOULD return tools in a deterministic order. |
 
 ## `discovery`
 

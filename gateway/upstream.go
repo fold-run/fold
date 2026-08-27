@@ -20,6 +20,7 @@ import (
 
 	"github.com/fold-run/fold/auth"
 	"github.com/fold-run/fold/config"
+	"github.com/fold-run/fold/internal/bounded"
 	"github.com/fold-run/fold/internal/state"
 	"github.com/fold-run/fold/policy"
 )
@@ -158,6 +159,24 @@ type upstream struct {
 	publicTools     map[capProfile]publicView[mcp.Tool]
 	publicPrompts   map[capProfile]publicView[mcp.Prompt]
 	publicResources map[capProfile]publicView[mcp.Resource]
+
+	// hosts is the set of this upstream's configured endpoint authorities.
+	// It bounds two things by the same rule — nothing rides to a host the
+	// upstream did not configure: credential attachment, and which icon
+	// sources fold is willing to fetch. See icon.go.
+	hosts map[string]bool
+
+	// iconBase is the gateway's public origin, or "" when it has none and
+	// icons are therefore republished untouched. Fixed for this upstream's
+	// life: the server section is construction-wired, which is what lets the
+	// minted form live inside the publicView memo.
+	iconBase string
+
+	// iconIndex maps a minted digest back to the upstream src it names.
+	// Bounded, and safe to evict: the miss path rebuilds it from the cached
+	// list (reindexIcons).
+	iconIndex    *bounded.Map[string]
+	iconIndexTTL time.Duration
 }
 
 // publicView is a namespaced list, index-aligned with the bare list it was
@@ -303,6 +322,7 @@ func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 			upstreamHosts[parsed.Host] = true
 		}
 	}
+	u.hosts = upstreamHosts
 	ct := newCredentialTransport(u.creds, sessionEra, upstreamHosts)
 	ct.streamIdle = streamIdle
 	ct.maxResponse = int64(defaultMaxResponseBytes)
@@ -1379,6 +1399,9 @@ func (u *upstream) namespacedTools(ctx context.Context, bare []*mcp.Tool) []*mcp
 		// An MCP Apps tool points at its interface from _meta; that pointer is
 		// federated alongside the name it belongs to. See uiresource.go.
 		nt.Meta = u.mintToolMeta(t.Meta)
+		// An icon hosted by the upstream is unreachable and cross-origin once
+		// federated, so it is minted onto fold's own origin. See icon.go.
+		nt.Icons = u.mintIcons(t.Icons)
 		items[i] = &nt
 	}
 	if u.publicTools == nil {
@@ -1403,6 +1426,7 @@ func (u *upstream) namespacedPrompts(ctx context.Context, bare []*mcp.Prompt) []
 	for i, p := range bare {
 		np := *p
 		np.Name = u.publicName(p.Name)
+		np.Icons = u.mintIcons(p.Icons)
 		items[i] = &np
 	}
 	if u.publicPrompts == nil {

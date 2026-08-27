@@ -200,6 +200,10 @@ type Tracing struct {
 // that uses it for why a too-small cap is refused rather than honoured.
 const minMaxResponseBytes = 64 << 10
 
+// minIconBytes floors server.icons.maxBytes. Below this every icon fetch
+// fails, which does not read as a typo once it is deployed.
+const minIconBytes = 1 << 10
+
 // Upstream describes one MCP server folded into the gateway.
 type Upstream struct {
 	ID  string `json:"id"`
@@ -900,6 +904,81 @@ type ServerSection struct {
 	// renders what /api/federation reports, so it requires
 	// introspection.enabled. Off by default. See docs/design-console.md.
 	Console *Console `json:"console,omitempty"`
+
+	// PublicURL is the absolute base URL clients reach this gateway at, e.g.
+	// "https://mcp.acme.example". fold otherwise has no way to know it: it
+	// terminates no TLS of its own and reads no forwarded-proto header, and a
+	// Host taken from the request cannot be used — `allowedHosts: ["*"]` is a
+	// supported posture behind a trusted proxy, under which a caller-supplied
+	// Host would be injected into every URL fold mints for that caller.
+	//
+	// Today one feature needs it: federated icons, whose sources must be
+	// rewritten to fold's own origin to be reachable and to pass the
+	// specification's same-origin check. Absent, it falls back to
+	// auth.resource — fold's canonical external identity when auth is on —
+	// and absent both, icons are served exactly as the upstream published
+	// them, which is what fold has always done.
+	//
+	// Construction-wired like the rest of this section: Reload rejects a
+	// change to it, which is what lets the minted form be computed once per
+	// snapshot rather than per request.
+	PublicURL string `json:"publicUrl,omitempty"`
+
+	// Icons governs how fold serves the icons its upstreams advertise. See
+	// docs/design-icons.md.
+	Icons *IconsSection `json:"icons,omitempty"`
+
+	// Identity carries what fold says about *itself* in its server info —
+	// separate from `icons` above, which is about the upstreams'.
+	Identity *Identity `json:"identity,omitempty"`
+}
+
+// IconsSection configures the icon proxy.
+//
+// MCP lets a server hang an icon off a tool, prompt, or resource, and tells
+// clients to fetch it only over https or data:, to reject cross-origin
+// redirects, and to "verify that icon URIs are from the same origin as the
+// server". Behind a gateway that last rule bites: an upstream's icon points at
+// the upstream's origin, which is neither fold's nor, on a cluster-internal
+// upstream, reachable by the client at all. fold therefore mints its own URL
+// for each one and serves the bytes, credential-free and validated.
+type IconsSection struct {
+	// Enabled turns the rewrite and the /icons endpoint on. Default true —
+	// but with no resolvable public URL nothing is minted and nothing is
+	// fetched, so the default is a no-op until an operator sets one.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// MaxBytes bounds one icon. Refuse rather than truncate, like
+	// upstreams[].maxResponseBytes: half an image is not an image the
+	// upstream sent. Default 256 KiB.
+	MaxBytes int64 `json:"maxBytes,omitempty"`
+
+	// TimeoutMs bounds one fetch. Default 5000.
+	TimeoutMs int `json:"timeoutMs,omitempty"`
+
+	// CacheTTLMs is how long fetched bytes are held per instance. Default
+	// one hour.
+	CacheTTLMs int `json:"cacheTtlMs,omitempty"`
+}
+
+// Identity is what fold reports about itself at initialize.
+type Identity struct {
+	// WebsiteURL is a page describing this deployment.
+	WebsiteURL string `json:"websiteUrl,omitempty"`
+
+	// Icons represent the gateway itself. These are not proxied: an operator
+	// sets a URL they own. A client enforcing the same-origin rule will only
+	// render a data: icon or one hosted at the gateway's own origin, so
+	// prefer data: — it needs no fetch, no cache, and no machinery.
+	Icons []Icon `json:"icons,omitempty"`
+}
+
+// Icon mirrors the MCP Icon type.
+type Icon struct {
+	Src      string   `json:"src"`
+	MIMEType string   `json:"mimeType,omitempty"`
+	Sizes    []string `json:"sizes,omitempty"`
+	Theme    string   `json:"theme,omitempty"` // "light" | "dark"
 }
 
 // Introspection configures the read-only HTTP APIs. Like the rest of the
@@ -1112,6 +1191,42 @@ func (c *Config) Validate() error {
 	if c.Server != nil && c.Server.MaxBodyBytes < 0 {
 		return fmt.Errorf("server: maxBodyBytes must be positive")
 	}
+	if c.Server != nil && c.Server.PublicURL != "" {
+		// It is the origin fold puts its own name on, in URLs it hands to
+		// clients; a plaintext one would have those clients fetch over http.
+		if err := requireSecureEndpoint("server: publicUrl", c.Server.PublicURL); err != nil {
+			return err
+		}
+	}
+	if c.Server != nil && c.Server.Icons != nil {
+		ic := c.Server.Icons
+		if ic.MaxBytes < 0 || ic.TimeoutMs < 0 || ic.CacheTTLMs < 0 {
+			return fmt.Errorf("server: icons maxBytes, timeoutMs, and cacheTtlMs must not be negative")
+		}
+		// A cap below any real icon is every fetch failing, which does not
+		// read as a typo once deployed.
+		if ic.MaxBytes > 0 && ic.MaxBytes < minIconBytes {
+			return fmt.Errorf("server: icons maxBytes must be at least %d (got %d)", minIconBytes, ic.MaxBytes)
+		}
+	}
+	if c.Server != nil && c.Server.Identity != nil {
+		for i, icon := range c.Server.Identity.Icons {
+			if icon.Src == "" {
+				return fmt.Errorf("server: identity.icons[%d] has no src", i)
+			}
+			// The specification's client rule, applied at config time so an
+			// operator learns it here rather than from a client silently
+			// rendering nothing.
+			if !strings.HasPrefix(icon.Src, "data:") {
+				if err := requireSecureEndpoint(fmt.Sprintf("server: identity.icons[%d].src", i), icon.Src); err != nil {
+					return err
+				}
+			}
+			if icon.Theme != "" && icon.Theme != "light" && icon.Theme != "dark" {
+				return fmt.Errorf(`server: identity.icons[%d].theme must be "light" or "dark" (got %q)`, i, icon.Theme)
+			}
+		}
+	}
 	if c.Server != nil && c.Server.MetricsAddr != "" {
 		// Checked here rather than at bind time, so a typo fails
 		// `fold --validate` and the chart's config-validating init container
@@ -1129,6 +1244,7 @@ func (c *Config) Validate() error {
 		reserved := []string{
 			"/health", "/metrics", "/console", "/console/",
 			"/api/federation", "/api/auth-hint", "/oauth/token",
+			"/icons", "/icons/",
 		}
 		for _, p := range reserved {
 			if c.Server.MCPPath == p {
@@ -1527,6 +1643,55 @@ func (c *Config) MCPPath() string {
 		return c.Server.MCPPath
 	}
 	return "/mcp"
+}
+
+// IconsEnabled reports whether fold rewrites and serves upstream icons.
+// Default on; with no PublicURL to mint under it is inert either way.
+func (c *Config) IconsEnabled() bool {
+	if c == nil || c.Server == nil || c.Server.Icons == nil || c.Server.Icons.Enabled == nil {
+		return true
+	}
+	return *c.Server.Icons.Enabled
+}
+
+// IconMaxBytes bounds one icon (default 256 KiB).
+func (c *Config) IconMaxBytes() int64 {
+	if c != nil && c.Server != nil && c.Server.Icons != nil && c.Server.Icons.MaxBytes > 0 {
+		return c.Server.Icons.MaxBytes
+	}
+	return 256 << 10
+}
+
+// IconTimeout bounds one icon fetch (default 5s).
+func (c *Config) IconTimeout() time.Duration {
+	if c != nil && c.Server != nil && c.Server.Icons != nil && c.Server.Icons.TimeoutMs > 0 {
+		return time.Duration(c.Server.Icons.TimeoutMs) * time.Millisecond
+	}
+	return 5 * time.Second
+}
+
+// IconCacheTTL is how long fetched icon bytes are held (default 1h).
+func (c *Config) IconCacheTTL() time.Duration {
+	if c != nil && c.Server != nil && c.Server.Icons != nil && c.Server.Icons.CacheTTLMs > 0 {
+		return time.Duration(c.Server.Icons.CacheTTLMs) * time.Millisecond
+	}
+	return time.Hour
+}
+
+// PublicURL is the absolute origin clients reach fold at, with no trailing
+// slash: server.publicUrl if set, else auth.resource, else "". Empty means
+// fold cannot name itself and must not mint URLs that claim to be its own.
+func (c *Config) PublicURL() string {
+	if c == nil {
+		return ""
+	}
+	if c.Server != nil && c.Server.PublicURL != "" {
+		return strings.TrimRight(c.Server.PublicURL, "/")
+	}
+	if c.Auth != nil {
+		return strings.TrimRight(c.Auth.Resource, "/")
+	}
+	return ""
 }
 
 // KeepAlive resolves server.keepAliveMs. Zero — the default — disables the
