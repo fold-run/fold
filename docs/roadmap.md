@@ -487,6 +487,24 @@ most useful thing in it.
 The two gaps that remain after all of that are the specification's, and they
 are in the gated horizon below.
 
+### 15b. Icons survive federation — **shipped**
+
+An upstream's icon points at the upstream's origin, and the specification tells
+clients to verify that an icon URI is same-origin with the server and to reject
+anything that is not `https` or `data:`. Behind a gateway both fail: the origin
+is not fold's and, for a cluster-internal upstream, is not reachable by the
+client either. fold mints `{publicUrl}/icons/{namespace}/{digest}` and serves
+the bytes — the `ui://` move, safe for the same reason, since an icon `src` is
+republished on every list rather than persisted.
+
+It is bounded by the host rule credential attachment already uses, so fold only
+fetches where the operator pointed it; it carries no credentials by
+construction; it refuses redirects and validates by magic bytes. `image/svg+xml`
+is refused — fold would be serving executable XML from its own origin, and a
+magic-byte allowlist cannot admit a format with no magic bytes. Three narrower
+gaps are in README "Not implemented". `server.identity` adds fold's own icons
+and website to what it reports at `initialize`.
+
 ### 16. A second discovery producer — **shipped**
 
 The gated horizon held "discovery producers beyond Kubernetes" on the grounds

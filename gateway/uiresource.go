@@ -124,10 +124,11 @@ func (u *upstream) mintToolMeta(m mcp.Meta) mcp.Meta {
 }
 
 // namespacedResources returns the resource list as clients see it, with ui://
-// URIs minted. It is namespacedTools for resources, with one difference: a
-// federation typically has no ui:// resources at all, so the common answer is
-// the input slice itself — memoized like the others, so the scan that decides
-// that happens once per cache generation rather than once per request.
+// URIs minted and upstream-hosted icons rewritten onto fold's origin. It is
+// namespacedTools for resources, with one difference: a federation typically
+// has neither ui:// resources nor icons, so the common answer is the input
+// slice itself — memoized like the others, so the scan that decides that
+// happens once per cache generation rather than once per request.
 func (u *upstream) namespacedResources(ctx context.Context, bare []*mcp.Resource) []*mcp.Resource {
 	if u.cfg.Namespace == "" {
 		return bare
@@ -140,14 +141,17 @@ func (u *upstream) namespacedResources(ctx context.Context, bare []*mcp.Resource
 	}
 	items := bare
 	for i, r := range bare {
-		if !isUIURI(r.URI) {
+		minted := u.mintUIURI(r.URI)
+		icons := u.mintIcons(r.Icons)
+		if minted == r.URI && sameIcons(icons, r.Icons) {
 			continue
 		}
 		if len(items) == 0 || &items[0] == &bare[0] {
 			items = slices.Clone(bare) // copy on first rewrite, not before
 		}
 		nr := *r
-		nr.URI = u.mintUIURI(r.URI)
+		nr.URI = minted
+		nr.Icons = icons
 		items[i] = &nr
 	}
 	if u.publicResources == nil {
@@ -167,4 +171,13 @@ func mintReadResult(out *mcp.ReadResourceResult, original, minted string) {
 			c.URI = minted
 		}
 	}
+}
+
+// sameIcons reports whether mintIcons returned its input untouched — the
+// common case, and the one that must not cost a copy.
+func sameIcons(a, b []mcp.Icon) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return len(a) == 0 || &a[0] == &b[0]
 }
