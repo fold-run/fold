@@ -52,13 +52,10 @@ func principalCursorKey(p *auth.Principal) string {
 // after this are identical.
 func snapshotGen[T any](kind string, items []T, name func(T) string) string {
 	h := sha256.New()
-	buf := make([]byte, 0, 64)
-	buf = append(buf, kind...)
-	h.Write(buf)
+	h.Write([]byte(kind))
 	for _, it := range items {
-		buf = append(buf[:0], 0)
-		buf = append(buf, name(it)...)
-		h.Write(buf)
+		h.Write([]byte{0})
+		h.Write([]byte(name(it)))
 	}
 	return hex.EncodeToString(h.Sum(nil)[:6])
 }
@@ -89,6 +86,13 @@ func paginate[T any](items []T, name func(T) string, kind, rawCursor string, siz
 		if rawCursor != "" {
 			return nil, "", errBadCursor
 		}
+		return items, "", nil
+	}
+
+	// No cursor and the whole list fits one page: skip fingerprinting.
+	// The fingerprint is only needed to validate a client cursor or to bind
+	// a next-cursor to a snapshot.
+	if rawCursor == "" && len(items) <= size {
 		return items, "", nil
 	}
 

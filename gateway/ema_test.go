@@ -70,6 +70,51 @@ func idJAG(t *testing.T, idp *fixtureIssuer, sub, jti string) string {
 	})
 }
 
+// idJAGWithHeader mints an ID-JAG with an arbitrary JOSE typ header.
+func idJAGWithHeader(t *testing.T, idp *fixtureIssuer, sub, jti, typ string) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"iss":    idp.server.URL,
+		"sub":    sub,
+		"aud":    emaResource,
+		"jti":    jti,
+		"exp":    time.Now().Add(5 * time.Minute).Unix(),
+		"groups": []string{"eng"},
+		"email":  sub + "@example.com",
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = "k1"
+	if typ != "" {
+		tok.Header["typ"] = typ
+	}
+	signed, err := tok.SignedString(idp.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
+// idJAGWithClientID mints an ID-JAG carrying a client_id claim.
+func idJAGWithClientID(t *testing.T, idp *fixtureIssuer, sub, jti, clientID string) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"iss":       idp.server.URL,
+		"sub":       sub,
+		"aud":       emaResource,
+		"jti":       jti,
+		"exp":       time.Now().Add(5 * time.Minute).Unix(),
+		"groups":    []string{"eng"},
+		"client_id": clientID,
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = "k1"
+	signed, err := tok.SignedString(idp.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
 // redeem posts an ID-JAG at the token endpoint and returns the HTTP status
 // and decoded response body.
 func redeem(t *testing.T, gatewayURL, assertion string) (int, map[string]any) {
@@ -405,6 +450,50 @@ func TestEMAAdvertisedAuthorizationServerIsReachable(t *testing.T) {
 	}
 	if walked == 0 {
 		t.Fatalf("fold did not advertise itself in authorization_servers: %v", servers)
+	}
+}
+
+// EMA can enforce a positive assertion typ allowlist. Assertions that do not
+// carry one of the configured types are refused before any token is minted.
+func TestEMAAllowedAssertionTypes(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	idp := newFixtureIssuer(t)
+	setEMAKey(t)
+	cfg := emaConfig(idp, []config.Upstream{{ID: "u", URL: up.URL}})
+	cfg.Auth.EMA.AllowedAssertionTypes = []string{"oauth-id-jag+jwt"}
+	ts, _ := startGateway(t, cfg)
+
+	if status, body := redeem(t, ts.URL, idJAG(t, idp, "alice", "jag-notyped")); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+		t.Errorf("assertion without required typ should be refused, got %d %v", status, body)
+	}
+	if status, body := redeem(t, ts.URL, idJAGWithHeader(t, idp, "alice", "jag-typed", "oauth-id-jag+jwt")); status != http.StatusOK {
+		t.Errorf("assertion with required typ should exchange, got %d %v", status, body)
+	}
+	// Access-token types remain off the table regardless of the allowlist.
+	if status, body := redeem(t, ts.URL, idJAGWithHeader(t, idp, "alice", "jag-at", "at+jwt")); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+		t.Errorf("access-token typ should still be refused, got %d %v", status, body)
+	}
+}
+
+// EMA can restrict which client_id claims it will mint a token for. This
+// closes the residual trust-model gap where any IdP-signed JWT with the
+// right audience could be exchanged.
+func TestEMAAllowedClientIDs(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	idp := newFixtureIssuer(t)
+	setEMAKey(t)
+	cfg := emaConfig(idp, []config.Upstream{{ID: "u", URL: up.URL}})
+	cfg.Auth.EMA.AllowedClientIDs = []string{"fold-client"}
+	ts, _ := startGateway(t, cfg)
+
+	if status, body := redeem(t, ts.URL, idJAG(t, idp, "alice", "jag-noclient")); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+		t.Errorf("assertion without allowed client_id should be refused, got %d %v", status, body)
+	}
+	if status, body := redeem(t, ts.URL, idJAGWithClientID(t, idp, "alice", "jag-bad", "other-client")); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+		t.Errorf("assertion with disallowed client_id should be refused, got %d %v", status, body)
+	}
+	if status, body := redeem(t, ts.URL, idJAGWithClientID(t, idp, "alice", "jag-good", "fold-client")); status != http.StatusOK {
+		t.Errorf("assertion with allowed client_id should exchange, got %d %v", status, body)
 	}
 }
 

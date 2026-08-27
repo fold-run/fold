@@ -578,6 +578,22 @@ type EMAConfig struct {
 	// TokenRateLimitPerMinute caps the unauthenticated /oauth/token
 	// endpoint (anti-amplification). Default 600.
 	TokenRateLimitPerMinute int `json:"tokenRateLimitPerMinute,omitempty"`
+
+	// AllowedAssertionTypes is the positive list of JOSE "typ" values an
+	// incoming ID-JAG may carry. If empty, fold keeps the v1 behaviour of
+	// only rejecting access-token types ("at+jwt"); SEP-990 §5.1 says the
+	// assertion MUST be typ "oauth-id-jag+jwt", and operators who can rely
+	// on their IdP to stamp that value should set it here. Tracked as a list
+	// so an enterprise IdP that emits its own assertion profile can be
+	// accommodated without a code change.
+	AllowedAssertionTypes []string `json:"allowedAssertionTypes,omitempty"`
+
+	// AllowedClientIDs restricts which client_id claims fold will mint a
+	// token for. The client_id is copied from the assertion into the minted
+	// token but is otherwise unvalidated; an allowlist closes the residual
+	// trust-model gap where any IdP-signed JWT with the right issuer/audience
+	// could be exchanged. Empty means no restriction.
+	AllowedClientIDs []string `json:"allowedClientIds,omitempty"`
 }
 
 // ResolvedTokenTTLSec returns the minted-token lifetime (default 600).
@@ -715,9 +731,27 @@ type PolicyAllow struct {
 	ToolKind string `json:"toolKind,omitempty"`
 }
 
+// AuditScrub configures optional audit-event redaction. The upstream still
+// sees the fields it returns; this only limits what reaches audit sinks.
+type AuditScrub struct {
+	// RedactUsageKeys removes the named keys from the Usage map, if the
+	// upstream provided them. A key that is not present is harmless.
+	RedactUsageKeys []string `json:"redactUsageKeys,omitempty"`
+
+	// MaxErrorLength caps the length of the Error field. 0 means no cap.
+	// Errors longer than the bound are truncated from the end.
+	MaxErrorLength int `json:"maxErrorLength,omitempty"`
+}
+
 // Audit configures audit event emission.
 type Audit struct {
 	Sinks []AuditSink `json:"sinks"`
+
+	// Scrub is an optional transformation applied to audit events before
+	// they are written to sinks. It lets operators withhold upstream-provided
+	// fields that may carry secrets, PII, or verbose error text while keeping
+	// the rest of the event intact.
+	Scrub *AuditScrub `json:"scrub,omitempty"`
 
 	// RequireDurable refuses to start unless at least one sink keeps the
 	// events fold could not deliver — see AuditSink.Durable for which
@@ -860,6 +894,15 @@ type ServerSection struct {
 	// gateway instances (redis:// URL). Defaults to the REDIS_URL
 	// environment variable; absent → in-process state.
 	RedisURL string `json:"redisUrl,omitempty"`
+
+	// MetricsAllowedHosts is an optional Host allowlist for the separate
+	// telemetry listener. When server.metricsAddr is set and this list is
+	// non-empty, requests whose Host does not match one of the entries are
+	// refused with 403. Empty keeps the previous behaviour: the listener is
+	// unguarded, relying on network scope for protection. Entries follow
+	// the same rules as server.allowedHosts: exact hostnames or "*.suffix"
+	// for subdomains; ports are ignored.
+	MetricsAllowedHosts []string `json:"metricsAllowedHosts,omitempty"`
 
 	// MetricsAddr moves /metrics to its own listener ("host:port", or
 	// ":9090" for every interface). Absent — the default — leaves /metrics on
@@ -1243,6 +1286,16 @@ func (c *Config) Validate() error {
 			if ema.TokenTTLSec < 0 || ema.TokenRateLimitPerMinute < 0 {
 				return fmt.Errorf("auth: ema tokenTtlSec and tokenRateLimitPerMinute must be positive")
 			}
+			for _, typ := range ema.AllowedAssertionTypes {
+				if typ == "" {
+					return fmt.Errorf("auth: ema.allowedAssertionTypes entries must not be empty")
+				}
+			}
+			for _, id := range ema.AllowedClientIDs {
+				if id == "" {
+					return fmt.Errorf("auth: ema.allowedClientIDs entries must not be empty")
+				}
+			}
 		}
 	}
 	if c.Policy != nil {
@@ -1362,6 +1415,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.Audit != nil {
+		if c.Audit.Scrub != nil && c.Audit.Scrub.MaxErrorLength < 0 {
+			return fmt.Errorf("audit: scrub.maxErrorLength must not be negative")
+		}
 		for _, s := range c.Audit.Sinks {
 			switch s.Type {
 			case "stdout":

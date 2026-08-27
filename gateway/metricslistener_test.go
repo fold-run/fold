@@ -101,6 +101,36 @@ func TestMetricsListenerServesAnyHost(t *testing.T) {
 	}
 }
 
+// server.metricsAllowedHosts adds optional host validation to the separate
+// listener, so a scraper under an unexpected Host is still refused even when
+// the endpoint has moved off the main mux.
+func TestMetricsListenerHostAllowlist(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	addr := freeAddr(t)
+	_, _ = startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Server: &config.ServerSection{
+			MetricsAddr:         addr,
+			MetricsAllowedHosts: []string{"metrics.example.com", "*.svc.cluster.local"},
+		},
+	})
+
+	for _, host := range []string{"", "10.1.2.3:9090", "other.example.com"} {
+		if code, _ := get(t, "http://"+addr+"/metrics", host); code != http.StatusForbidden {
+			t.Errorf("Host %q should be refused, got %d", host, code)
+		}
+	}
+	for _, host := range []string{"metrics.example.com", "prom.svc.cluster.local"} {
+		code, body := get(t, "http://"+addr+"/metrics", host)
+		if code != http.StatusOK {
+			t.Errorf("Host %q should be allowed, got %d", host, code)
+		}
+		if !strings.Contains(body, "fold_build_info") {
+			t.Errorf("Host %q got no metrics", host)
+		}
+	}
+}
+
 // Moving the endpoint has to actually move it. Serving it in both places
 // would leave the public origin exposing exactly what the move was for.
 func TestMetricsLeavesThePublicMux(t *testing.T) {
@@ -124,10 +154,11 @@ func TestMetricsLeavesThePublicMux(t *testing.T) {
 	}
 }
 
-// The telemetry listener carries /metrics and nothing else. It is deliberately
-// unauthenticated and does no host validation — that is safe precisely because
-// it is not a browser-reachable origin and is meant to be bound to an internal
-// interface. /api/federation is the opposite: authenticated, host-checked, and
+// The telemetry listener carries /metrics and nothing else. It is
+// unauthenticated by default and host validation is optional (configured via
+// server.metricsAllowedHosts) — the listener is meant to be bound to an
+// internal interface. /api/federation is the opposite: authenticated,
+// host-checked, and
 // carrying upstream URLs, owners, and tenant governance. Mounting it here
 // "for convenience" would hand the whole federation to anything that can
 // reach the metrics port. Nothing stops that today except this test.

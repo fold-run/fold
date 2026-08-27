@@ -258,12 +258,21 @@ one-grant-wide MCP Authorization Server: `POST /oauth/token` exchanges an enterp
     "idpJwksUri": "https://acme.okta.com/oauth2/v1/keys",  // default: {idpIssuer}/.well-known/jwks.json
     "signingKeyRef": "FOLD_EMA_KEY",   // env var: ES256 private key, PKCS#8 PEM
     "tokenTtlSec": 600,                // minted-token lifetime (default 600)
-    "tokenRateLimitPerMinute": 600     // cap on the unauthenticated /oauth/token endpoint (default 600)
+    "tokenRateLimitPerMinute": 600,    // cap on the unauthenticated /oauth/token endpoint (default 600)
+    "allowedAssertionTypes": ["oauth-id-jag+jwt"],  // optional positive typ allowlist
+    "allowedClientIds": ["fold-client"]             // optional client_id allowlist
   }
 }
 ```
 
 An assertion must be issued by `idpIssuer` for the `resource` audience and carry `exp` and `jti`; each `jti` is single-use until it expires (recorded fleet-wide via Redis when configured), so a captured ID-JAG cannot be redeemed twice. fold publishes RFC 8414 authorization-server metadata at `/.well-known/oauth-authorization-server` whenever EMA is enabled, so a client that follows the `authorization_servers` pointer in the protected-resource document can discover the token endpoint and key set rather than being configured with them out of band. The document is narrow on purpose: it describes the one grant this server implements and claims nothing else. Issuers with `mode: "exchange"` are excluded from direct token presentation and from the advertised `authorization_servers` — fold itself is the authorization server for those, publishing its minting key at `/.well-known/jwks.json` and announcing the `io.modelcontextprotocol/enterprise-managed-authorization` extension in the protected-resource metadata. The token endpoint is unauthenticated by design (the assertion is the credential) and rate-limited against amplification. Generate a key with `openssl ecparam -genkey -name prime256v1 | openssl pkcs8 -topk8 -nocrypt`.
+
+**Hardening the ID-JAG exchange.** By default fold rejects only access-token typ values (`at+jwt`) and otherwise accepts any IdP-signed JWT that matches issuer, audience, subject, `jti`, and `exp`. That leaves a residual trust-model gap: an ID token or an application token minted for the gateway's resource audience satisfies every check. Two optional allowlists close it:
+
+- `allowedAssertionTypes` is a positive list of JOSE `typ` values the assertion must carry. SEP-990 §5.1 requires `oauth-id-jag+jwt`; set it when your IdP stamps that value.
+- `allowedClientIds` restricts which `client_id` claims fold will mint a token for. The claim is copied into the minted access token but otherwise unvalidated; an allowlist prevents an unrelated IdP-issued token for the same audience from being exchanged.
+
+Either list may be used alone; both empty preserves the v1-compatible behaviour.
 
 ## `policy`
 
@@ -397,6 +406,10 @@ Denials get their own audit outcome (`hook_denied`) so an operator can tell thei
       "deadLetterPath": "/var/log/fold/audit-dead.jsonl"
     }
   ],
+  "scrub": {
+    "redactUsageKeys": ["promptTokens", "secret"],
+    "maxErrorLength": 1024
+  },
   "requireDurable": false
 }
 ```
@@ -416,6 +429,8 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 
 **`requireDurable` refuses to start without a trail that survives.** Off by default, because shipping `stdout` to a collector is a legitimate production choice and fold cannot see the far end of it — so this is an assertion the operator makes about their own deployment rather than a default fold is entitled to impose. Set it, and at least one sink must keep what fold could not deliver: a `file` sink qualifies on its own, a `webhook` or `otlp-logs` sink once it has a `deadLetterPath`, and `stdout` never does. A document declaring none is rejected by `fold --validate`; a declared durable sink whose path will not open fails at startup instead, which is the case validation cannot see. It promises that every *abandoned delivery* has somewhere on disk to land — not that nothing is ever lost: a sink whose buffer fills while its receiver is down still drops, because writing to disk from the request path is the latency audit must never add.
 
+**Scrubbing upstream-provided fields.** The optional `scrub` object transforms events before they are written to sinks: `redactUsageKeys` deletes the named keys from the `usage` map an upstream returned in its result `_meta`, and `maxErrorLength` truncates the `error` field. This is useful when a misbehaving upstream can return secrets, PII, or verbose stack traces in either place — `scrub` removes or bounds them without dropping the rest of the event. It applies after upstream calls are counted and after outcomes are decided, so metrics and decisions are unaffected.
+
 **Every record names the replica that wrote it.** The `instance` field is `FOLD_INSTANCE_ID` when set, otherwise the hostname — which Docker sets per container and Kubernetes per pod, so a fleet is attributable with no configuration. It is deliberately an environment variable rather than a config field: the value has to differ per replica, and the config document is the one thing every replica shares. On the `otlp-logs` sink it rides the resource as `service.instance.id`, the attribute OTel backends already group by, rather than being repeated on every record.
 
 ## `server`
@@ -431,6 +446,7 @@ One JSON event per terminal response — including 401s, 403-equivalents, and 42
 | `sessionIdleTimeoutMs` | 30 min | Closes a downstream MCP session after this long without a request from its client. Ending a session with `DELETE` is optional in the protocol and clients routinely reconnect without it; unexpired, each abandoned session would hold gateway state — and the upstream subscriptions it pins — forever. Negative disables expiry. Construction-wired; watch the population via `fold_downstream_sessions`. |
 | `redisUrl` | `REDIS_URL` env | `redis://` URL sharing cache, rate-limit, and breaker state across gateway instances. Absent → in-process state. Redis outages fail open (bounded 500 ms per operation). |
 | `metricsAddr` | unset | Moves `/metrics` (and `/health`) to their own listener, e.g. `":9090"`. Absent, they stay on the main port behind `allowedHosts` — which is why a scraper arriving as a pod IP or a service name gets `403` and reads as "target down". A separate listener is the arrangement to prefer whenever something other than the gateway's own host scrapes it: it is not an origin a browser can be steered to, so it needs no Host allowlist, while the public port stops exposing upstream ids, namespaces, tenant ids, and endpoint URLs to a rebinding attempt. **Bind it to an internal interface** — network scope is what protects it. Construction-wired; the Helm chart sets it for you via `metrics.listener.enabled`. |
+| `metricsAllowedHosts` | unset | Optional Host allowlist for the separate `metricsAddr` listener. When set, requests whose Host does not match are refused with 403; empty preserves the previous unguarded behaviour. Follows the same rules as `allowedHosts`: exact hostnames or `"*.suffix"` patterns; ports are ignored. Use it when the metrics listener must sit on an interface reachable from a broader network than you would let scrape it unbounded. Construction-wired. |
 | `introspection` | disabled | `{ "enabled": true }` serves the read-only APIs: `GET /api/federation` (the federation snapshot — health, breaker and endpoint state, upstream source — static vs discovered — and credential-strategy names, discovery status, shared-state/audit/tracing facts, and the viewer's tenant governance) and `GET /api/auth-hint` (the unauthenticated sign-in hint). With auth enabled, `/api/federation` requires the same Bearer token as `/mcp` and shares its rate budgets; add `"groups": ["platform-ops"]` to further restrict reading to principals carrying one of those groups (403 otherwise, audited) — the fix for deployments where any valid token holder is too wide an audience. (A viewer who resolves to a tenant sees that tenant's federation rather than the whole one; see [`tenants`](#tenants).) |
 | `console` | disabled | `{ "enabled": true }` serves the read-only fold console page at `/console`: an observability dashboard plus an MCP test console for tools, prompts, and resources that talks to the gateway's own `/mcp` endpoint — console traffic is governed and audited like any other client's. The dashboard renders what `/api/federation` reports, so it requires `introspection.enabled`. Add `"oauth": { "clientId": "fold-console" }` and the console signs users in with Authorization Code + PKCE against a trusted issuer (register `{origin}/console/` as the redirect URI at the IdP; `issuer` picks among multiple trusted issuers, `scopes` adds authorization scopes) instead of a pasted token. The page's assets are maintained in [fold-run/fold-console](https://github.com/fold-run/fold-console) and vendored here at a pinned commit. |
 

@@ -1037,14 +1037,19 @@ func (g *Gateway) startMetricsListener() error {
 		return fmt.Errorf("server.metricsAddr: %w", err)
 	}
 	mux := http.NewServeMux()
-	// No host validation, no body cap, no auth: this listener is not an
-	// origin a browser can be steered to, and what guards it is that you did
-	// not put it on the public network. /health is here too so a scraper or
-	// a probe on this network can reach liveness without the Host dance.
+	// /health is here too so a scraper or a probe on this network can reach
+	// liveness without the Host dance. Host validation is optional: when
+	// server.metricsAllowedHosts is set, requests whose Host does not match
+	// are refused with 403; when it is empty the listener remains unguarded,
+	// relying on network scope for protection.
+	var handler http.Handler = mux
+	if allowed := g.cfg.Server.MetricsAllowedHosts; len(allowed) > 0 {
+		handler = hostAllowedHandler(allowed, handler)
+	}
 	mux.Handle("/metrics", g.metrics.handler())
 	mux.HandleFunc("/health", g.handleHealth)
 	g.metricsSrv = &http.Server{
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -1544,6 +1549,19 @@ func (g *Gateway) tokenRateLimit(next http.Handler) http.Handler {
 			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 			w.WriteHeader(http.StatusTooManyRequests)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "slow_down", "error_description": "too many token requests"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// hostAllowedHandler wraps next so that only hosts matching the configured
+// allowlist reach it. It is the separate-listener form of hostValidation:
+// metrics/health are not on the main mux, so they need their own guard.
+func hostAllowedHandler(allowed []string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !config.HostAllowed(allowed, r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

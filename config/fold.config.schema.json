@@ -203,7 +203,15 @@
         "idpJwksUri": { "type": "string", "format": "uri" },
         "signingKeyRef": { "type": "string" },
         "tokenTtlSec": { "type": "integer", "minimum": 0 },
-        "tokenRateLimitPerMinute": { "type": "integer", "minimum": 0 }
+        "tokenRateLimitPerMinute": { "type": "integer", "minimum": 0 },
+        "allowedAssertionTypes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allowedClientIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
       }
     },
     "policy": {
@@ -271,7 +279,19 @@
       "required": ["sinks"],
       "properties": {
         "sinks": { "type": "array", "items": { "$ref": "#/definitions/auditSink" } },
-        "requireDurable": { "type": "boolean" }
+        "requireDurable": { "type": "boolean" },
+        "scrub": { "$ref": "#/definitions/auditScrub" }
+      }
+    },
+    "auditScrub": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "redactUsageKeys": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "maxErrorLength": { "type": "integer", "minimum": 0 }
       }
     },
     "auditSink": {
@@ -323,6 +343,10 @@
         "sessionIdleTimeoutMs": { "type": "integer" },
         "redisUrl": { "type": "string", "format": "uri" },
         "metricsAddr": { "type": "string" },
+        "metricsAllowedHosts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "introspection": { "$ref": "#/definitions/introspection" },
         "console": { "$ref": "#/definitions/console" }
       }
