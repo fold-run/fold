@@ -102,6 +102,18 @@ type Gateway struct {
 	sep      string
 	pageSize int // per-page bound for federated lists; 0 = single page
 
+	// iconBase is the absolute origin fold mints icon URLs under, or "" when
+	// it has none — server.publicUrl, else auth.resource. Construction-wired
+	// with the rest of the server section, which is what lets the minted form
+	// be computed once per snapshot and memoized. See icon.go.
+	iconBase string
+	// iconBytes caches fetched icon bodies across every upstream, so the
+	// ceiling is federation-wide rather than per-upstream. Bounded and safe
+	// to evict: a miss is a re-fetch.
+	iconBytes    *bounded.Map[iconEntry]
+	iconInflight *iconFlight
+	iconClient   *http.Client
+
 	// routes is the reloadable routing state — the upstream set, its
 	// indexes, and the policy engine — swapped atomically by Reload. Every
 	// request loads the pointer once so it sees one consistent world.
@@ -244,6 +256,10 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	g := &Gateway{
 		cfg:             cfg,
 		sep:             cfg.NamespaceSeparator(),
+		iconBase:        cfg.PublicURL(),
+		iconBytes:       newIconBytesCache(),
+		iconInflight:    newIconFlight(),
+		iconClient:      newIconClient(cfg.IconTimeout()),
 		pageSize:        cfg.PageSize(),
 		audit:           nil, // built below, once metrics exist to observe it
 		state:           provider,
@@ -382,6 +398,13 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 			g.verifier.TrustLocal(ema.Issuer(), ema.PublicKey())
 		}
 	}
+	if cfg.IconsEnabled() && g.iconBase == "" && !cfg.Passthrough() {
+		// Not an error: this is exactly what fold did before icons existed.
+		// But it is invisible from the outside — a client simply sees icons
+		// that will not load — so the one thing that fixes it gets named.
+		g.log.Info("upstream icons are served as published: fold has no public URL to mint them under",
+			"fix", "set server.publicUrl (or auth.resource) to the absolute origin clients reach this gateway at")
+	}
 	g.log.Info("gateway configured",
 		"version", version,
 		"upstreams", len(g.rt().upstreams),
@@ -390,7 +413,7 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		"sharedState", redisOn)
 
 	g.server = mcp.NewServer(
-		&mcp.Implementation{Name: "fold", Title: "fold gateway", Version: version},
+		g.implementation(version),
 		&mcp.ServerOptions{
 			Instructions: g.instructions(),
 			Capabilities: &mcp.ServerCapabilities{
@@ -515,6 +538,9 @@ func (g *Gateway) newWiredUpstream(ucfg config.Upstream) *upstream {
 	u.metrics = g.metrics
 	u.tracer = g.tracer
 	u.sep = g.sep
+	u.iconBase = g.iconBase
+	u.iconIndex = newIconIndex()
+	u.iconIndexTTL = g.cfg.IconCacheTTL()
 	u.log = g.log.With("upstream", ucfg.ID)
 	if u.pins != nil {
 		u.pins.report = g.reportDrift(u)
@@ -1336,6 +1362,14 @@ func (g *Gateway) buildHandler() http.Handler {
 		mux.Handle("/console/", consoleAssetHandler(consoleCSP(g.cfg)))
 		mux.Handle("/console", http.RedirectHandler("/console/", http.StatusMovedPermanently))
 	}
+	if g.iconsServed() {
+		// Deliberately not behind authMiddleware: the specification has
+		// clients fetch icons without credentials, and a browser <img> tag
+		// carries no bearer token, so an authenticated endpoint would serve
+		// nothing to the clients this exists for. See iconproxy.go for what
+		// that discloses and why it is acceptable.
+		mux.HandleFunc(iconPathPrefix, g.handleIcon)
+	}
 	if g.cfg.AuthRequired() {
 		mux.Handle("/.well-known/oauth-protected-resource", g.protectedResourceHandler())
 		if g.ema != nil {
@@ -1971,4 +2005,41 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"version":   version,
 		"upstreams": statuses,
 	})
+}
+
+// iconsServed reports whether the /icons endpoint is mounted: icons enabled,
+// a public URL to mint under, and a federation to mint for. Passthrough mints
+// nothing, so it serves nothing.
+func (g *Gateway) iconsServed() bool {
+	return g.cfg.IconsEnabled() && g.iconBase != "" && !g.cfg.Passthrough()
+}
+
+// implementation is what fold says about itself at initialize. The name and
+// title are fold's own and not configurable — a federation of N upstreams has
+// one server info, and fold already strips an upstream's out of a relayed
+// result rather than letting a caller believe it reached a server it never
+// connected to. What an operator may add is where to read about *this*
+// deployment and what it looks like.
+//
+// Identity icons are not proxied: an operator sets a URL they own. A client
+// enforcing the specification's same-origin rule will render only a data:
+// icon or one hosted at the gateway's own origin, which is why the
+// documentation recommends data: — it needs no fetch, no cache, and no
+// machinery.
+func (g *Gateway) implementation(version string) *mcp.Implementation {
+	impl := &mcp.Implementation{Name: "fold", Title: "fold gateway", Version: version}
+	id := g.cfg.Server
+	if id == nil || id.Identity == nil {
+		return impl
+	}
+	impl.WebsiteURL = id.Identity.WebsiteURL
+	for _, icon := range id.Identity.Icons {
+		impl.Icons = append(impl.Icons, mcp.Icon{
+			Source:   icon.Src,
+			MIMEType: icon.MIMEType,
+			Sizes:    icon.Sizes,
+			Theme:    mcp.IconTheme(icon.Theme),
+		})
+	}
+	return impl
 }

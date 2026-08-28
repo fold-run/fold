@@ -348,7 +348,39 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "introspection": { "$ref": "#/definitions/introspection" },
-        "console": { "$ref": "#/definitions/console" }
+        "console": { "$ref": "#/definitions/console" },
+        "publicUrl": { "type": "string", "format": "uri" },
+        "icons": { "$ref": "#/definitions/serverIcons" },
+        "identity": { "$ref": "#/definitions/identity" }
+      }
+    },
+    "serverIcons": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxBytes": { "type": "integer", "minimum": 0 },
+        "timeoutMs": { "type": "integer", "minimum": 0 },
+        "cacheTtlMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "websiteUrl": { "type": "string", "format": "uri" },
+        "icons": { "type": "array", "items": { "$ref": "#/definitions/icon" } }
+      }
+    },
+    "icon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["src"],
+      "properties": {
+        "src": { "type": "string" },
+        "mimeType": { "type": "string" },
+        "sizes": { "type": "array", "items": { "type": "string" } },
+        "theme": { "enum": ["light", "dark"] }
       }
     },
     "introspection": {

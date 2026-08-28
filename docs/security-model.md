@@ -141,6 +141,56 @@ definition, every candidate costs either a write path into running state or a
 hand-copying chore, and that trade is
 [unresolved on purpose](design-definition-pinning.md).
 
+## An icon is bytes fold fetches on an upstream's say-so
+
+Federated icons are the one place fold makes an outbound request to a URL an
+*upstream* supplied, so the bound on where that request may go is the whole
+control. It is the bound credential attachment already uses: the icon's host
+must be one of that upstream's own configured endpoint hosts, checked when the
+URL is minted and again immediately before the fetch. An icon anywhere else is
+never minted, so a hand-built digest for it resolves to nothing — the doubled
+check is what stops a digest being a way to aim the gateway at a metadata
+service or an internal admin port.
+
+Three more properties, each structural rather than procedural. The fetch
+carries no credentials, because the client that performs it has a plain
+transport with no path to `auth.UpstreamCredentials` at all — the
+specification's "fetch icons without credentials" is a type-level fact here
+rather than a rule someone has to keep. Redirects are refused outright rather
+than followed within a host: a redirect is never a legitimate step in fetching
+an icon, and allowing even a same-host one reopens the origin question. And the
+body is bounded and **refused rather than truncated**, because half an image is
+a response the upstream never sent.
+
+The image is identified from its magic bytes; the declared type is advisory, as
+the specification says to treat it. `image/svg+xml` is refused, and that is the
+security decision here. fold would be serving the SVG from *fold's own origin*,
+where an SVG's embedded script runs same-origin with `/console/`,
+`/api/federation`, and `/oauth/token` — strictly worse than the upstream
+serving it, since the upstream's origin holds nothing of fold's. Independently:
+SVG is XML and has no magic bytes, so a strict magic-byte allowlist cannot
+admit it without either trusting the declared type or parsing the XML, and the
+second is the content inspection fold declines.
+
+**The endpoint is unauthenticated, by necessity.** Clients are told to fetch
+icons without credentials and a browser `<img>` carries no bearer token, so an
+authenticated endpoint would serve nothing to the clients it exists for. What
+it discloses is bounded to suit: the path names no tool, prompt, or resource —
+only a namespace and a digest — and the bytes are branding artwork identical
+for every caller. fold treats them as public data, the same class as the
+console's static assets and the `.well-known` documents.
+
+State the limit rather than imply it: **policy filtering is preserved here by
+unguessability, not by authentication.** A principal who cannot see a tool is
+never handed its icon URL, but a principal who guesses one gets the bytes.
+That is the accepted trade, and it is why the endpoint serves only images and
+never a name, a description, or a schema. Making the URL a true capability —
+`HMAC(k, upstreamID‖src)` rather than a plain digest — needs a fleet-stable
+secret that most deployments do not configure, so it is named here as the
+upgrade path for a threat model that demands it rather than built
+speculatively. An operator who does not accept the trade sets
+`server.icons.enabled: false`.
+
 ## The reverse direction is governed separately, and opts in
 
 Bridged sessions let an upstream reach the caller's client: sampling borrows
