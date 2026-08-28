@@ -210,6 +210,17 @@ func (g *Gateway) fetchIcon(ctx context.Context, u *upstream, src, key string, w
 		http.Error(w, "icon unavailable", http.StatusBadGateway)
 		return iconEntry{}, false
 	}
+	// Leadership is held; check the cache once more before spending a fetch.
+	// The caller's miss happened before this point, and in between another
+	// request may have led a fetch to completion and published it — leaving
+	// this goroutine to arrive after that flight ended, find the waiting map
+	// empty, and lead a second fetch for bytes the gateway is already
+	// holding. That is the amplification this mechanism exists to prevent.
+	// The first Load is the fast path; this one is the correct one.
+	if entry, ok := g.iconBytes.Load(key); ok {
+		g.iconInflight.finish(key, done)
+		return entry, true
+	}
 	entry, status := g.doFetchIcon(ctx, u, src)
 	// Publish before waking the followers, or one of them can read the cache
 	// in the window between the close and the store and conclude the leader
