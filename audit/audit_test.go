@@ -340,6 +340,61 @@ func TestRequireDurableSatisfiedByAConstructedFileSink(t *testing.T) {
 	}
 }
 
+// Scrubbing removes configured keys from Usage and truncates long errors
+// before events reach sinks, without mutating the caller's config.
+func TestScrubRedactsUsageAndErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	l := New(&config.Audit{
+		Sinks: []config.AuditSink{{Type: "file", Path: path}},
+		Scrub: &config.AuditScrub{
+			RedactUsageKeys: []string{"promptTokens", "secret"},
+			MaxErrorLength:  20,
+		},
+	})
+	if l == nil {
+		t.Fatal("expected a logger")
+	}
+	defer l.Close()
+
+	l.Emit(Event{
+		Method: "tools/call",
+		Usage: map[string]any{
+			"completionTokens": 7,
+			"promptTokens":     42,
+			"secret":           "should-vanish",
+		},
+		Error: "a very long upstream error message that exposes internal details",
+	})
+
+	var e Event
+	for _, line := range readLines(t, path) {
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("bad audit line: %v", err)
+		}
+	}
+	if _, ok := e.Usage["promptTokens"]; ok {
+		t.Errorf("promptTokens should have been redacted, usage=%v", e.Usage)
+	}
+	if _, ok := e.Usage["secret"]; ok {
+		t.Errorf("secret should have been redacted, usage=%v", e.Usage)
+	}
+	if e.Usage["completionTokens"] != float64(7) {
+		t.Errorf("completionTokens should remain, usage=%v", e.Usage)
+	}
+	if len(e.Error) != 20 {
+		t.Errorf("error length = %d, want 20", len(e.Error))
+	}
+}
+
+func readLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading audit file: %v", err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
 // Off by default: a document that says nothing about durability is not
 // second-guessed, however non-durable its sinks are.
 func TestRequireDurableIsOptIn(t *testing.T) {

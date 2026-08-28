@@ -131,6 +131,7 @@ type Logger struct {
 	closers     []io.Closer
 	observer    Observer
 	panicHook   PanicHook
+	scrub       *config.AuditScrub
 	startupErrs []error
 	instance    string
 	// requireDurable and durable are the two halves of the startup guard:
@@ -192,6 +193,7 @@ func New(cfg *config.Audit, opts ...Option) *Logger {
 		observer:       noopObserver,
 		instance:       resolveInstance(),
 		requireDurable: cfg.RequireDurable,
+		scrub:          cfg.Scrub,
 	}
 	for _, opt := range opts {
 		opt(l)
@@ -330,8 +332,26 @@ func (l *Logger) Emit(e Event) {
 	if e.Instance == "" {
 		e.Instance = l.instance
 	}
+	l.scrubEvent(&e)
 	for _, s := range l.sinks {
 		s.Emit(e)
+	}
+}
+
+// scrubEvent applies the configured audit scrub before delivery. It is a
+// value edit, not a copy, because the caller has already handed the event
+// to audit and no longer depends on its original contents.
+func (l *Logger) scrubEvent(e *Event) {
+	if l.scrub == nil {
+		return
+	}
+	if len(l.scrub.RedactUsageKeys) > 0 && len(e.Usage) > 0 {
+		for _, k := range l.scrub.RedactUsageKeys {
+			delete(e.Usage, k)
+		}
+	}
+	if l.scrub.MaxErrorLength > 0 && len(e.Error) > l.scrub.MaxErrorLength {
+		e.Error = e.Error[:l.scrub.MaxErrorLength]
 	}
 }
 

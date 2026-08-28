@@ -387,10 +387,11 @@ The cost is that a scraper arriving under any other name — a pod IP, a service
 name — is answered `403`. `server.metricsAddr` resolves that by moving
 `/metrics` and `/health` to their own listener rather than by exempting the
 paths: a listener bound to an internal interface is not an origin a browser can
-be steered to, so it needs no Host allowlist, and the public port keeps its
-checks and stops carrying the disclosure at all. What guards the telemetry
-listener is network scope; bind it accordingly, and do not route it from
-outside.
+be steered to, and the public port keeps its checks and stops carrying the
+disclosure at all. What guards the telemetry listener is network scope; bind
+it accordingly, and do not route it from outside. When the listener must sit
+on an interface reachable from a broader network, `server.metricsAllowedHosts`
+adds an optional Host allowlist so an unlisted scraper is still refused.
 
 ## The console has no privileged path
 

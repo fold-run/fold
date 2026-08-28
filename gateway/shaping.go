@@ -51,11 +51,9 @@ func (f *listFilter) visibleTool(upstreamID string, t *mcp.Tool) bool {
 	if !f.policy.NeedsAnnotations() {
 		return f.visible(upstreamID, t.Name)
 	}
-	return f.decide(func() policy.Decision {
-		return f.policy.DecideList(f.principal, upstreamID, f.method, t.Name, func() (policy.ToolAnnotations, bool) {
-			return toolAnnotations(t)
-		})
-	})
+	return f.decide(f.policy.DecideList(f.principal, upstreamID, f.method, t.Name, func() (policy.ToolAnnotations, bool) {
+		return toolAnnotations(t)
+	}))
 }
 
 // toolAnnotations reads the MCP hints, taking the spec's defaults as written:
@@ -79,17 +77,13 @@ func toolAnnotations(t *mcp.Tool) (policy.ToolAnnotations, bool) {
 
 // visible reports whether one item survives policy and the rule's cap.
 func (f *listFilter) visible(upstreamID, name string) bool {
-	return f.decide(func() policy.Decision {
-		return f.policy.Decide(f.principal, upstreamID, f.method, name)
-	})
+	return f.decide(f.policy.Decide(f.principal, upstreamID, f.method, name))
 }
 
 // decide applies one policy decision plus the rule's cap, and counts what
-// happened. The decision is a thunk so the two callers differ only in what
-// evidence they supply — each closes over the item it is deciding about.
-func (f *listFilter) decide(decide func() policy.Decision) bool {
+// happened.
+func (f *listFilter) decide(d policy.Decision) bool {
 	f.offered++
-	d := decide()
 	if !d.Allowed {
 		return false
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,19 +40,19 @@ const idJAGGrant = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 // problem that is unambiguous while a positive requirement waits for a
 // config field.
 //
-// What remains open, stated plainly because the guards below hold less than
-// they look like they do: /oauth/token accepts any JWT signed by a key at
-// idpJwksUri with iss == idpIssuer, aud == auth.resource, a sub, a jti, and
-// an exp. An IdP-issued token that is not an access token — an ID token, or
-// a token minted for an application whose identifier URI happens to equal
-// the gateway's resource URI — satisfies every one of those. That matters
-// because issuers with mode "exchange" are excluded from direct presentation
-// at /mcp precisely so the IdP's own tokens are not accepted as fold tokens,
-// and this endpoint is the one place that admits them again. The intended
-// gate is the IdP's own admin-approved assertion grant, which fold cannot
-// see. Closing it properly needs either the positive typ requirement or a
-// client_id allowlist — client_id is copied into the minted token but never
-// checked. Tracked, not solved here.
+// What remains open unless the operator opts in: /oauth/token accepts any
+// JWT signed by a key at idpJwksUri with iss == idpIssuer, aud ==
+// auth.resource, a sub, a jti, and an exp. An IdP-issued token that is not
+// an access token — an ID token, or a token minted for an application whose
+// identifier URI happens to equal the gateway's resource URI — satisfies
+// every one of those. That matters because issuers with mode "exchange" are
+// excluded from direct presentation at /mcp precisely so the IdP's own
+// tokens are not accepted as fold tokens, and this endpoint is the one place
+// that admits them again. The intended gate is the IdP's own admin-approved
+// assertion grant, which fold cannot see. For deployments that can rely on
+// their IdP to stamp the assertion type and/or scope the grant to specific
+// client_ids, auth.ema.allowedAssertionTypes and allowedClientIds close
+// this residual gap; when both are absent the behaviour stays v1-compatible.
 var accessTokenTypes = [...]string{"at+jwt", "application/at+jwt"}
 
 // idJAGGrantProfile is the grant profile advertised in the authorization
@@ -161,6 +162,9 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 	// subject is filled in once validation has extracted one, so even a
 	// refusal names who the assertion claimed to be when that is knowable.
 	subject := ""
+	// assertionType captures the JOSE typ header during key resolution,
+	// after which the positive allowlist (if configured) can be evaluated.
+	assertionType := ""
 	refuse := func(status int, code, description string) {
 		m.report(TokenExchange{Outcome: code, Detail: description, Subject: subject, Issuer: m.cfg.IdpIssuer})
 		oauthError(w, status, code, description)
@@ -200,6 +204,7 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 		// key-resolution problem, and rejecting it here keeps one from
 		// costing a JWKS lookup.
 		if typ, ok := t.Header["typ"].(string); ok {
+			assertionType = typ
 			for _, bad := range accessTokenTypes {
 				if strings.EqualFold(typ, bad) {
 					return nil, fmt.Errorf("assertion typ %q is an access token, not an authorization grant", typ)
@@ -224,6 +229,36 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 	if jti == "" || exp == nil {
 		refuse(http.StatusBadRequest, "invalid_grant", "ID-JAG missing jti or exp")
 		return
+	}
+
+	// Positive typ requirement: if the operator configured an allowlist, the
+	// assertion must carry one of those typ values. This closes the gap
+	// where any IdP-signed JWT with the right issuer/audience could otherwise
+	// be exchanged, including ID tokens or application tokens minted for the
+	// gateway's resource audience.
+	if len(m.cfg.AllowedAssertionTypes) > 0 {
+		found := false
+		for _, want := range m.cfg.AllowedAssertionTypes {
+			if strings.EqualFold(assertionType, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			refuse(http.StatusBadRequest, "invalid_grant", "ID-JAG assertion type is not permitted")
+			return
+		}
+	}
+
+	// ClientID allowlist: the assertion's client_id is copied into the minted
+	// token; restricting which values pass prevents an unrelated IdP-issued
+	// token for the same audience from being exchanged.
+	if len(m.cfg.AllowedClientIDs) > 0 {
+		clientID, _ := claims["client_id"].(string)
+		if !slices.Contains(m.cfg.AllowedClientIDs, clientID) {
+			refuse(http.StatusBadRequest, "invalid_grant", "ID-JAG client_id is not permitted")
+			return
+		}
 	}
 
 	// Single-use: an ID-JAG must not be redeemable more than once within its
