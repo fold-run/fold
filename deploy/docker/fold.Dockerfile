@@ -4,7 +4,7 @@
 # what makes this line stale. Pinned as golang:1.26 it read as current while
 # the digest held an older patch, and the build broke silently — the image is
 # only built on release tags, so CI stayed green until the tag was pushed.
-FROM golang:1.26.6@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e16eccd4205 AS build
+FROM golang:1.27.0@sha256:65b6f280bf050ec5af12716857e8ea8439d694dbba8f31ceeb7630670071f2bb AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 # distroless/static ships CA certificates (needed for JWKS and token
 # endpoints over HTTPS) and a nonroot user.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /fold /fold
 EXPOSE 8080
 ENTRYPOINT ["/fold"]
