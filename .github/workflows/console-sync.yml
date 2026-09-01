@@ -17,9 +17,14 @@ name: console-sync
 # live Bearer token in memory, so a pin bump is a supply-chain change and gets
 # a human plus the security-auditor pass.
 
+# Run on demand only. The bump was on a Monday cron until the scheduling
+# itself became the maintenance: three of the four console commits after the
+# v1.9 extraction fixed this workflow (#78 cached clone, #85 force-pushing a
+# branch it cannot see) rather than the console. A console that changes a few
+# times a release does not need a weekly robot, and a PR nobody asked for is
+# a supply-chain review nobody scheduled time for. The pin is bumped as a
+# step of /fold-release instead, where a human is already reviewing a diff.
 on:
-  schedule:
-    - cron: "0 7 * * 1" # Mondays 07:00 UTC, an hour after drift
   workflow_dispatch: {}
 
 permissions:
@@ -94,15 +99,15 @@ jobs:
           # push — so stop here instead.
           #
           # This step used to `git push --force-with-lease` unconditionally,
-          # which failed every week for as long as a bump PR stayed open:
+          # which failed on every run for as long as a bump PR stayed open:
           # actions/checkout fetches only the default branch, so there is no
           # remote-tracking ref for the bump branch, and --force-with-lease
           # without one refuses with "stale info" rather than pushing. The
-          # weekly red run was that refusal, not a problem with the console.
+          # red run was that refusal, not a problem with the console.
           #
           # To make the bot re-propose a bump it already opened, delete the
           # branch; closing the PR alone deliberately does not, so a declined
-          # bump stays declined instead of returning every Monday.
+          # bump stays declined instead of returning unasked.
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
             echo "a bump to ${{ steps.upstream.outputs.short }} is already proposed on $branch"
             gh pr view "$branch" --json number,state \

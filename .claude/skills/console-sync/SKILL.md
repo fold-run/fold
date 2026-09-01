@@ -1,6 +1,6 @@
 ---
 name: console-sync
-description: Review, bump, or debug the vendored fold-console assets in gateway/console — the weekly bump PR, the console-check CI gate, and the manifest allowlist. Use when the console-sync workflow is red, when a bump PR needs review, or when deliberately moving CONSOLE_COMMIT.
+description: Review, bump, or debug the vendored fold-console assets in gateway/console — the on-demand bump PR, the console-check CI gate, and the manifest allowlist. Use when the console-sync workflow is red, when a bump PR needs review, or when deliberately moving CONSOLE_COMMIT.
 ---
 
 # The vendored console
@@ -25,7 +25,7 @@ memory. That is why nothing here auto-merges.
 | | What it is | When it runs |
 | --- | --- | --- |
 | `make console-check` | CI gate proving `gateway/console` still equals its pin — re-vendors and fails on any diff. Its own job, because it needs network. | Every merge |
-| `.github/workflows/console-sync.yml` | Weekly job that resolves fold-console `main` and opens a **bump PR**. Never merges. | Mondays 07:00 UTC |
+| `.github/workflows/console-sync.yml` | Resolves fold-console `main` and opens a **bump PR**. Never merges. | On demand (`workflow_dispatch`) — and as step 2 of `/fold-release` |
 
 `console-check` going red means someone hand-edited vendored assets, or
 the pin and the tree disagree. The fix is `make sync-console` and a review

@@ -24,19 +24,44 @@ Never batch commit+push+tag on a single approval.
    - `make helm-check` if `deploy/helm/` changed
    Report results with real output. Stop here if anything fails.
 
-2. **Pick the version.** The repo is under the v1 compatibility contract
+2. **Bump the console pin.** `gateway/console` is vendored from
+   `fold-run/fold-console` at the commit in `scripts/sync-console.sh`, and
+   nothing bumps it on a schedule any more — `console-sync.yml` is
+   `workflow_dispatch` only, because the weekly robot generated more repair
+   work than console changes. The release is where a human is already
+   reading a diff, so it is where the pin moves.
+
+   ```bash
+   git ls-remote https://github.com/fold-run/fold-console.git refs/heads/main
+   ```
+
+   If that SHA differs from `CONSOLE_COMMIT`, re-vendor and re-verify —
+   the assets are a supply-chain input, so this is a real review, not a
+   rubber stamp:
+
+   ```bash
+   CONSOLE_COMMIT=<40-hex> make sync-console
+   git diff --stat -- gateway/console      # read what changed
+   make console-check && make test
+   ```
+
+   Then run the `security-auditor` agent over the diff, as the workflow's
+   own PR body demands. If the console has not moved, say so and continue —
+   a release with a stale-but-current pin is normal.
+
+3. **Pick the version.** The repo is under the v1 compatibility contract
    (README "API stability"): patch for fixes, minor for
    backwards-compatible features, major only for a deliberate contract
    break (which needs its own conversation). Confirm the number with the
    user.
 
-3. **Write the changelog entry** at the top of `CHANGELOG.md`, directly
+4. **Write the changelog entry** at the top of `CHANGELOG.md`, directly
    below the intro paragraph: `## vX.Y.Z — YYYY-MM-DD` (an H2 — the file's
    only H1 is its title), leading with a one-line theme, then feature
    bullets. Match the register of existing entries. This lands in the
    release commit, before the tag.
 
-4. **Bump the version-bearing surfaces.** Source carries no version (it is
+5. **Bump the version-bearing surfaces.** Source carries no version (it is
    stamped by ldflags), but two files name one and drift silently:
 
    - **`deploy/helm/fold/Chart.yaml` → `appVersion`.** Set it to the version
@@ -73,20 +98,20 @@ Never batch commit+push+tag on a single approval.
    production" where it matters) — leave them alone rather than
    "fixing" them into stale pins.
 
-5. **Commit and push — only on explicit say-so.** Conventional style
+6. **Commit and push — only on explicit say-so.** Conventional style
    matching recent history (`release: ...`). The changelog entry and the
    chart bump belong in this commit, so the tag names a tree where the
    documented version and the chart agree.
 
-6. **Watch CI.** `gh run list` to find the run, then `gh run watch <id>`
+7. **Watch CI.** `gh run list` to find the run, then `gh run watch <id>`
    in the background. Report the conclusion. Do not tag until CI is green.
 
-7. **Tag and push the tag — only on explicit say-so.**
+8. **Tag and push the tag — only on explicit say-so.**
    `git tag -a vX.Y.Z -m "..."` then `git push origin vX.Y.Z`. (A
    PreToolUse hook will surface an approval prompt on tag commands — that
    is expected, not an error.)
 
-8. **Watch the release workflow** the same way (`gh run list` /
+9. **Watch the release workflow** the same way (`gh run list` /
    `gh run watch`) and report the result of all three jobs — `binaries`
    (goreleaser: archives, SBOMs, checksums, provenance), `image` (the three
    ghcr images), and `chart` (`oci://ghcr.io/fold-run/charts/fold` at the
@@ -96,7 +121,7 @@ Never batch commit+push+tag on a single approval.
    release: run the workflow via `workflow_dispatch` with `chart_tag`, which
    checks out that tag and publishes the chart exactly as it shipped.
 
-9. **Verify what was actually published.** The workflow going green says
+10. **Verify what was actually published.** The workflow going green says
    the jobs succeeded; it does not say an operator can verify the result.
    Hand this to the **release-verifier** agent: attestations on all three
    ghcr images and the OCI chart, the keyless cosign signature on
@@ -105,7 +130,7 @@ Never batch commit+push+tag on a single approval.
    `appVersion` naming it, and `helm template` of the *published* chart
    resolving to this release's image.
 
-10. **Refresh the pinned conformance receipt.** The README's "Conformant,
+11. **Refresh the pinned conformance receipt.** The README's "Conformant,
     provably" paragraph links a specific green `conformance` job by run and
     job id — the receipt a skeptic clicks. Repoint it at this release's run:
     `gh run view <ci-run-id> --json jobs --jq '.jobs[] | select(.name=="conformance") | .url'`,
