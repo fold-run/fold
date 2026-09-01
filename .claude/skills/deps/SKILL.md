@@ -15,7 +15,7 @@ investigation.
 | CI `vuln` job / `make vuln` | Go advisories against this tree | A red merge gate |
 | dependabot (weekly ×3) | gomod, github-actions, docker base images | PRs |
 | `drift.yml` (Mondays 06:00 UTC) | the **latest** MCP SDK and conformance suite | An issue |
-| `console-sync.yml` (Mondays 07:00 UTC) | the vendored console | A PR — see `/console-sync` |
+| `console-sync.yml` (on demand; bumped at release) | the vendored console | A PR — see `/console-sync` |
 
 ## A red govulncheck often has no commit behind it
 

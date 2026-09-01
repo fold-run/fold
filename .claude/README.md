@@ -27,7 +27,7 @@ same guardrails.
 | `/mcp-spec` | Look up the normative spec text for a method, field, header, or error code before changing wire behavior — pinned to revision `2026-07-28`. |
 | `/mcp-inspector` | Drive the official Inspector CLI against a running fold to see what a real client sees: the invisibility diff, namespacing round-trip, policy pair, `ui://` reads. |
 | `/spec-drift` | Compare a new protocol revision against what fold implements and land each gap in code, README "Not implemented", or the roadmap. |
-| `/console-sync` | The vendored `gateway/console` assets: reviewing a weekly bump PR as a supply-chain change, the `console-check` gate, the manifest allowlist, and failure triage. |
+| `/console-sync` | The vendored `gateway/console` assets: reviewing a bump PR as a supply-chain change, the `console-check` gate, the manifest allowlist, and failure triage. |
 
 Claude also loads these automatically when a task matches the skill's
 description.
