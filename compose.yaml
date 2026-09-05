@@ -29,7 +29,7 @@ name: fold-run
 
 services:
   fold:
-    image: ghcr.io/fold-run/fold:v1.11.0 # bumped by the release flow; digest + attestation verifiable via `gh attestation verify`
+    image: ghcr.io/fold-run/fold:v1.15.0 # equals the chart appVersion, enforced by gateway/release_pins_test.go and bumped by the release flow; verify with `gh attestation verify`
     # To run from source instead:
     # build:
     #   context: .
@@ -97,7 +97,7 @@ services:
     # Carries Node, since npx-delivered servers are the common case. To serve a
     # Python server, or to pin your own runtime base, build from source instead
     # by uncommenting `build` (see deploy/docker/stdio.Dockerfile).
-    image: ghcr.io/fold-run/fold-stdio:v1.11.0
+    image: ghcr.io/fold-run/fold-stdio:v1.15.0 # equals the chart appVersion (release_pins_test.go)
     # build:
     #   context: .
     #   dockerfile: deploy/docker/stdio.Dockerfile

@@ -93,10 +93,14 @@ Never batch commit+push+tag on a single approval.
    make helm-check
    ```
 
-   Nothing else needs a bump. Compose files, `deploy/fold-discovery.yaml`,
-   and the docs pin `:latest` deliberately (with "pin a version in
-   production" where it matters) — leave them alone rather than
-   "fixing" them into stale pins.
+   Then bump the two other places that pin a gateway image to a version:
+   `compose.yaml` (`fold` and `fold-stdio`) and `deploy/fold-discovery.yaml`.
+   `gateway/release_pins_test.go` holds all three equal to the chart's
+   `appVersion`, so `make test` fails until they agree — the test exists
+   because compose sat four minors behind while an earlier version of this
+   step said to leave it alone. The docs' `:latest` examples stay as they
+   are; `:latest` itself moves only on a final tag (a `-rc` suffix leaves it
+   where it was, and publishes a GitHub pre-release).
 
 6. **Commit and push — only on explicit say-so.** Conventional style
    matching recent history (`release: ...`). The changelog entry and the
@@ -112,7 +116,7 @@ Never batch commit+push+tag on a single approval.
    is expected, not an error.)
 
 9. **Watch the release workflow** the same way (`gh run list` /
-   `gh run watch`) and report the result of all three jobs — `binaries`
+   `gh run watch`) and report the result of all four jobs — `binaries`
    (goreleaser: archives, SBOMs, checksums, provenance), `image` (the three
    ghcr images), and `chart` (`oci://ghcr.io/fold-run/charts/fold` at the
    chart's own version) — including the artifacts published.
@@ -123,7 +127,7 @@ Never batch commit+push+tag on a single approval.
 
 10. **Verify what was actually published.** The workflow going green says
    the jobs succeeded; it does not say an operator can verify the result.
-   Hand this to the **release-verifier** agent: attestations on all three
+   Hand this to the **release-verifier** agent: attestations on all four
    ghcr images and the OCI chart, the keyless cosign signature on
    `checksums.txt`, SBOMs attached, and — the checks that catch real
    mistakes — the binary reporting the tag, the published chart's

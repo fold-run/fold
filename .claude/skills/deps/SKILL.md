@@ -20,7 +20,7 @@ investigation.
 ## A red govulncheck often has no commit behind it
 
 **Check this first, before reading the diff.** `make vuln` runs
-`govulncheck@latest` against the *live* advisory database, so a run that
+`go tool govulncheck` (pinned in go.mod as a tool dependency, bumped by Dependabot) against the *live* advisory database, so a run that
 was green yesterday goes red today because an advisory was published — not
 because anything changed here.
 

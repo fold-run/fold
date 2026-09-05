@@ -238,7 +238,7 @@ make cover         # race tests + coverage summary (coverage.out)
 make lint          # golangci-lint (config in .golangci.yml)
 make check         # fmt-check + tidy-check + vet + build + race + lint
 make bench         # added-latency gate (p50 < 5 ms through the proxy path)
-make fuzz          # fuzz config parsing and namespace routing (seeds run in `make test`)
+make fuzz          # fuzz every parser an untrusted party controls: config, cursors, discovery docs, _meta, cache scope, param headers (seeds run in `make test`; drift.yml runs this weekly)
 make conformance   # official conformance suite through the gateway (needs node)
 make compose-up    # run the local stack on this host (see docs/deploy.md)
 ```
