@@ -92,6 +92,7 @@ fold fans list requests out across all upstreams concurrently, merges and namesp
 ```
 POST /mcp
  → host validation      DNS-rebinding protection (Host/Origin allowlist)
+ → body cap             maxBodyBytes (413 before any read), 30 s body read deadline
  → authenticate         Bearer → issuer allowlist → JWKS → audience → Principal
  → rate limit           global → tenant → per-principal windows → 429 + Retry-After
  → route                federated fan-out (lists) or namespaced routing, tenant resolved
@@ -103,7 +104,7 @@ POST /mcp
  → audit                one event per request, including denials (single exit door)
 ```
 
-**Server-initiated traffic bridges both ways.** Named invocations run over a per-client upstream session whose handlers forward sampling (`sampling/createMessage`), elicitation, log messages, and progress notifications back to the originating client — routed over that call's own stream, so clients without a standalone SSE stream still hear them. `resources/subscribe` is forwarded to the owning upstream and `resources/updated` notifications fan back out to subscribed clients; `completion/complete` routes by prompt namespace or resource ownership; a client's `logging/setLevel` propagates to its upstream sessions. Idle per-client sessions are swept after 5 minutes, and the same sweep releases subscriptions whose downstream client disconnected without unsubscribing — the one shared upstream subscription per URI is dropped when its last live subscriber is gone.
+**Server-initiated traffic bridges both ways.** Named invocations run over a per-client upstream session whose handlers forward sampling (`sampling/createMessage`), elicitation, log messages, and progress notifications back to the originating client — routed over that call's own stream, so clients without a standalone SSE stream still hear them. `resources/subscribe` is forwarded to the owning upstream and `resources/updated` notifications fan back out to subscribed clients; `completion/complete` routes by prompt namespace or resource ownership; a client's `logging/setLevel` propagates to its upstream sessions. Idle per-client sessions are swept after 5 minutes, and the same sweep releases subscriptions whose downstream client disconnected without unsubscribing — the one shared upstream subscription per URI is dropped when its last live subscriber is gone. A single downstream session may hold at most 1024 subscriptions; the 1025th is refused with `-32602` until one is released, which keeps a table keyed by caller-chosen URIs finite without evicting a subscription some client still depends on.
 
 **Routing headers cross the hop.** A client may mirror selected tool arguments into `Mcp-Param-{Name}` headers so an intermediary can dispatch without reading the body, and the transport requires an intermediary that does not recognize one to forward it and otherwise ignore it. fold does both: they are relayed to the upstream and never read, so the body stays the only thing fold parses and the headers cannot become a second control surface. The relay is the narrowest thing that satisfies the rule — fold forwards no other client header, never overwrites a value the SDK generated for the call it is actually making, and attaches nothing caller-supplied to a host outside the upstream's configured endpoints.
 

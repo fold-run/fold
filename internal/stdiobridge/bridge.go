@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -117,6 +118,7 @@ type Bridge struct {
 	spawned  atomic.Int64
 	failures atomic.Int64
 	rejected atomic.Int64
+	panics   atomic.Int64
 }
 
 // A session pairs one downstream HTTP session with the child serving it.
@@ -186,6 +188,24 @@ func New(opts Options) (*Bridge, error) {
 	return b, nil
 }
 
+// rescue is deferred at the top of every goroutine the bridge launches. A
+// panic on any of them — the sweeper, a pump, the stderr relay, a probe —
+// would otherwise end the shim, and with it every bridged stdio server it
+// fronts; the gateway's breaker would read that as one unhealthy endpoint,
+// which is true and not the point. A recovered panic is counted (Stats.Panics,
+// fold_stdio_panics_total) and logged with its stack, the same posture as the
+// gateway's own rescue.go.
+func (b *Bridge) rescue(site string) {
+	if r := recover(); r != nil {
+		b.notePanic(site, r)
+	}
+}
+
+func (b *Bridge) notePanic(site string, r any) {
+	b.panics.Add(1)
+	b.log.Error("panic recovered", "site", site, "panic", r, "stack", string(debug.Stack()))
+}
+
 // sweepLoop closes sessions idle past the timeout. Without it a client that
 // opens sessions and walks away without a DELETE pins a process per session
 // forever, and the ceiling becomes permanent rather than momentary.
@@ -197,7 +217,11 @@ func (b *Bridge) sweepLoop() {
 		case <-b.stopSweep:
 			return
 		case <-t.C:
-			b.sweepIdle()
+			// Per tick, so a poisoned sweep costs one tick and not the loop.
+			func() {
+				defer b.rescue("sweep")
+				b.sweepIdle()
+			}()
 		}
 	}
 }
@@ -509,7 +533,8 @@ func (b *Bridge) wire(ctx context.Context, id string) (*session, error) {
 // tears the session down when either side ends. Messages are neither inspected
 // nor rewritten — ids, methods, and payloads cross untouched.
 func (b *Bridge) pump(ctx context.Context, s *session, from, to mcp.Connection, dir string) {
-	defer b.closeSession(s)
+	defer b.closeSession(s) // runs after rescue: a panicking pump still tears its session down
+	defer b.rescue("pump")
 	for {
 		msg, err := from.Read(ctx)
 		if err != nil {
@@ -566,7 +591,7 @@ func (b *Bridge) spawn() (*child, error) {
 	// from ever seeing EOF.
 	_ = pw.Close()
 	b.spawned.Add(1)
-	go relayStderr(b.log, pr)
+	go b.relayStderr(pr)
 	return &child{cmd: cmd, conn: conn}, nil
 }
 
@@ -650,13 +675,14 @@ func killGroup(c *child) {
 // relayStderr forwards the child's diagnostics to the bridge's logger. Stdio
 // servers use stderr for logging (stdout is the protocol), so dropping it
 // would make a misbehaving server silent.
-func relayStderr(log *slog.Logger, r io.ReadCloser) {
+func (b *Bridge) relayStderr(r io.ReadCloser) {
 	defer func() { _ = r.Close() }()
+	defer b.rescue("stderr")
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			log.Debug("server stderr", "msg", string(buf[:n]))
+			b.log.Debug("server stderr", "msg", string(buf[:n]))
 		}
 		if err != nil {
 			return
@@ -671,6 +697,9 @@ type Stats struct {
 	Spawned     int64 `json:"spawned"`
 	SpawnErrors int64 `json:"spawnErrors"`
 	Rejected    int64 `json:"rejected"`
+	// Panics the bridge recovered instead of dying from. Every one is a bug;
+	// the shim survives it so the servers it fronts do too.
+	Panics int64 `json:"panics"`
 }
 
 // Stats returns the current counters.
@@ -684,6 +713,7 @@ func (b *Bridge) Stats() Stats {
 		Spawned:     b.spawned.Load(),
 		SpawnErrors: b.failures.Load(),
 		Rejected:    b.rejected.Load(),
+		Panics:      b.panics.Load(),
 	}
 }
 
@@ -716,13 +746,23 @@ func (b *Bridge) Probe(ctx context.Context) error {
 
 	done := make(chan error, 1)
 	go func() {
-		c, err := b.spawn()
-		if err != nil {
-			done <- err
+		var err error
+		defer func() { done <- err }()
+		defer func() {
+			// A panic here must still answer the probe, and answer it as a
+			// failure — a swallowed panic that reported "healthy" would be
+			// worse than the crash it replaced.
+			if r := recover(); r != nil {
+				b.notePanic("probe", r)
+				err = fmt.Errorf("probe panicked: %v", r)
+			}
+		}()
+		c, spawnErr := b.spawn()
+		if spawnErr != nil {
+			err = spawnErr
 			return
 		}
 		closeChild(c)
-		done <- nil
 	}()
 	select {
 	case err := <-done:

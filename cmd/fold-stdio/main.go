@@ -186,6 +186,7 @@ func renderMetrics(s stdiobridge.Stats) string {
 	counter("fold_stdio_spawned_total", "Child processes started.", s.Spawned)
 	counter("fold_stdio_spawn_errors_total", "Child processes that failed to start.", s.SpawnErrors)
 	counter("fold_stdio_rejected_total", "Sessions refused at the ceiling.", s.Rejected)
+	counter("fold_stdio_panics_total", "Panics the bridge recovered instead of dying from; every one is a bug.", s.Panics)
 	fmt.Fprintf(&b, "# HELP fold_stdio_build_info Build information.\n"+
 		"# TYPE fold_stdio_build_info gauge\nfold_stdio_build_info{version=%q} 1\n", version)
 	return b.String()

@@ -49,7 +49,7 @@ scrapers must send an allowed `Host` header (see
 | `fold_definition_drift_total` | `upstream`, `kind` | Definitions an upstream rewrote after fold had already served them, when `pinDefinitions` is on. The tool name is deliberately not a label — it is upstream-chosen and unbounded — so read the `upstream/definitionChanged` audit event for which one. A change is counted once, not once per refill: the new definition becomes the baseline. |
 | `fold_downstream_sessions` | — | Live downstream MCP sessions. Sessions idle past `server.sessionIdleTimeoutMs` are expired; sustained growth means clients are minting sessions faster than they expire — raise the alarm before memory does. |
 | `fold_upstream_bridged_sessions` | `upstream` | Per-client bridged sessions currently held against each upstream (idle ones sweep after 5 minutes). |
-| `fold_panics_total` | `site` | Panics the gateway recovered instead of dying from: the request path (`route`, `fanout`), background loops (`sweep`, `discovery`, `probe`, `health`, `reload`, `telemetry`), SDK-invoked handlers (`bridge`, `notify`), and the audit delivery worker (`audit`). The process survives them by design, but **every one is a bug: alert on non-zero** and file what the paired `panic recovered` log line's stack trace shows. |
+| `fold_panics_total` | `site` | Panics the gateway recovered instead of dying from: the request path (`route`, `fanout`), plain HTTP handlers outside the MCP dispatch — `/health`, `/icons`, the well-known documents, the token endpoint — which `net/http` would otherwise recover silently (`http`), background loops (`sweep`, `discovery`, `probe`, `health`, `reload`, `telemetry`), SDK-invoked handlers (`bridge`, `notify`), and the audit delivery worker (`audit`). The process survives them by design, but **every one is a bug: alert on non-zero** and file what the paired `panic recovered` log line's stack trace shows. |
 | `fold_build_info` | `version` | Always 1. |
 
 Plus the standard Go process/runtime collectors. Alerting starters:
@@ -264,12 +264,17 @@ errors pass through verbatim):
 | `-31043` | Name resolves to no configured namespace | Refetch the tool list. |
 | `-31044` | Consumption budget exhausted for the period | Not transient within the period — the message names the reset instant. Do **not** treat it as a backoff delay; a monthly reset would mean sleeping for weeks. |
 | `-31045` | Task id not owned by any upstream | The task is unknown or belongs to another principal. |
-| `-32602` | Invalid or expired list cursor | Restart the list from the beginning. |
+| `-32602` | Invalid or expired list cursor; or this session already holds its 1024-subscription maximum | For a cursor, restart the list from the beginning. For the subscription cap, unsubscribe from something first — the message says which it was. |
 | `-32603` | Internal gateway error: a recovered panic, or an ambiguous tenant configuration | For a panic, retry is reasonable and the operator's `fold_panics_total` counter plus a `panic recovered` log line correspond to it. An ambiguous tenant match is config, not code — the gateway logs `ambiguous tenant configuration` and refuses rather than guesses; fix the tenant selectors. |
 
 HTTP-level refusals: `401` (missing/invalid token, with a
 `WWW-Authenticate` challenge), `403` (host/origin not allowed), `413` (body
-over `server.maxBodyBytes`), `429` (+ `Retry-After`).
+over `server.maxBodyBytes`), `429` (+ `Retry-After`). A request body that
+has not fully arrived 30 seconds after its headers is cut and the connection
+closed: `ReadHeaderTimeout` bounds the headers, a write timeout is impossible
+for a streaming protocol, and this is what bounds the middle. It is a deadline
+on the *request* only — lifted the moment the body reaches EOF — so it never
+touches a response stream, however long that runs.
 
 ## Observing reloads and discovery
 

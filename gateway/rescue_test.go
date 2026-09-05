@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -158,4 +160,66 @@ func TestSafelyKeepsLoopBodiesAlive(t *testing.T) {
 	if got := panicsRecovered(t, gw); got != 1 {
 		t.Fatalf("fold_panics_total = %v, want 1", got)
 	}
+}
+
+// A panic in a plain HTTP handler — /health, /icons, the token endpoint — was
+// recovered by net/http into its own logger: uncounted, unaudited, invisible
+// to an operator paging on fold_panics_total. recoverHTTP counts it, records
+// it, and answers 500 when nothing has been written yet.
+func TestHTTPHandlerPanicIsCountedAndAudited(t *testing.T) {
+	up, _ := newUpstreamServer(t, "echo")
+	auditPath := t.TempDir() + "/audit.jsonl"
+	_, gw := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "a", Namespace: "a", URL: up.URL}},
+		Audit:     &config.Audit{Sinks: []config.AuditSink{{Type: "file", Path: auditPath}}},
+	})
+	before := panicsRecovered(t, gw)
+
+	h := gw.recoverHTTP(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(fmt.Errorf("handler gone wrong"))
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500", rec.Code)
+	}
+	if got := panicsRecovered(t, gw) - before; got != 1 {
+		t.Fatalf("fold_panics_total rose by %v, want 1", got)
+	}
+	events := readAuditEvents(t, auditPath, "http")
+	found := false
+	for _, e := range events {
+		if e.Outcome == audit.OutcomeError && strings.Contains(e.Error, "panic serving GET /health") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no audit event for the recovered handler panic; events: %+v", events)
+	}
+
+	// Once the response has started there is nothing left to say to the
+	// client; the panic is still counted.
+	h = gw.recoverHTTP(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		panic("after headers")
+	}))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status rewritten to %d after headers were sent", rec.Code)
+	}
+	if got := panicsRecovered(t, gw) - before; got != 2 {
+		t.Fatalf("fold_panics_total rose by %v, want 2", got)
+	}
+
+	// net/http's own abort signal passes through untouched.
+	h = gw.recoverHTTP(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) }))
+	func() {
+		defer func() {
+			if r := recover(); r != http.ErrAbortHandler {
+				t.Fatalf("ErrAbortHandler was swallowed or replaced: %v", r)
+			}
+		}()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+	}()
 }
