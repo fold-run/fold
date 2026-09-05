@@ -40,6 +40,14 @@ type discoverer struct {
 	statusMu    sync.Mutex
 	lastOutcome string // "applied" | "unchanged" | "rejected" | "error"
 	lastSyncAt  time.Time
+	// applied records whether any document has ever been applied. It is
+	// what /health reads on a gateway with no static upstreams: before the
+	// first apply, an empty federation is a source that has not answered
+	// yet, not a federation that happens to be empty — and a pod serving
+	// empty lists must not be ready. lastOutcome cannot stand in for it:
+	// "unchanged" after a rejected document, or "error" after a successful
+	// apply, both say nothing about whether a set was ever installed.
+	applied bool
 }
 
 // recordSync counts a sync outcome in metrics and remembers it for
@@ -48,7 +56,17 @@ func (d *discoverer) recordSync(outcome string) {
 	d.g.metrics.discoverySync(outcome)
 	d.statusMu.Lock()
 	d.lastOutcome, d.lastSyncAt = outcome, time.Now()
+	if outcome == "applied" {
+		d.applied = true
+	}
 	d.statusMu.Unlock()
+}
+
+// everApplied reports whether a discovery document has ever been installed.
+func (d *discoverer) everApplied() bool {
+	d.statusMu.Lock()
+	defer d.statusMu.Unlock()
+	return d.applied
 }
 
 // status returns the last sync outcome and time (zero values before the
