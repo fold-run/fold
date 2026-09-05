@@ -297,8 +297,11 @@ metrics:
 
 # No CPU limit on purpose: a latency-sensitive proxy under a CPU limit is
 # throttled exactly when it is busiest, and the request is what the scheduler
-# needs. The memory limit is a backstop, not a measurement — see
-# docs/operations.md "Sizing" for what to set it from.
+# needs. The memory limit is set from the measured process: ≈26 MiB idle plus
+# ≈0.3–0.4 MiB per session the gateway holds (docs/benchmarks.md, "Memory and
+# goroutines"), so 256Mi covers roughly 600 sessions held within one
+# sessionIdleTimeoutMs window. docs/operations.md "Sizing" has the arithmetic
+# for a larger population.
 resources:
   requests:
     cpu: 100m
