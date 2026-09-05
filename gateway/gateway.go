@@ -366,6 +366,17 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 			}
 			g.ema = ema
 			ema.SetJWKSObserver(g.metrics.observeJWKSFetch)
+			if len(cfg.Auth.EMA.AllowedAssertionTypes) == 0 && len(cfg.Auth.EMA.AllowedClientIDs) == 0 {
+				// The residual gap the allowlists close is documented in
+				// auth/ema.go: with neither set, any IdP-signed JWT addressed
+				// to the resource is exchangeable — an ID token, an
+				// application token for a client whose id happens to be the
+				// resource URI. The default is kept for compatibility; the
+				// exposure is said out loud, like discovery without its
+				// allowlists.
+				g.log.Warn("EMA token exchange accepts any IdP-signed JWT addressed to the resource — no assertion type or client id allowlist is set",
+					"hint", "set auth.ema.allowedAssertionTypes (SEP-990 requires \"oauth-id-jag+jwt\") and/or auth.ema.allowedClientIds")
+			}
 			// The token endpoint is an authorization server surface; its
 			// terminal responses flow through audit like every other refusal
 			// or grant the gateway produces. A replayed ID-JAG is the event
@@ -470,6 +481,7 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		return nil, err
 	}
 	g.baseCfg = cfg
+	g.warnCleartextCredentials(cfg.Upstreams)
 	if cfg.Discovery != nil {
 		// The allowlists are what stop a compromised discovery source from
 		// pointing gateway-held secrets (or callers' tokens, via
@@ -485,6 +497,42 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		go g.discovery.loop()
 	}
 	return g, nil
+}
+
+// warnCleartextCredentials names each upstream that will send a credential
+// over plaintext http to a host that is not this machine. Validation forces
+// https onto every other place a credential travels — token endpoints, the
+// hook, JWKS, discovery — and deliberately not onto upstream endpoints,
+// because cleartext inside a service mesh is a legitimate topology fold
+// cannot distinguish from a mistake. What it can do is say which upstreams
+// are in that position. Passthrough counts: it carries the caller's own
+// bearer token, which is the one credential fold least owns.
+func (g *Gateway) warnCleartextCredentials(ups []config.Upstream) {
+	for i := range ups {
+		u := &ups[i]
+		if u.Auth == nil || u.Auth.Strategy == "" || u.Auth.Strategy == "none" {
+			continue
+		}
+		for _, ep := range u.Endpoints() {
+			parsed, err := url.Parse(ep)
+			if err != nil || parsed.Scheme != "http" || isLoopbackHost(parsed.Hostname()) {
+				continue
+			}
+			g.log.Warn("credentialed upstream over cleartext http — its credential travels unencrypted to this host",
+				"upstream", u.ID, "strategy", u.Auth.Strategy, "host", parsed.Host,
+				"hint", "use https, or accept this only inside a mesh that encrypts the hop for you")
+			break
+		}
+	}
+}
+
+// isLoopbackHost reports whether an endpoint host is this machine.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // buildRoutes assembles a routing snapshot for cfg. When prev is non-nil,
@@ -1924,10 +1972,12 @@ func (g *Gateway) collectUpstreamHealth(ctx context.Context, rt *routes) (status
 	return statuses, healthy, probeable
 }
 
-// redactUpstreamHealth strips the fields an untrusted caller must not see:
-// URLs, owners, labels, and raw connect errors, which can name secret env
-// vars or internal hosts. It rewrites the copy in place, allocating a fresh
-// endpoint slice so it never reaches back into the cached collection.
+// redactUpstreamHealth strips the fields /health must not publish: URLs,
+// owners, labels, and raw connect errors, which can name secret env vars or
+// internal hosts. Every /health caller is untrusted — the endpoint has no
+// authentication to make one otherwise. It rewrites the copy in place,
+// allocating a fresh endpoint slice so it never reaches back into the cached
+// collection.
 func redactUpstreamHealth(statuses []upstreamHealth) {
 	for i := range statuses {
 		s := &statuses[i]
@@ -1989,9 +2039,15 @@ func (g *Gateway) upstreamHealthFor(ctx context.Context, rt *routes) (statuses [
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	rt := g.rt()
 	statuses, healthy, probeable := g.upstreamHealthFor(r.Context(), rt)
-	if g.cfg.AuthRequired() {
-		redactUpstreamHealth(statuses)
-	}
+	// Always redacted. This endpoint is unauthenticated by design — probes
+	// and load balancers carry no token — and the detailed view used to be
+	// gated on auth being disabled, on the reasoning that an auth-off
+	// gateway is loopback-private. --host 0.0.0.0 breaks that pairing with
+	// one flag, and nothing checked it, so a quick-start config exposed on
+	// a network published every upstream URL, owner, and raw connect error
+	// (which can name secret env vars) to anyone who could reach the port.
+	// The detailed view lives on /api/federation, which authenticates.
+	redactUpstreamHealth(statuses)
 	// Unreachable-when-nothing-is-reachable, judged against what the gateway
 	// can actually reach: a federation made entirely of caller-derived
 	// upstreams has nothing to probe, and reporting it down would leave the

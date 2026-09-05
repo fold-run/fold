@@ -118,7 +118,8 @@ func TestLoadBalanceFailover(t *testing.T) {
 		t.Errorf("live endpoint %s marked unhealthy: %+v", live.URL, statuses)
 	}
 
-	// /health surfaces the per-endpoint view (detailed: auth disabled).
+	// /health surfaces the per-endpoint rotation view — healthy flags only;
+	// endpoint URLs are redacted like every other identifying field.
 	resp, err := http.Get(ts.URL + "/health")
 	if err != nil {
 		t.Fatal(err)

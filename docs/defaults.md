@@ -13,7 +13,8 @@ each resolved value.
 
 | Default | Value | Rationale |
 |---|---|---|
-| `auth.mode` | `disabled` | Paired with the CLI's loopback bind (below): the out-of-the-box gateway is private to the machine, so the quick start works without an IdP. Exposure requires the deliberate act of passing `--host 0.0.0.0`, and production configs set `mode: required`. Secure-by-default network posture instead of mandatory auth. |
+| `auth.mode` | `disabled` | Paired with the CLI's loopback bind (below): the out-of-the-box gateway is private to the machine, so the quick start works without an IdP. Exposure requires the deliberate act of passing `--host 0.0.0.0`, and production configs set `mode: required`. Secure-by-default network posture instead of mandatory auth. Breaking the pair — auth off *and* a non-loopback bind — logs a warning at startup, because each half is a supported choice and only the combination is an open gateway. |
+| `policy` | absent (allow-all) | An absent `policy` block builds an allow-all engine, and `defaultDecision` is only consulted once a block exists. The quick start has to work with one upstream and no policy, and a gateway that refused every call until a policy was written would be a gateway nobody got far enough to configure. The deny-by-default posture README describes is the engine's once a block is present, which is why the deploy checklist's third line exists. |
 | `--host` | `127.0.0.1` | The other half of the pair. Never widen this default. |
 | `server.allowedHosts` | localhost set (only when unset) | DNS-rebinding protection that matches the loopback default. An explicit allowlist replaces — never extends — the localhost seed. |
 | `server.maxBodyBytes` | 1 MiB | Bounds memory per request. Deliberately conservative; workloads shipping large base64 content raise it knowingly. |

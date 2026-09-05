@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/fold-run/fold/config"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -342,5 +344,35 @@ func TestRunHealthcheck(t *testing.T) {
 	ts.Close()
 	if got := runHealthcheck(u.Hostname(), port); got != 1 {
 		t.Fatalf("healthcheck against a dead port = %d, want 1", got)
+	}
+}
+
+// Auth off and a non-loopback bind is the one combination the defaults are
+// designed to keep apart, and until now it produced no warning at all. Each
+// half alone is a supported choice and stays quiet.
+func TestWarnsWhenExposedWithoutAuth(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *config.Config
+		host string
+		warn bool
+	}{
+		{"quick start on loopback", &config.Config{}, "127.0.0.1", false},
+		{"quick start on localhost", &config.Config{}, "localhost", false},
+		{"quick start on ::1", &config.Config{}, "::1", false},
+		{"auth off, exposed", &config.Config{}, "0.0.0.0", true},
+		{"auth off, every interface", &config.Config{}, "", true},
+		{"auth off, a real address", &config.Config{}, "10.0.0.5", true},
+		{"auth on, exposed", &config.Config{Auth: &config.Auth{Mode: "required"}}, "0.0.0.0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			warnIfExposedWithoutAuth(tc.cfg, tc.host, slog.New(slog.NewTextHandler(&buf, nil)))
+			got := strings.Contains(buf.String(), "auth is disabled and the listener is bound beyond loopback")
+			if got != tc.warn {
+				t.Fatalf("warned=%v, want %v; log: %s", got, tc.warn, buf.String())
+			}
+		})
 	}
 }
