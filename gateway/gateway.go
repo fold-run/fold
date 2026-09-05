@@ -180,6 +180,14 @@ type Gateway struct {
 	// established on the first subscriber and dropped only on the last.
 	subMu       sync.Mutex
 	subscribers map[string]map[string]bool // URI → set of downstream session IDs
+	// subCount is how many URIs each downstream session holds, the bound
+	// that keeps subscribers finite: the outer map is keyed by a URI the
+	// caller chose, and under passthrough any URI resolves to the one
+	// upstream, so a single long-lived session could otherwise grow it
+	// without limit. A bounded map would be the wrong tool — evicting an
+	// entry would orphan the upstream subscription behind it and break the
+	// ref-count — so the bound is a refusal at the cap instead.
+	subCount map[string]int
 
 	server  *mcp.Server
 	handler http.Handler
@@ -264,6 +272,7 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		audit:           nil, // built below, once metrics exist to observe it
 		state:           provider,
 		subscribers:     map[string]map[string]bool{},
+		subCount:        map[string]int{},
 		resourceOwner:   bounded.New[string](maxResourceOwners),
 		taskOwner:       &taskOwners{store: provider.Store("task")},
 		principalLimits: bounded.New[state.Limiter](maxPrincipalLimits),
@@ -917,12 +926,10 @@ func (g *Gateway) reapSubscribers() {
 			// identify (in-process, stdio); it cannot be matched against the
 			// live set, so it is left alone rather than reaped wrongly.
 			if id != "" && !live[id] {
-				delete(subs, id)
+				if g.dropSubscriberLocked(uri, id) {
+					orphaned = append(orphaned, uri)
+				}
 			}
-		}
-		if len(subs) == 0 {
-			delete(g.subscribers, uri)
-			orphaned = append(orphaned, uri)
 		}
 	}
 	g.subMu.Unlock()
@@ -980,12 +987,24 @@ func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest
 
 	g.subMu.Lock()
 	subscribers := g.subscribers[req.Params.URI]
+	if !subscribers[sessionID] && g.subCount[sessionID] >= maxSubscriptionsPerSession {
+		g.subMu.Unlock()
+		// Invalid params rather than a fold-minted code: the codes fold
+		// mints are frozen, and "this session may not hold another
+		// subscription" is a parameter the caller can change by
+		// unsubscribing, which is what -32602 already means for cursors.
+		return &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams,
+			Message: fmt.Sprintf("subscription limit reached for this session (%d); unsubscribe before subscribing again", maxSubscriptionsPerSession)}
+	}
 	first := len(subscribers) == 0
 	if subscribers == nil {
 		subscribers = map[string]bool{}
 		g.subscribers[req.Params.URI] = subscribers
 	}
-	subscribers[sessionID] = true
+	if !subscribers[sessionID] {
+		subscribers[sessionID] = true
+		g.subCount[sessionID]++
+	}
 	g.subMu.Unlock()
 
 	if !first {
@@ -993,14 +1012,37 @@ func (g *Gateway) handleSubscribe(ctx context.Context, req *mcp.SubscribeRequest
 	}
 	if err := u.subscribe(ctx, upstreamURI); err != nil {
 		g.subMu.Lock()
-		delete(g.subscribers[req.Params.URI], sessionID)
-		if len(g.subscribers[req.Params.URI]) == 0 {
-			delete(g.subscribers, req.Params.URI)
-		}
+		g.dropSubscriberLocked(req.Params.URI, sessionID)
 		g.subMu.Unlock()
 		return err
 	}
 	return nil
+}
+
+// maxSubscriptionsPerSession bounds the URIs one downstream session may hold.
+// Generous for any real client and small enough that a session cannot make
+// the subscription table a memory problem; a var so tests can lower it.
+var maxSubscriptionsPerSession = 1024
+
+// dropSubscriberLocked removes one session from one URI's subscriber set,
+// keeping the per-session count in step. Caller holds subMu. Returns whether
+// the URI has no subscribers left.
+func (g *Gateway) dropSubscriberLocked(uri, sessionID string) (last bool) {
+	subs := g.subscribers[uri]
+	if !subs[sessionID] {
+		return len(subs) == 0
+	}
+	delete(subs, sessionID)
+	if g.subCount[sessionID] <= 1 {
+		delete(g.subCount, sessionID)
+	} else {
+		g.subCount[sessionID]--
+	}
+	if len(subs) == 0 {
+		delete(g.subscribers, uri)
+		return true
+	}
+	return false
 }
 
 func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeRequest) error {
@@ -1014,18 +1056,13 @@ func (g *Gateway) handleUnsubscribe(ctx context.Context, req *mcp.UnsubscribeReq
 	}
 
 	g.subMu.Lock()
-	subscribers := g.subscribers[req.Params.URI]
-	if !subscribers[sessionID] {
+	if !g.subscribers[req.Params.URI][sessionID] {
 		// This session never subscribed to this URI — do not touch the
 		// shared upstream subscription other clients depend on.
 		g.subMu.Unlock()
 		return nil
 	}
-	delete(subscribers, sessionID)
-	last := len(subscribers) == 0
-	if last {
-		delete(g.subscribers, req.Params.URI)
-	}
+	last := g.dropSubscriberLocked(req.Params.URI, sessionID)
 	g.subMu.Unlock()
 
 	if last {
@@ -1467,8 +1504,23 @@ func (g *Gateway) buildHandler() http.Handler {
 			mux.Handle("/oauth/token", g.tokenRateLimit(http.HandlerFunc(g.ema.ServeToken)))
 		}
 	}
-	return g.hostValidation(g.bodyCapMiddleware(mux))
+	// recoverHTTP sits inside the body cap and outside the mux: it counts
+	// and audits a panic in any HTTP handler net/http would otherwise recover
+	// silently (see rescue.go). The MCP path's own boundary is routeSafe,
+	// below the SDK's dispatch; this catches what happens above it.
+	return g.hostValidation(g.bodyCapMiddleware(g.recoverHTTP(mux)))
 }
+
+// bodyReadTimeout bounds how long a request body may take to arrive. It is a
+// deadline on the connection's read side, set when a body-bearing request
+// enters and cleared the moment the body reaches EOF (or the handler
+// returns), so it bounds the *request* and never the response: an SSE stream
+// on a POST — the ordinary MCP shape — is written long after its body was
+// consumed. ReadHeaderTimeout bounds only the headers, and a WriteTimeout is
+// off the table for the same streaming reason, so without this a client that
+// sent its headers and then dribbled one byte a minute held a connection and
+// a goroutine indefinitely.
+var bodyReadTimeout = 30 * time.Second
 
 // bodyCapMiddleware bounds request bodies so one large POST cannot exhaust
 // gateway memory: a declared Content-Length over the cap is answered 413
@@ -1489,7 +1541,25 @@ func (g *Gateway) bodyCapMiddleware(next http.Handler) http.Handler {
 			// that refusal exit through the same metric and audit event as
 			// the declared-length branch — the single exit door does not
 			// have a chunked-encoding side gate.
-			tripwire := &bodyCapTripwire{ReadCloser: http.MaxBytesReader(w, r.Body, limit)}
+			//
+			// The same wrapper carries the read deadline: armed here and
+			// cleared when the body reaches EOF — and only then. Every
+			// handler fold mounts reads a body to EOF before it answers
+			// (the SDK uses io.ReadAll; the token endpoint parses a form),
+			// which is what makes EOF sufficient for the streaming case. It
+			// is deliberately not cleared when the handler returns: a
+			// handler that answered without reading the body (a 406, a 403)
+			// leaves net/http to drain what the client still owes, and that
+			// drain is exactly the stalled read this deadline exists for.
+			// net/http re-arms its own deadlines before the next request on
+			// the connection, so a deadline left armed here does not leak
+			// into the idle wait.
+			rc := http.NewResponseController(w)
+			_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout)) // ErrNotSupported on HTTP/2: no deadline, as before
+			tripwire := &bodyCapTripwire{
+				ReadCloser: http.MaxBytesReader(w, r.Body, limit),
+				clear:      func() { _ = rc.SetReadDeadline(time.Time{}) },
+			}
 			r.Body = tripwire
 			defer func() {
 				if tripwire.tripped {
@@ -1503,10 +1573,13 @@ func (g *Gateway) bodyCapMiddleware(next http.Handler) http.Handler {
 }
 
 // bodyCapTripwire notes when MaxBytesReader cut the body off, so the
-// middleware can account for refusals the handler discovers mid-read.
+// middleware can account for refusals the handler discovers mid-read, and
+// lifts the body read deadline once the body has fully arrived.
 type bodyCapTripwire struct {
 	io.ReadCloser
 	tripped bool
+	clear   func() // lifts the read deadline; nil-safe, runs once
+	cleared bool
 }
 
 func (b *bodyCapTripwire) Read(p []byte) (int, error) {
@@ -1515,7 +1588,17 @@ func (b *bodyCapTripwire) Read(p []byte) (int, error) {
 	if errors.As(err, &mbe) {
 		b.tripped = true
 	}
+	if err == io.EOF {
+		b.clearDeadline()
+	}
 	return n, err
+}
+
+func (b *bodyCapTripwire) clearDeadline() {
+	if b.clear != nil && !b.cleared {
+		b.cleared = true
+		b.clear()
+	}
 }
 
 func (g *Gateway) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata {

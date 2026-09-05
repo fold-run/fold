@@ -50,14 +50,17 @@ Everything after `--` is the server command and its arguments.
 
 - `POST|GET|DELETE /mcp` — the endpoint the gateway federates.
 - `GET /health` — `200` when the server is runnable, `503` when it is not, plus
-  session counters. Matches the gateway's own health semantics, so chart probes
-  and `healthCheck.intervalMs` behave identically against a shim. Probing costs
-  a process, so the answer is memoized for one second and single-flighted — and
-  a live session is itself proof of health, so the common case costs nothing.
+  session counters (`sessions`, `maxSessions`, `spawned`, `spawnErrors`,
+  `rejected`, and `panics` — panics the bridge recovered instead of dying from;
+  every one is a bug worth filing). Matches the gateway's own health semantics,
+  so chart probes and `healthCheck.intervalMs` behave identically against a
+  shim. Probing costs a process, so the answer is memoized for one second and
+  single-flighted — and a live session is itself proof of health, so the common
+  case costs nothing.
 - `GET /metrics` — Prometheus text: `fold_stdio_sessions`,
   `fold_stdio_max_sessions`, `fold_stdio_spawned_total`,
   `fold_stdio_spawn_errors_total`, `fold_stdio_rejected_total`,
-  `fold_stdio_build_info`.
+  `fold_stdio_panics_total`, `fold_stdio_build_info`.
 
 ## One process per session
 

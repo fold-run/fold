@@ -3,7 +3,9 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -382,5 +384,90 @@ func TestCappedListIsNotCached(t *testing.T) {
 	}
 	if !filled {
 		t.Error("the refused list left an entry in the cache")
+	}
+}
+
+// A client that sends its headers and then dribbles the body holds a
+// connection and a goroutine for as long as it likes: ReadHeaderTimeout ends
+// at the headers, and a WriteTimeout is off the table because MCP responses
+// are streams. The body read deadline closes that without touching the
+// response side — the raw-socket client below never finishes its body and is
+// cut within the (shortened) bound.
+func TestSlowBodyIsCutAtTheReadDeadline(t *testing.T) {
+	prev := bodyReadTimeout
+	bodyReadTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { bodyReadTimeout = prev })
+
+	up, _ := newUpstreamServer(t, "echo")
+	ts, _ := startGateway(t, &config.Config{Upstreams: []config.Upstream{{ID: "a", Namespace: "a", URL: up.URL}}})
+
+	// Two shapes of stall. With the Accept header the SDK reads the body
+	// itself and hits the deadline inside the handler. Without it the SDK
+	// answers 406 before reading anything, and it is net/http draining the
+	// unread body after the handler returned that hits the deadline — the
+	// case a deadline cleared on handler return would have left unbounded.
+	for name, accept := range map[string]string{
+		"handler reads the body": "Accept: application/json, text/event-stream\r\n",
+		"handler never reads it": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			// Headers complete, body declared but never finished.
+			if _, err := io.WriteString(conn, "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"+accept+"Content-Length: 200\r\n\r\n{\"jsonrpc\":\"2.0\","); err != nil {
+				t.Fatal(err)
+			}
+
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			start := time.Now()
+			// Read until the server closes: an answer may arrive first, but the
+			// stall is over only when the connection is.
+			_, rerr := io.Copy(io.Discard, conn)
+			if rerr != nil {
+				var ne net.Error
+				if errors.As(rerr, &ne) && ne.Timeout() {
+					t.Fatalf("the connection was still open %v after a stalled body; the read deadline did not fire", time.Since(start))
+				}
+			}
+			if took := time.Since(start); took > 3*time.Second {
+				t.Fatalf("stalled body held the connection for %v", took)
+			}
+		})
+	}
+}
+
+// The deadline bounds the request, not the response. A tools/call whose
+// upstream takes longer than the (shortened) body deadline must still complete:
+// the body reached EOF before the handler ran, so the deadline was lifted
+// before the SSE response began.
+func TestBodyReadDeadlineDoesNotCutStreamedResponses(t *testing.T) {
+	prev := bodyReadTimeout
+	bodyReadTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { bodyReadTimeout = prev })
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "slow", Version: "1.0"}, nil)
+	srv.AddTool(&mcp.Tool{Name: "slow", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "done"}}}, nil
+		})
+	up := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil))
+	t.Cleanup(up.Close)
+
+	ts, _ := startGateway(t, &config.Config{Upstreams: []config.Upstream{{ID: "a", Namespace: "a", URL: up.URL}}})
+	session := connect(t, ts.URL, nil)
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "a__slow"})
+	if err != nil {
+		t.Fatalf("a 1 s tool call failed under a 200 ms body deadline: %v — the deadline reached the response", err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("empty result")
 	}
 }
