@@ -93,12 +93,25 @@ with the gateway config:
 
 **Standalone**: [`deploy/fold-discovery.yaml`](../deploy/fold-discovery.yaml)
 (also shipped in the release archive) runs it as its own Deployment +
-Service with the minimal RBAC (ClusterRole: `get`/`list` on `services`;
-scope to a Role + `--namespace` for one namespace). Standalone requires TLS
-in front of the producer's Service to satisfy the gateway's `https`
-requirement — a mesh, an in-cluster certificate, or an ingress. Set
-`--bearer-env` on the producer and `bearerSecretRef` on the gateway to
-authenticate the poll.
+Service in a `fold` namespace the file creates, under the `restricted` Pod
+Security profile, with the minimal RBAC — a namespaced `Role` (`get`/`list`
+on `services`) paired with `--namespace fold`, because a component that can
+read every Service in the cluster should be granted that on purpose; the
+`ClusterRole` variant is in the file, commented out. It applies in two
+steps, since the poll token is the one object the manifest cannot carry:
+
+```bash
+kubectl apply -f deploy/fold-discovery.yaml
+kubectl -n fold create secret generic fold-discovery-token \
+  --from-literal=token="$(openssl rand -hex 32)"
+```
+
+The gateway presents the same value through `discovery.bearerSecretRef`
+(`FOLD_DISCOVERY_TOKEN`), so it goes in the gateway's Secret too. Standalone
+requires TLS in front of the producer's Service to satisfy the gateway's
+`https` requirement — a mesh, an in-cluster certificate, or an ingress — which
+is why the sidecar shape above is the one that works with nothing else
+installed.
 
 ## Flags
 

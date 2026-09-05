@@ -5,8 +5,8 @@
 # through a language runtime. The runtime is therefore a build argument, and
 # the default carries Node because `npx`-delivered servers are the common case.
 #
-#   docker build -f Dockerfile.stdio -t fold-stdio .
-#   docker build -f Dockerfile.stdio --build-arg RUNTIME_BASE=python:3.13-slim .
+#   docker build -f deploy/docker/stdio.Dockerfile -t fold-stdio .
+#   docker build -f deploy/docker/stdio.Dockerfile --build-arg RUNTIME_BASE=python:3.13-slim -t fold-stdio .
 #
 # A server that is itself a static binary wants neither — build with
 # --build-arg RUNTIME_BASE=gcr.io/distroless/static-debian12:nonroot and COPY
@@ -29,6 +29,16 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -o /fold-stdio ./cmd/fold-stdio
 
 FROM ${RUNTIME_BASE}
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="fold-stdio" \
+      org.opencontainers.image.description="fold's stdio shim: runs one local stdio MCP server and exposes it over streamable HTTP for the gateway to federate." \
+      org.opencontainers.image.source="https://github.com/fold-run/fold" \
+      org.opencontainers.image.url="https://fold.run" \
+      org.opencontainers.image.documentation="https://github.com/fold-run/fold/blob/main/docs/stdio.md" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 COPY --from=build /fold-stdio /usr/local/bin/fold-stdio
 
 # The shim executes a child process, so it runs unprivileged. Node images ship

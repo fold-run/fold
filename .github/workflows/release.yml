@@ -185,7 +185,9 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
-          build-args: VERSION=${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
           tags: |
             ghcr.io/fold-run/fold:${{ github.ref_name }}
             ${{ !contains(github.ref_name, '-') && 'ghcr.io/fold-run/fold:latest' || '' }}
@@ -207,7 +209,9 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
-          build-args: VERSION=${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
           tags: |
             ghcr.io/fold-run/fold-discovery:${{ github.ref_name }}
             ${{ !contains(github.ref_name, '-') && 'ghcr.io/fold-run/fold-discovery:latest' || '' }}
@@ -233,7 +237,9 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
-          build-args: VERSION=${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
           tags: |
             ghcr.io/fold-run/fold-stdio:${{ github.ref_name }}
             ${{ !contains(github.ref_name, '-') && 'ghcr.io/fold-run/fold-stdio:latest' || '' }}
@@ -255,7 +261,9 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
-          build-args: VERSION=${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
           tags: |
             ghcr.io/fold-run/fold-registry:${{ github.ref_name }}
             ${{ !contains(github.ref_name, '-') && 'ghcr.io/fold-run/fold-registry:latest' || '' }}

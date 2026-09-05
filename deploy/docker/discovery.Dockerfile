@@ -13,6 +13,16 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # distroless/static ships CA certificates and a nonroot user; the
 # Kubernetes API CA is mounted from the service account either way.
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="fold-discovery" \
+      org.opencontainers.image.description="fold's Kubernetes discovery-document producer: labeled Services become gateway upstreams." \
+      org.opencontainers.image.source="https://github.com/fold-run/fold" \
+      org.opencontainers.image.url="https://fold.run" \
+      org.opencontainers.image.documentation="https://github.com/fold-run/fold/blob/main/docs/discovery-controller.md" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 COPY --from=build /fold-discovery /fold-discovery
 EXPOSE 8090
 ENTRYPOINT ["/fold-discovery"]

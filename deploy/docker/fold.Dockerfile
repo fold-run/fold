@@ -17,6 +17,24 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # distroless/static ships CA certificates (needed for JWKS and token
 # endpoints over HTTPS) and a nonroot user.
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
+# OCI labels: `source` and `revision` are what registry UIs, SBOM tooling,
+# and admission policies key on to tie an image back to a commit.
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="fold" \
+      org.opencontainers.image.description="The enterprise MCP gateway: one governed endpoint federating any number of MCP servers." \
+      org.opencontainers.image.source="https://github.com/fold-run/fold" \
+      org.opencontainers.image.url="https://fold.run" \
+      org.opencontainers.image.documentation="https://github.com/fold-run/fold/blob/main/README.md" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 COPY --from=build /fold /fold
 EXPOSE 8080
+# The binary carries its own probe (distroless has no shell or curl): any
+# HTTP answer from /health means the process is serving, including the 503
+# that /health gives when upstreams are down — that must never restart fold.
+# Override with a different --port/--host if the container runs on another.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["/fold", "--healthcheck", "--host", "127.0.0.1", "--port", "8080"]
 ENTRYPOINT ["/fold"]

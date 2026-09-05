@@ -153,6 +153,20 @@ services:
       - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
     restart: unless-stopped
 
+  # Receives fold's spans and OTLP audit events and prints them; the runnable
+  # example for the `tracing` section and the `otlp-logs` sink. Reachable from
+  # the gateway as otel-collector:4318 (the example config's endpoint); not
+  # published to the host.
+  otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.121.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    expose:
+      - "4318"
+    restart: unless-stopped
+
   grafana:
     profiles: ["observability"]
     image: grafana/grafana:11.5.1
