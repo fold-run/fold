@@ -37,7 +37,11 @@ authorization server: `POST /oauth/token` exchanges an enterprise-IdP ID-JAG
 (RFC 7523) for a short-lived fold-signed token. Each assertion's `jti` is
 single-use (recorded fleet-wide via Redis when configured; the in-process
 recorder is size-bounded at 100k live records, a ceiling only reachable by
-signing that many valid assertions inside one assertion's lifetime), the
+signing that many valid assertions inside one assertion's lifetime — and it
+is the recorder a replica falls back to while Redis is unreachable, at boot
+or later, so during such an outage an assertion is single-use per replica
+rather than per fleet, the same per-instance degradation every other shared
+primitive accepts), the
 endpoint is rate limited against amplification, and issuers marked
 `mode: "exchange"` are never accepted as direct bearer issuers. The exchange
 obeys the same single-exit-door rule as `/mcp`: every terminal response —

@@ -124,7 +124,10 @@ Where a downstream client does supply `inputResponses` and `requestState` itself
 
 ## Configuration
 
-One JSON document, validated on startup (`fold --validate`). Loaded from
+One JSON document, validated on startup — structure and cross-field rules by
+`fold --validate`, which needs no secrets; the things only a running process
+can check (env vars named by `secretRef`, sink paths, Redis, the metrics
+bind) at boot. Loaded from
 `--config <path>` or `FOLD_CONFIG`, which accepts either a file path or the
 JSON itself. A JSON Schema ships with fold
 ([`config/fold.config.schema.json`](config/fold.config.schema.json), printed

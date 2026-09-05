@@ -58,6 +58,7 @@ func main() {
 		watch       = flag.Bool("watch", false, "watch the config file and hot-reload on change (SIGHUP always reloads)")
 		logFormat   = flag.String("log-format", "text", "log format: text | json")
 		logLevel    = flag.String("log-level", "info", "log level: debug | info | warn | error")
+		drain       = flag.Duration("drain-timeout", 10*time.Second, "how long SIGTERM waits for in-flight requests and streams before severing them; keep it under the orchestrator's termination grace period")
 	)
 	flag.Parse()
 
@@ -103,7 +104,7 @@ func main() {
 	}
 	warnIfExposedWithoutAuth(cfg, *host, logger)
 	addr := *host + ":" + strconv.Itoa(*port)
-	if err := run(cfg, path, watchPath, logger, addr); err != nil {
+	if err := run(cfg, path, watchPath, logger, addr, *drain); err != nil {
 		fmt.Fprintf(os.Stderr, "fold: %v\n", err)
 		os.Exit(1)
 	}
@@ -210,7 +211,7 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func run(cfg *config.Config, source, watchPath string, logger *slog.Logger, addr string) error {
+func run(cfg *config.Config, source, watchPath string, logger *slog.Logger, addr string, drain time.Duration) error {
 	gw, err := gateway.New(cfg, gateway.WithLogger(logger))
 	if err != nil {
 		return err
@@ -269,15 +270,21 @@ func run(cfg *config.Config, source, watchPath string, logger *slog.Logger, addr
 		case <-changed:
 			reload("file change")
 		case <-stop:
-			logger.Info("shutting down")
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			logger.Info("shutting down", "drainTimeout", drain)
+			ctx, cancel := context.WithTimeout(context.Background(), drain)
 			defer cancel()
 			if err := srv.Shutdown(ctx); err != nil {
 				// SSE streams that outlived the drain are severed rather
 				// than left holding connections past the process's own
-				// shutdown.
+				// shutdown. That is the expected end of a routine stop —
+				// MCP responses are long-lived streams, so on any busy
+				// gateway something is always still open when the drain
+				// expires — and a routine stop exits 0. Returning the
+				// deadline error here used to make every SIGTERM with a
+				// client attached exit 1, which orchestrators read as a
+				// crash.
+				logger.Warn("drain deadline passed; severing remaining streams", "drainTimeout", drain, "err", err)
 				_ = srv.Close()
-				return err
 			}
 			return nil
 		}

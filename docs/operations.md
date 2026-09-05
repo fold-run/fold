@@ -357,5 +357,7 @@ listener is bound beyond loopback` (an open gateway); `credentialed upstream
 over cleartext http` (one line per upstream whose credential travels
 unencrypted off this machine); `EMA token exchange accepts any IdP-signed
 JWT` (neither `allowedAssertionTypes` nor `allowedClientIds` is set);
-`discovery configured without credential allowlists`; and `budget configured
-without shared state`. A hardened deployment starts with none of them.
+`discovery configured without credential allowlists`; `budget configured
+without shared state`; and, at `error`, `redis unreachable at startup` (the
+replica is enforcing per-instance until Redis answers). A hardened deployment
+starts with none of them.

@@ -13,7 +13,13 @@ environment variables reach it, and what sits in front of it for TLS.
 
 Whatever the shape, run `fold --validate` against the config in CI or a
 pre-start hook: it parses and validates the document and exits (it never
-resolves secrets, so it needs no credentials).
+resolves secrets, so it needs no credentials). Be precise about what that
+covers: the document's structure and cross-field rules. It does **not** check
+that the environment variables `secretRef` fields name are set, that an EMA
+`signingKeyRef` holds a parseable key, that audit sink paths open, that Redis
+answers, or that `metricsAddr` binds — all of those surface at startup, which
+is why the chart's validating init container can run without secrets
+mounted. A staging rollout is the check for the rest.
 
 ## Docker
 
@@ -272,9 +278,12 @@ deprecated alias thereafter. **It was removed in v1.9 and now 404s.** Point
 probes, load-balancer target checks, and uptime monitors at `/health` before
 upgrading — a liveness probe left on the old path will fail the pod.
 
-Shutdown: on SIGTERM the gateway drains for up to 10 s, then exits;
-long-lived SSE streams are cut at that bound. The chart sets
-`terminationGracePeriodSeconds: 30` to stay clear of it.
+Shutdown: on SIGTERM the gateway drains for up to `--drain-timeout` (default
+10 s), then severs whatever is still open and exits **0** — a stream cut at
+the bound is the expected end of a routine stop on any gateway with clients
+attached, not a failure, and it is logged as `drain deadline passed`. Keep
+the drain under the orchestrator's grace period: the chart sets
+`terminationGracePeriodSeconds: 30` to stay clear of the default.
 
 ## Hot reload
 
@@ -359,6 +368,19 @@ binding to the principal who minted it holds only on the replica that
 served the mint**: elsewhere it falls through to the probe path and is
 reachable by any caller. If you run more than one replica with task-using
 upstreams, Redis is the difference between a guarantee and a coincidence.
+
+**Redis down is degraded, never down — at boot too.** Every Redis operation
+is bounded at 500 ms and fails open to the instance's local mirror, so an
+outage turns the fleet into N gateways enforcing N copies of each limit
+rather than into an outage of its own; `fold_state_degraded_total` counts
+every such decision and `FoldStateDegraded` alerts on it. The same holds
+when Redis is unreachable as a replica *starts*: it comes up, logs `redis
+unreachable at startup` once, counts `fold_state_degraded_total{kind="startup"}`,
+and reconnects on the next operation that reaches Redis. It used to refuse to
+start, which made a Redis blip during a rolling restart fail every new pod
+while the old ones would have carried on — the one moment fail-closed was
+strictly worse than fail-open. A `redis://` URL that does not parse is still
+fatal: that is a typo, and typos should not start.
 
 Operationally forgiving by design: every Redis operation is bounded at
 500 ms and fails open, so a Redis outage degrades to per-instance
@@ -481,7 +503,9 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 - [ ] An `audit` sink configured and shipped somewhere durable — with
       `requireDurable` set if a best-effort trail is not acceptable, which
       makes the gateway prove it at startup instead of at audit time
-- [ ] `fold --validate` gating config changes in CI/CD
+- [ ] `fold --validate` gating config changes in CI/CD — and a staging
+      rollout for what it cannot see (secret env vars present, signing key
+      parseable, sink paths writable, Redis reachable)
 - [ ] Kubernetes: PodDisruptionBudget on (the chart's default when
       `replicaCount` ≥ 2), resource limits sized, probe Host header matches
       the allowlist, `networkPolicy.enabled` scoping the metrics port and —

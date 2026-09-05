@@ -291,6 +291,14 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	// enforcement) count like degraded budget decisions do.
 	if r, ok := provider.(*state.Redis); ok {
 		r.OnDegraded(g.metrics.observeStateDegraded)
+		if err := r.StartupError(); err != nil {
+			// Same posture as a mid-run outage, said once at the moment it
+			// matters: this replica is enforcing its own copy of every
+			// limit, breaker, budget, and replay record until Redis answers.
+			g.log.Error("redis unreachable at startup — enforcing per-instance until it answers",
+				"err", err, "hint", "the fleet is not one gateway while this lasts; fold_state_degraded_total counts it")
+			g.metrics.observeStateDegraded("startup")
+		}
 	}
 	// Audit is built after metrics so its delivery outcomes have somewhere to
 	// be counted: a sink that drops events is the one failure the audit trail

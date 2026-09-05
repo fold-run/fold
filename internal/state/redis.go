@@ -26,23 +26,39 @@ type Redis struct {
 	// degraded holds the OnDegraded callback (func(kind string)); atomic
 	// because the gateway registers it after limiters may already exist.
 	degraded atomic.Value
+
+	// startupErr is the ping failure at construction, if any. Boot is
+	// fail-open like every later operation: a Redis blip during a rolling
+	// restart must not turn into zero replicas when the running ones would
+	// have survived the same blip per-instance. The gateway logs it and
+	// counts it; go-redis reconnects lazily on the next operation.
+	startupErr error
 }
 
-// NewRedis connects and validates a Redis provider from a redis:// URL.
+// NewRedis builds a Redis provider from a redis:// URL. A URL that does not
+// parse is an error — that is a typo, and typos should not start — but an
+// unreachable Redis is not: the provider is returned with StartupError set
+// and every primitive enforces from its local mirror until Redis answers,
+// exactly as it would had the outage begun one second after boot.
 func NewRedis(url string) (*Redis, error) {
 	opts, err := redis.ParseURL(url)
 	if err != nil {
 		return nil, fmt.Errorf("redis url: %w", err)
 	}
 	client := redis.NewClient(opts)
+	r := &Redis{client: client}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
-		return nil, fmt.Errorf("redis ping: %w", err)
+		r.startupErr = fmt.Errorf("redis ping: %w", err)
 	}
-	return &Redis{client: client}, nil
+	return r, nil
 }
+
+// StartupError reports whether Redis answered at construction. Non-nil means
+// the gateway started degraded: per-instance enforcement until the first
+// operation that reaches Redis.
+func (r *Redis) StartupError() error { return r.startupErr }
 
 // Close implements Provider.
 func (r *Redis) Close() error { return r.client.Close() }
