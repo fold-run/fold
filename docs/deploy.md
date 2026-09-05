@@ -53,7 +53,7 @@ docker run --rm -p 8080:8080 \
 - The image runs as nonroot on distroless static; `--read-only` works.
 
 Images are multi-arch (linux/amd64, linux/arm64), tagged `latest` and per
-release (`v0.7.0`).
+release (`v1.15.0`).
 
 ### Verifying what you deploy
 
@@ -99,7 +99,7 @@ because a rollout that leaves pods Ready but answering an empty `tools/list`
 is precisely the failure readiness does not catch.
 
 Images additionally embed BuildKit provenance and an SBOM in the registry
-(`docker buildx imagetools inspect ghcr.io/fold-run/fold:v1.11.0` shows
+(`docker buildx imagetools inspect ghcr.io/fold-run/fold:v1.15.0` shows
 them), and cluster admission controllers that verify GitHub attestations
 (Kyverno, sigstore policy-controller) can enforce this at deploy time. For
 production, prefer the release tag — or the digest the attestation names —
@@ -142,7 +142,7 @@ make compose-down
 pointed at) are local operator state and are gitignored.
 
 Dockerfiles live in [`deploy/docker/`](../deploy/docker) — `fold.Dockerfile`,
-`discovery.Dockerfile`, and `stdio.Dockerfile`. The compose file references the
+`discovery.Dockerfile`, `stdio.Dockerfile`, and `registry.Dockerfile`. The compose file references the
 published images by default; the `build:` stanzas to run from source are
 commented in place.
 
