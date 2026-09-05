@@ -1,7 +1,14 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"github.com/fold-run/fold/config"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -9,8 +16,6 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/fold-run/fold/config"
 )
 
 // TestRedisSharedGateways runs two gateway instances against one Redis and
@@ -105,5 +110,58 @@ func TestRedisSharedTenantBudget(t *testing.T) {
 		if _, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: "u__tool"}); err == nil {
 			t.Fatalf("instance %s admitted a call past the fleet-wide tenant allowance", name)
 		}
+	}
+}
+
+// Redis unreachable at boot used to be fatal — exit 1 — while the same outage
+// one second later was survived per-instance. That asymmetry is a
+// rolling-restart hazard: a Redis blip during a deploy failed every new pod
+// while the old ones would have carried on. Boot is now fail-open like
+// everything after it: the gateway starts, says so once, counts it, and
+// enforces from its local mirror until Redis answers.
+func TestRedisUnreachableAtBootStartsDegraded(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := l.Addr().String()
+	l.Close() // nothing listens here now
+
+	var buf bytes.Buffer
+	up, _ := newUpstreamServer(t, "tool")
+	gw, err := New(&config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL, RateLimit: &config.RateLimit{RequestsPerMinute: 2}}},
+		Server:    &config.ServerSection{RedisURL: "redis://" + deadAddr},
+	}, WithLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+	if err != nil {
+		t.Fatalf("New failed with Redis down: %v — boot must fail open like every later operation", err)
+	}
+	t.Cleanup(gw.Close)
+	if !strings.Contains(buf.String(), "redis unreachable at startup") {
+		t.Fatalf("no startup log for a degraded start; got:\n%s", buf.String())
+	}
+	ts := httptest.NewServer(gw.Handler())
+	t.Cleanup(ts.Close)
+
+	// The local mirror still enforces: two calls pass, the third is limited.
+	session := connect(t, ts.URL, nil)
+	limited := false
+	for range 4 {
+		if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool"}); err != nil && strings.Contains(err.Error(), "rate limit") {
+			limited = true
+		}
+	}
+	if !limited {
+		t.Fatal("per-upstream rate limit did not trip with Redis down; the local mirror is not enforcing")
+	}
+
+	resp, err := http.Get(ts.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `fold_state_degraded_total{kind="startup"} 1`) {
+		t.Fatalf("degraded start not counted; metrics:\n%s", body)
 	}
 }

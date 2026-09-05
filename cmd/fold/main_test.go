@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/fold-run/fold/config"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -374,5 +375,85 @@ func TestWarnsWhenExposedWithoutAuth(t *testing.T) {
 				t.Fatalf("warned=%v, want %v; log: %s", got, tc.warn, buf.String())
 			}
 		})
+	}
+}
+
+// A SIGTERM that arrives while a client holds an SSE stream used to exit 1:
+// the drain expired, Shutdown returned its deadline error, and main treated
+// the expected end of a routine stop as a failure. Orchestrators read exit 1
+// as a crash. The stream is still severed at the bound; the exit is 0 and the
+// log says what happened.
+func TestSIGTERMWithOpenStreamExitsZero(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+
+	cmd := exec.Command(os.Args[0], "--port", fmt.Sprint(port), "--log-format", "json", "--drain-timeout", "500ms")
+	cmd.Env = append(os.Environ(), "FOLD_TEST_MAIN=1", "FOLD_CONFIG="+validConfig)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if resp, err := http.Get(base + "/health"); err == nil {
+			resp.Body.Close()
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Open a session and hold its standalone SSE stream open.
+	initReq, _ := http.NewRequest(http.MethodPost, base+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`))
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	init, err := http.DefaultClient.Do(initReq)
+	if err != nil {
+		cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, init.Body)
+	init.Body.Close()
+	sid := init.Header.Get("Mcp-Session-Id")
+	if sid == "" {
+		cmd.Process.Kill()
+		t.Fatalf("no session id from initialize (status %d)", init.StatusCode)
+	}
+	req, _ := http.NewRequest(http.MethodGet, base+"/mcp", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Mcp-Session-Id", sid)
+	stream, err := http.DefaultClient.Do(req)
+	if err != nil {
+		cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	if stream.StatusCode != http.StatusOK {
+		cmd.Process.Kill()
+		t.Fatalf("standalone stream status %d", stream.StatusCode)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SIGTERM with an open stream must exit 0, got %v; stderr: %s", err, errb.String())
+		}
+	case <-time.After(10 * time.Second):
+		cmd.Process.Kill()
+		t.Fatal("did not exit within 10s of SIGTERM")
+	}
+	if !strings.Contains(errb.String(), "drain deadline passed") {
+		t.Fatalf("expected the drain-deadline warning; stderr: %s", errb.String())
 	}
 }
