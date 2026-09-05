@@ -67,6 +67,70 @@ spec:
               error, but a panic is always a bug. The paired log line ("panic recovered")
               carries the stack trace — file it.
 
+        # The two conditions that page. Everything else in this pack is a
+        # warning about something fold is surviving; these two are fold not
+        # serving. FoldDown is the scrape target itself, so it fires when
+        # every pod is gone or unready — including the readiness-on-/health
+        # case where a total upstream outage empties the Service.
+        - alert: FoldDown
+          expr: up{job="{{ include "fold.fullname" . }}"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: fold instance {{ "{{" }} $labels.instance {{ "}}" }} is not being scraped
+            description: >-
+              The scrape target is down: the pod is gone, unready, or not answering /metrics.
+              With readiness on /health this is also what a total upstream outage looks like
+              from outside — check fold_upstream_breaker_state on the surviving instances, and
+              the pods' events, before assuming the gateway itself crashed.
+
+        - alert: FoldAllRequestsFailing
+          expr: |
+            sum(rate(fold_requests_total{outcome="upstream_down"}[5m]))
+              / clamp_min(sum(rate(fold_requests_total[5m])), 0.001)
+              > 0.9
+          for: 5m
+          labels:
+            severity: critical
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: fold is answering upstream_down for {{ "{{" }} $value | humanizePercentage {{ "}}" }} of requests
+            description: >-
+              Nearly every request is failing because no upstream is reachable — the gateway
+              is up and refusing, which is the honest answer, but the federation is not
+              serving. Start with the circuit-breaker panel and the upstreams' own health.
+
+        # Growth without a ceiling is the failure the short benchmark cannot
+        # see. Both thresholds are deployment choices: size them from a
+        # steady-state scrape of your own federation.
+        - alert: FoldGoroutinesHigh
+          expr: go_goroutines{job="{{ include "fold.fullname" . }}"} > {{ .Values.metrics.prometheusRule.goroutinesThreshold }}
+          for: 15m
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: fold instance {{ "{{" }} $labels.instance {{ "}}" }} has {{ "{{" }} $value {{ "}}" }} goroutines
+            description: >-
+              Sustained goroutine growth is a leak — sessions, streams, or subscriptions that
+              are not being released. Compare fold_downstream_sessions and
+              fold_upstream_bridged_sessions against client count before restarting anything.
+
+        - alert: FoldMemoryHigh
+          expr: process_resident_memory_bytes{job="{{ include "fold.fullname" . }}"} > {{ .Values.metrics.prometheusRule.memoryBytesThreshold }}
+          for: 15m
+          labels:
+            severity: warning
+            {{- with $labels }}{{ toYaml . | nindent 12 }}{{- end }}
+          annotations:
+            summary: fold instance {{ "{{" }} $labels.instance {{ "}}" }} RSS is {{ "{{" }} $value | humanize1024 {{ "}}" }}B
+            description: >-
+              Resident memory is approaching the container limit. If it tracks session count it
+              is load; if it grows at steady load it is a leak — either way raise the limit
+              before the OOM killer decides for you, then find out which.
+
     # Things that mean an upstream is failing, which fold is surviving.
     - name: fold.upstreams
       rules:
@@ -79,7 +143,7 @@ spec:
           annotations:
             summary: circuit open for upstream {{ "{{" }} $labels.upstream {{ "}}" }}
             description: >-
-              fold has stopped sending requests to this upstream and is answering -32041 for it.
+              fold has stopped sending requests to this upstream and is answering -31041 for it.
               The federation still serves everything else; lists degrade with a partialFailure
               marker rather than failing.
 
@@ -155,7 +219,7 @@ spec:
             summary: "{{ "{{" }} $labels.upstream {{ "}}" }} sent a response past maxResponseBytes"
             description: >-
               An upstream returned more in one response than the gateway will hold, so the
-              response was refused and the call failed with -32041. fold does not truncate
+              response was refused and the call failed with -31041. fold does not truncate
               here on purpose: a shortened body would be a response the upstream never sent.
               Either the upstream is returning far more than an MCP payload should be, or
               maxResponseBytes is below what this federation legitimately needs.
@@ -226,7 +290,7 @@ spec:
           annotations:
             summary: tenant {{ "{{" }} $labels.tenant {{ "}}" }} has spent its budget
             description: >-
-              This customer is being refused with -32044 until the period rolls. Nothing is
+              This customer is being refused with -31044 until the period rolls. Nothing is
               broken; someone should decide whether to widen the allowance, which is a reload
               rather than a restart.
 

@@ -1287,6 +1287,87 @@
         }
       ],
       "description": "The inbound trust anchor. stale means the IdP could not be reached and the last good key set is still verifying tokens; error means nothing is cached and every authenticated request is failing. Either one is the IdP, not your clients."
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Process: goroutines and RSS",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 58,
+        "w": 12,
+        "h": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RSS"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (go_goroutines{job=~\".*fold.*\"})",
+          "legendFormat": "goroutines {{instance}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (process_resident_memory_bytes{job=~\".*fold.*\"})",
+          "legendFormat": "RSS",
+          "range": true,
+          "refId": "M"
+        }
+      ],
+      "description": "Leak detectors. Growth that tracks fold_downstream_sessions is load; growth at steady load is a leak. FoldGoroutinesHigh and FoldMemoryHigh alert on sustained values."
     }
   ]
 }

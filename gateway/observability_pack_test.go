@@ -191,3 +191,132 @@ func TestBothRuleFilesCarryTheSameAlerts(t *testing.T) {
 			"silently loses it.", rulesPath, crd, plainRulesPath, plain)
 	}
 }
+
+// The rule files must name only error codes fold actually mints. v1.15.0
+// renumbered every minted code; the plain file was updated and the chart's
+// copy was not, so an operator paged at 3am would have grepped the codebase
+// for -32041 and found nothing. The name-lockstep test above could not see it
+// — it compares alert names, and both files had the same names.
+func TestPackNamesOnlyMintedErrorCodes(t *testing.T) {
+	minted := map[string]bool{}
+	for _, src := range []string{"upstream.go", "tasks.go"} {
+		for _, m := range regexp.MustCompile(`(?m)^\s*code\w+\s*=\s*(-3\d{4})\b`).FindAllStringSubmatch(readFile(t, src), -1) {
+			minted[m[1]] = true
+		}
+	}
+	if len(minted) < 5 {
+		t.Fatalf("found only %d minted codes in upstream.go/tasks.go — the extraction is wrong, not the pack", len(minted))
+	}
+	codeRE := regexp.MustCompile(`-3\d{4}\b`)
+	for _, path := range []string{rulesPath, plainRulesPath, dashboardPath} {
+		for _, code := range codeRE.FindAllString(readFile(t, path), -1) {
+			if !minted[code] {
+				t.Errorf("%s names error code %s, which fold does not mint (minted: %v)", path, code, minted)
+			}
+		}
+	}
+}
+
+// packAlerts parses one rule file into alert → (expr, for, severity,
+// summary), with the chart's templating normalized away so the two files can
+// be compared field by field rather than name by name. Descriptions are
+// exempt on purpose: the chart's copies legitimately refer to values keys the
+// plain file has no equivalent for; what they say about error codes is
+// covered by TestPackNamesOnlyMintedErrorCodes.
+type packAlert struct{ expr, wait, severity, summary string }
+
+func packAlerts(t *testing.T, path string) map[string]packAlert {
+	t.Helper()
+	raw := readFile(t, path)
+	// Template normalization for the CRD file.
+	raw = strings.ReplaceAll(raw, `{{ "{{" }}`, "{{")
+	raw = strings.ReplaceAll(raw, `{{ "}}" }}`, "}}")
+	raw = strings.ReplaceAll(raw, `{{ include "fold.fullname" . }}`, "fold")
+	raw = regexp.MustCompile(`(?m)^\s*\{\{- with \$labels \}\}.*\n`).ReplaceAllString(raw, "")
+	values := readFile(t, "../deploy/helm/fold/values.yaml")
+	raw = regexp.MustCompile(`\{\{ \.Values\.metrics\.prometheusRule\.(\w+) \}\}`).ReplaceAllStringFunc(raw, func(ref string) string {
+		key := regexp.MustCompile(`\.(\w+) \}\}`).FindStringSubmatch(ref)[1]
+		m := regexp.MustCompile(`(?m)^\s+` + key + `:\s*(\S+)`).FindStringSubmatch(values)
+		if m == nil {
+			t.Fatalf("%s references .Values.metrics.prometheusRule.%s, which values.yaml does not set", path, key)
+		}
+		return m[1]
+	})
+
+	out := map[string]packAlert{}
+	var cur string
+	var a packAlert
+	var inExpr bool
+	var exprIndent int
+	flush := func() {
+		if cur != "" {
+			out[cur] = a
+		}
+	}
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	for _, line := range strings.Split(raw, "\n") {
+		trim := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if inExpr {
+			if trim != "" && indent > exprIndent {
+				a.expr = norm(a.expr + " " + trim)
+				continue
+			}
+			inExpr = false
+		}
+		switch {
+		case strings.HasPrefix(trim, "- alert:"):
+			flush()
+			cur = strings.TrimSpace(strings.TrimPrefix(trim, "- alert:"))
+			a = packAlert{}
+		case strings.HasPrefix(trim, "- name:"):
+			flush()
+			cur = ""
+		case strings.HasPrefix(trim, "expr:"):
+			v := strings.TrimSpace(strings.TrimPrefix(trim, "expr:"))
+			if v == "|" || v == ">-" || v == "" {
+				inExpr, exprIndent = true, indent
+			} else {
+				a.expr = norm(v)
+			}
+		case strings.HasPrefix(trim, "for:"):
+			a.wait = strings.TrimSpace(strings.TrimPrefix(trim, "for:"))
+		case strings.HasPrefix(trim, "severity:"):
+			a.severity = strings.TrimSpace(strings.TrimPrefix(trim, "severity:"))
+		case strings.HasPrefix(trim, "summary:"):
+			a.summary = norm(strings.Trim(strings.TrimSpace(strings.TrimPrefix(trim, "summary:")), `"`))
+		}
+	}
+	flush()
+	return out
+}
+
+// Names matching is not enough: the same alert in both files must fire on the
+// same expression, after the same duration, at the same severity, and say the
+// same thing — or a deployment shape has a different alert wearing the same
+// name. The CRD's thresholds are substituted from values.yaml, so this also
+// pins that the chart defaults equal the plain file's literals.
+func TestBothRuleFilesCarryTheSameExprsAndSummaries(t *testing.T) {
+	crd, plain := packAlerts(t, rulesPath), packAlerts(t, plainRulesPath)
+	if len(crd) < 10 {
+		t.Fatalf("parsed only %d alerts from %s — the parser is wrong, not the rules", len(crd), rulesPath)
+	}
+	for name, c := range crd {
+		p, ok := plain[name]
+		if !ok {
+			continue // the name test reports this
+		}
+		if c.expr != p.expr {
+			t.Errorf("%s: expr differs\n  chart: %s\n  plain: %s", name, c.expr, p.expr)
+		}
+		if c.wait != p.wait {
+			t.Errorf("%s: for differs (chart %q, plain %q)", name, c.wait, p.wait)
+		}
+		if c.severity != p.severity {
+			t.Errorf("%s: severity differs (chart %q, plain %q)", name, c.severity, p.severity)
+		}
+		if c.summary != p.summary {
+			t.Errorf("%s: summary differs\n  chart: %s\n  plain: %s", name, c.summary, p.summary)
+		}
+	}
+}
