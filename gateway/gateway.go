@@ -4,6 +4,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1449,8 +1450,8 @@ func (g *Gateway) buildHandler() http.Handler {
 	)
 
 	// Pipeline (outermost first): host validation → auth → global rate
-	// limit → MCP.
-	var mcpChain http.Handler = streamable
+	// limit → discover refusal → MCP.
+	mcpChain := g.refuseDiscover(streamable)
 	mcpChain = g.rateLimitMiddleware(mcpChain)
 	if g.verifier != nil {
 		mcpChain = g.authMiddleware(mcpChain)
@@ -1517,6 +1518,56 @@ func (g *Gateway) buildHandler() http.Handler {
 	// silently (see rescue.go). The MCP path's own boundary is routeSafe,
 	// below the SDK's dispatch; this catches what happens above it.
 	return g.hostValidation(g.bodyCapMiddleware(g.recoverHTTP(mux)))
+}
+
+// refuseDiscover answers a session-less `server/discover` POST with 405
+// before the SDK's handler sees it. The stateful handler accepts that probe
+// and mints a session for it — then the client, finding the modern era
+// unavailable, falls back to a legacy initialize in a second session and
+// only ever deletes the second. Every connecting SDK client left one orphan
+// session behind, holding its goroutines and its bridged upstream session
+// until sessionIdleTimeoutMs reclaimed it; the load harness's session column
+// is how it was found. A 405 is what the SDK client treats as "this server
+// does not speak the era" (wrapped ErrRejected, then the legacy handshake),
+// and it is exactly what fold's own upstream leg already does to upstreams
+// (credentialTransport.RoundTrip) for the same reason. The era is unreachable
+// through fold regardless — era_test.go pins the refusal — so this changes
+// only how a probe is refused, not whether. Only session-less POSTs are read
+// here: one per client connect, and the body is already bounded by the cap.
+func (g *Gateway) refuseDiscover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.Header.Get("Mcp-Session-Id") == "" && r.Body != nil && r.Body != http.NoBody {
+			body, err := io.ReadAll(r.Body)
+			_ = r.Body.Close()
+			if err != nil {
+				// The body never arrived: the read deadline fired, or the cap
+				// tripped. Answer here rather than handing the SDK a body
+				// that fails on first read, and close the connection — a
+				// client that stalls its body is not one to keep a socket
+				// for, and the response header is what makes net/http drop
+				// it after the reply.
+				w.Header().Set("Connection", "close")
+				var mbe *http.MaxBytesError
+				if errors.As(err, &mbe) {
+					// bodyCapMiddleware's tripwire already counted and
+					// audited this one.
+					http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+				g.metrics.reject("body_timeout")
+				g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeError, Error: "request body did not arrive within the read deadline"})
+				http.Error(w, "request body did not arrive in time", http.StatusRequestTimeout)
+				return
+			}
+			if bytes.Contains(body, []byte(`"server/discover"`)) {
+				w.Header().Set("Allow", "POST")
+				http.Error(w, "the 2026-07-28 protocol era is not served by this gateway; initialize instead", http.StatusMethodNotAllowed)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // bodyReadTimeout bounds how long a request body may take to arrive. It is a
