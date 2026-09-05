@@ -50,6 +50,15 @@ coherent, so it comes first. None of these are "not yet" — they are decisions.
 - **Generating or hosting upstream MCP servers.** fold governs endpoints that
   already exist. Turning REST APIs into MCP servers, and running the resulting
   processes, is a different product.
+- **A stdio front door.** fold's client-facing transport is streamable HTTP,
+  and `fold-stdio` closes the stdio gap on the *upstream* side only. A
+  stdio-only client reaching the gateway is a different program — a local
+  process per user sits awkwardly with "one governed endpoint" and
+  complicates principal attribution and audit — and the ecosystem already has
+  bridges (`mcp-remote` and its peers) for that hop. The decision is recorded
+  in [design-stdio.md](design-stdio.md) under what the shim declines; this
+  entry exists because a gap recorded only in a design record's tail reads as
+  an oversight.
 - **A plugin runtime.** No embedded VM, no plugin SDK, no plugin hub. fold has
   one extension seam today — the Go embedding surface
   ([embedding.md](embedding.md)) for in-process users — and intends to add
@@ -261,7 +270,7 @@ upstream being gated, so it is documented as a hygiene control for federations
 you operate — not a boundary against a hostile server, where naming the tools
 remains the answer.
 
-### 9. The external decision hook
+### 9. The external decision hook — **shipped**
 
 The README has pre-committed the shape: an opt-in policy endpoint on the
 ingress and egress path. Building it does two jobs at once. It is the escape
@@ -290,6 +299,13 @@ guessing between fail-open and fail-closed would be wrong half the time, in a
 direction the operator discovers during an incident. And sending arguments and
 results to a second endpoint is a data-egress decision, which the
 documentation states in those words rather than leaving an operator to notice.
+
+Shipped as the `hook` section: ingress, egress, and server-initiated stages,
+`hook_denied` as its own audit outcome, `fold_hook_decisions_total` and
+`fold_hook_duration_seconds` with `FoldHookErrors` and `FoldHookLatencyHigh`
+in the alert pack. The operator guide is
+[configuration.md](configuration.md#hook); the security model records it as a
+trust boundary and a data-egress path.
 
 ### 10. Tenant as a first-class object — **shipped**
 
@@ -348,7 +364,7 @@ document fold already polls, and add two subcommands to a CLI that today has
 `--validate` and stops there: `fold diff`, comparing a running gateway's config
 against a file, and `fold lint`.
 
-### 13. Governing server-initiated requests
+### 13. Governing server-initiated requests — **shipped** for the handshake era; open for the next
 
 Deny-by-default currently applies to one direction. Every client→upstream
 invocation is authenticated, limited, tenanted, policy-checked, and audited;
@@ -376,6 +392,15 @@ the forward path.
 
 Content questions — "refuse an elicitation that asks for a password" — stay out
 and become a call site for the decision hook above.
+
+**What shipped**: `policy.serverInitiatedDecision` with per-rule grants,
+`policy.DecideServerInitiated` on the bridged-session handlers for sampling
+and elicitation, `direction: "server_initiated"` on the audit event, and the
+hook's `serverInitiated` stage — the reverse path is authenticated, policy-
+checked, and audited for every handshake-era client. The default stays
+`allow` for the reason the design record gives, and the deploy checklist says
+to set `deny`. **What has not**: everything below this line, which is the
+same governance at the call site the next protocol era moves it to.
 
 **The mechanism this governs is being retired, and the item survives it.** The
 `2026-07-28` revision removed server-initiated requests outright — not
@@ -409,7 +434,7 @@ through fold (the SDK serves `2026-07-28` only on stateless HTTP servers, and
 `gateway/era_test.go` pins the refusal), so nothing here is failing today. It
 becomes urgent the moment that canary does.
 
-### 14. Pinning upstream definitions
+### 14. Pinning upstream definitions — **shipped** as `warn`; `block` open
 
 A tool definition is the instruction set a model acts on and the annotations a
 policy decides with, and fold re-reads it from the upstream on every cache
@@ -430,7 +455,10 @@ list-refill path where `json.Unmarshal` already lives.
 Designed in [design-definition-pinning.md](design-definition-pinning.md),
 which is explicit that trust-on-first-use cannot vouch for the first
 definition, and which stops short of a full plan on purpose. Detection
-(`warn`) has no open questions and is what the roadmap intends to ship.
+(`warn`) shipped in v1.12 as `upstreams[].pinDefinitions` (`gateway/pinning.go`):
+baselines in `state.Store`, `fold_definition_drift_total`, the
+`upstream/definitionChanged` audit event carrying both digests, and
+`FoldDefinitionDrift` in the alert pack.
 Prevention (`block`) does: legitimate change and attack are the same bytes, so
 blocking needs a way to adopt a new definition, and every candidate either
 invents a write path into running state or hands operators a hand-copying

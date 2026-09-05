@@ -1,9 +1,11 @@
 # Design: the external decision hook
 
-Status: **proposed**. This records the design for the [roadmap](roadmap.md)'s
-Horizon 2 decision hook — the one out-of-process seam fold intends to add —
-and settles what it may see, what it may do, and what happens when it is slow
-or wrong.
+Status: **shipped** (`hook` section; `gateway/hook.go`). Kept as the record of
+why the hook is shaped the way it is — what it may see, what it may do, and
+what happens when it is slow or wrong — for the [roadmap](roadmap.md)'s
+Horizon 2 item 9. Where the implementation and this record disagree, the
+implementation and the configuration reference are the truth and the
+divergence is a bug in one or the other.
 
 ## Motivation
 

@@ -5,7 +5,7 @@ Primary CTA everywhere: **hit demo.fold.run/mcp** (secondary: `go run github.com
 Message: one line, from messaging.md — *fold is the open-source enterprise MCP gateway: every MCP client, every MCP server, one governed endpoint — 40/40 official conformance, gated in CI on every merge.*
 Owner of everything: Blake. Assets marked **[done]** are already live and need no work beyond a final check.
 
-Ported from the archived TypeScript repo's Aug 3–14 plan and rewritten against the Go implementation. Structural changes from the TS plan: the demo is back (Go-backed as of 2026-08-05 — the unmodified released binary, v1.4.1 today, in a container at demo.fold.run) but demonstrates federation/governance, not era translation; and the Cloudflare DevRel channel is gone with the Workers runtime, replaced by Go-ecosystem channels. Dates are relative (L = launch day) — pin L to a Tue/Wed/Thu morning and the rest follows.
+Ported from the archived TypeScript repo's Aug 3–14 plan and rewritten against the Go implementation. Structural changes from the TS plan: the demo is back (Go-backed as of 2026-08-05 — the unmodified released binary in a container at demo.fold.run; it ran v1.4.1 when this was written, was torn down on 2026-08-18 to stop container spend, and must be redeployed on the current release as the first L−2 task) but demonstrates federation/governance, not era translation; and the Cloudflare DevRel channel is gone with the Workers runtime, replaced by Go-ecosystem channels. Dates are relative (L = launch day) — pin L to a Tue/Wed/Thu morning and the rest follows.
 
 ---
 
@@ -47,7 +47,13 @@ Total effort budgeted at 4–8 hrs/day; launch day is a full day. Times are US P
 **L−1 (~5 hrs)**
 - **MCP community presence, quiet mode** (1.5 hrs). Join/re-engage official MCP Discord and MCP GitHub Discussions *as a contributor*: answer two or three open questions about 2026-07-28 or the Go SDK where you genuinely know the answer. No links to fold unless directly relevant. Credibility pre-seeding — the announcement post should come from a name people saw yesterday, not a stranger.
 - **Launch-day kit** (2 hrs). Pre-write and stage from channel-copy.md: Show HN title + body + first comment, X/Twitter thread (5–7 tweets: spec change → hard parts → receipts → quickstart), LinkedIn post (platform-engineer framing from messaging.md §4a), objection-response crib sheet (messaging.md §5 printed/pinned — you will use it verbatim in HN comments). Dry run the quickstart one final time, cold.
-- **Go/no-go check** (15 min, end of day): quickstart clean on two platforms; receipts one click deep; crib sheet ready; calendar cleared. Any red → slip launch by a day or two, not later.
+- **Go/no-go check** (30 min, end of day). The demo and the quickstart are the first touches; the deployable artifacts are what an evaluator installs the same afternoon, and a launch that passes the first two and fails the third produces the public issue this plan is trying not to have. All of these green, or slip by a day or two, not later:
+  - quickstart clean on two platforms (cold cache), and `docker run ghcr.io/fold-run/fold:<latest>` reports healthy in `docker ps` (the image's `HEALTHCHECK`);
+  - `helm install fold oci://ghcr.io/fold-run/charts/fold --version <chart>` on a fresh kind cluster with the example values, then `helm test fold` passes — the packaged smoke script through a real Service;
+  - `scripts/smoke.sh https://demo.fold.run --tool <namespaced tool>` passes against the redeployed demo;
+  - `gh attestation verify` on the release image and the chart succeeds from a machine that is not yours;
+  - `kubectl apply -f deploy/fold-discovery.yaml` applies on the same kind cluster (two steps: manifest, then the token Secret);
+  - receipts one click deep; crib sheet ready; calendar cleared.
 
 ### Launch day: L (Tue/Wed/Thu only)
 

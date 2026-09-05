@@ -1,9 +1,11 @@
 # Design: policy depth
 
-Status: **proposed**. This records the design for the [roadmap](roadmap.md)'s
-Horizon 2 policy-depth item — deny rules, argument-level constraints, and
-destructive-operation gating — and settles the three questions each one raises
-before any of them is built.
+Status: **shipped** (`policy.rules[].deny`, `allow[].args`, `allow[].toolKind`
+in `policy/policy.go`). Kept as the record of the three questions deny rules,
+argument-level constraints, and destructive-operation gating each raise, and
+how they were settled before being built — for the [roadmap](roadmap.md)'s
+Horizon 2 item 8, which carries the two things implementation decided that
+this record did not anticipate.
 
 ## Motivation
 

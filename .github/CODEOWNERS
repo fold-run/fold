@@ -1,0 +1,4 @@
+# Every path has an owner, so a review request has a name on it and the
+# governance story for a security boundary is not "whoever merges". fold is
+# maintained by one person today; this file is where that changes.
+* @blakebauman
