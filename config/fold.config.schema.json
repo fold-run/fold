@@ -336,6 +336,7 @@
       "properties": {
         "mcpPath": { "type": "string" },
         "allowedHosts": { "type": "array", "items": { "type": "string" } },
+        "allowedOrigins": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "rateLimit": { "$ref": "#/definitions/rateLimit" },
         "budget": { "$ref": "#/definitions/budget" },
         "maxBodyBytes": { "type": "integer", "minimum": 0 },
@@ -443,6 +444,10 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "allowedCredentialHosts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allowedUpstreamHosts": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },

@@ -126,6 +126,19 @@ type Discovery struct {
 	// Upstreams with no credentials (strategy none/absent) are unaffected.
 	AllowedCredentialHosts []string `json:"allowedCredentialHosts,omitempty"`
 
+	// AllowedUpstreamHosts restricts where *any* discovered upstream may
+	// point — credentialed or not. AllowedCredentialHosts bounds where a
+	// secret travels; this bounds where traffic travels and, more to the
+	// point, whose tool definitions reach every caller's list: a source that
+	// can register an uncredentialed upstream at an arbitrary host can put
+	// arbitrary tool names and descriptions in front of every model behind
+	// the gateway, and make the gateway open outbound connections to that
+	// host on every list fan-out. Same pattern rules as
+	// AllowedCredentialHosts. Absent → unrestricted; present → a violating
+	// document is rejected whole. Construction-wired, like the rest of this
+	// section.
+	AllowedUpstreamHosts []string `json:"allowedUpstreamHosts,omitempty"`
+
 	// MinHealthCheckIntervalMs floors healthCheck.intervalMs on discovered
 	// upstreams (default 1000). A discovery source could otherwise turn the
 	// gateway into a probe flood against a host of its choosing.
@@ -856,6 +869,20 @@ type ServerSection struct {
 	AllowedHosts []string   `json:"allowedHosts,omitempty"` // default localhost set; ["*"] disables
 	RateLimit    *RateLimit `json:"rateLimit,omitempty"`    // global, across all upstreams
 
+	// AllowedOrigins is the Origin allowlist for browser-originated requests,
+	// independent of AllowedHosts. Absent, the Origin rule is derived from
+	// AllowedHosts — an Origin must name an allowed host — which is right
+	// for a gateway that serves its own hostname and wrong in one common
+	// posture: `allowedHosts: ["*"]` behind a proxy that validates Host for
+	// it, where the derived rule also disappeared and DNS-rebinding
+	// protection went with it. MCP requires the Origin check regardless of
+	// how Host is handled. Entries follow AllowedHosts' rules — exact
+	// hostnames or "*.suffix" — and match the Origin's host; ports are
+	// ignored. `["*"]` accepts any Origin, which is the explicit form of what
+	// a Host wildcard used to imply, and silences the startup warning about
+	// it. Construction-wired.
+	AllowedOrigins []string `json:"allowedOrigins,omitempty"`
+
 	// Budget caps total consumption across every upstream over a calendar
 	// period. Like the rest of this section it is construction-wired: Reload
 	// rejects a change to it, so a budget cannot be widened by editing config
@@ -1508,6 +1535,11 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("discovery: allowedCredentialHosts: %q is not a hostname or \"*.suffix\" pattern", pat)
 			}
 		}
+		for _, pat := range c.Discovery.AllowedUpstreamHosts {
+			if pat == "" || pat == "*" || (strings.HasPrefix(pat, "*") && !strings.HasPrefix(pat, "*.")) {
+				return fmt.Errorf("discovery: allowedUpstreamHosts: %q is not a hostname or \"*.suffix\" pattern", pat)
+			}
+		}
 		// Granting a credential without bounding its destination is the
 		// exfiltration path the allowlists exist to close: the two halves
 		// are only meaningful together.
@@ -1519,6 +1551,17 @@ func (c *Config) Validate() error {
 		}
 		if credentialed && c.Discovery.AllowedCredentialHosts == nil {
 			return fmt.Errorf("discovery: allowedCredentialHosts is required when allowedAuthStrategies or allowedSecretRefs permits credentials — otherwise the discovery source chooses where those credentials are sent")
+		}
+	}
+	if c.Server != nil {
+		for _, pat := range c.Server.AllowedOrigins {
+			if pat == "*" {
+				continue // the explicit "any origin" form
+			}
+			if pat == "" || strings.Contains(pat, "://") || strings.Contains(pat, "/") ||
+				(strings.HasPrefix(pat, "*") && !strings.HasPrefix(pat, "*.")) {
+				return fmt.Errorf("server: allowedOrigins: %q is not a hostname, \"*.suffix\" pattern, or \"*\" — entries name the Origin's host, not a URL", pat)
+			}
 		}
 	}
 	if c.Tracing != nil {

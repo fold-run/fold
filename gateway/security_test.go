@@ -451,3 +451,107 @@ func TestCleartextCredentialedUpstreamIsWarnedAtStartup(t *testing.T) {
 		t.Fatalf("want exactly one cleartext warning, for upstream=keyed; got %d:\n%s", len(warned), strings.Join(warned, "\n"))
 	}
 }
+
+// postWithOrigin sends a minimal /mcp request carrying Host and Origin and
+// returns the status. Anything other than 403 means the request passed the
+// host/origin stage; what the MCP layer then says about an empty body is not
+// what these tests assert.
+func postWithOrigin(t *testing.T, url, host, origin string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, url+"/mcp", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	if host != "" {
+		req.Host = host
+	}
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// allowedHosts ["*"] used to switch the Origin check off with it, and MCP
+// requires Origin validation however Host is handled. The old behaviour is
+// kept — a ["*"] deployment behind a proxy keeps working and is warned at
+// startup — and server.allowedOrigins is the rule that closes the gap without
+// forcing same-origin on the browser clients that work today.
+func TestAllowedOriginsUnderWildcardHosts(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+
+	// Wildcard alone: any Origin passes, and the gateway says so at startup.
+	var buf bytes.Buffer
+	gw, err := New(&config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Server:    &config.ServerSection{AllowedHosts: []string{"*"}},
+	}, WithLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(gw.Handler())
+	t.Cleanup(func() { ts.Close(); gw.Close() })
+	if code := postWithOrigin(t, ts.URL, "127.0.0.1", "https://evil.example"); code == http.StatusForbidden {
+		t.Fatalf("wildcard hosts without allowedOrigins refused an Origin; the compatibility behaviour changed")
+	}
+	if !strings.Contains(buf.String(), "browser Origins are not validated") {
+		t.Fatalf("no startup warning for wildcard hosts without allowedOrigins; got:\n%s", buf.String())
+	}
+
+	// Wildcard plus allowedOrigins: the Origin rule applies on its own.
+	var quiet bytes.Buffer
+	gw2, err := New(&config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Server:    &config.ServerSection{AllowedHosts: []string{"*"}, AllowedOrigins: []string{"inspector.example", "*.apps.example"}},
+	}, WithLogger(slog.New(slog.NewTextHandler(&quiet, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts2 := httptest.NewServer(gw2.Handler())
+	t.Cleanup(func() { ts2.Close(); gw2.Close() })
+	if strings.Contains(quiet.String(), "browser Origins are not validated") {
+		t.Fatal("warned although allowedOrigins is set")
+	}
+	if code := postWithOrigin(t, ts2.URL, "127.0.0.1", "https://evil.example"); code != http.StatusForbidden {
+		t.Fatalf("disallowed Origin passed under allowedOrigins: %d", code)
+	}
+	for _, good := range []string{"https://inspector.example:6274", "http://tool.apps.example"} {
+		if code := postWithOrigin(t, ts2.URL, "127.0.0.1", good); code == http.StatusForbidden {
+			t.Fatalf("allowed Origin %s refused", good)
+		}
+	}
+	if code := postWithOrigin(t, ts2.URL, "127.0.0.1", "null"); code != http.StatusForbidden {
+		t.Fatalf("Origin null passed under allowedOrigins: %d", code)
+	}
+	if code := postWithOrigin(t, ts2.URL, "127.0.0.1", ""); code == http.StatusForbidden {
+		t.Fatal("a request with no Origin (non-browser client) was refused")
+	}
+}
+
+// With an explicit host allowlist and no allowedOrigins, the Origin rule is
+// derived from the hosts, as it always was. Setting allowedOrigins replaces
+// that derivation rather than extending it.
+//
+// The allowed host is loopback on purpose: the SDK's streamable handler has
+// its own DNS-rebinding guard that refuses a non-loopback Host on a
+// connection that arrived over a loopback address — which is every httptest
+// server with a rewritten Host header. fold's own check runs first and is
+// what this test is about; a loopback Host keeps the SDK's guard out of it.
+func TestAllowedOriginsReplaceTheDerivedRule(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "u", URL: up.URL}},
+		Server:    &config.ServerSection{AllowedHosts: []string{"127.0.0.1"}, AllowedOrigins: []string{"app.example"}},
+	})
+	if code := postWithOrigin(t, ts.URL, "127.0.0.1", "https://app.example"); code == http.StatusForbidden {
+		t.Fatal("listed Origin refused although it is not an allowed host — allowedOrigins must stand on its own")
+	}
+	if code := postWithOrigin(t, ts.URL, "127.0.0.1", "http://127.0.0.1"); code != http.StatusForbidden {
+		t.Fatalf("the gateway's own host passed as an Origin though allowedOrigins does not list it: %d", code)
+	}
+	if code := postWithOrigin(t, ts.URL, "evil.example", "https://app.example"); code != http.StatusForbidden {
+		t.Fatalf("bad Host passed because the Origin was fine: %d — the two checks are independent", code)
+	}
+}

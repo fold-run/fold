@@ -438,7 +438,9 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 
 ## Production checklist
 
-- [ ] `server.allowedHosts` pinned to your public hostname(s), not `["*"]`
+- [ ] `server.allowedHosts` pinned to your public hostname(s), not `["*"]` —
+      and if it must be `["*"]` behind a proxy, `server.allowedOrigins` set,
+      because the wildcard switches the Origin check off with it
 - [ ] `auth.mode: "required"` with your IdP's issuer (anonymous gateways
       have no per-principal policy or rate limits; fold warns at startup when
       auth is off and the listener is bound beyond loopback)
@@ -465,11 +467,12 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
       and `FoldHookErrors` is routed somewhere a human reads — under
       `onError: "allow"` that alert is the only signal that calls are going
       uninspected
-- [ ] Discovery: `allowedAuthStrategies`, `allowedSecretRefs`, and
-      `allowedCredentialHosts` set whenever the registry is not operated by
-      the gateway's own operators (the gateway warns at startup when all
-      three are absent); avoid `"server": "*"` policy rules combined with
-      discovery
+- [ ] Discovery: `allowedAuthStrategies`, `allowedSecretRefs`,
+      `allowedCredentialHosts`, and `allowedUpstreamHosts` set whenever the
+      registry is not operated by the gateway's own operators (the gateway
+      warns at startup when the credential three are all absent, and again
+      when `allowedUpstreamHosts` is); avoid `"server": "*"` policy rules
+      combined with discovery
 - [ ] Multi-tenant: `server.introspection.groups` set — any valid principal
       may otherwise read the federation topology from `/api/federation`
 - [ ] `rediss://` for Redis and HTTPS upstream URLs even inside the mesh

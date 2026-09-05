@@ -482,6 +482,14 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 	}
 	g.baseCfg = cfg
 	g.warnCleartextCredentials(cfg.Upstreams)
+	if cfg.Server != nil && slices.Contains(cfg.Server.AllowedHosts, "*") && cfg.Server.AllowedOrigins == nil {
+		// The Host wildcard used to switch off the Origin check with it,
+		// and MCP requires Origin validation however Host is handled. The
+		// old behaviour is kept so a ["*"] deployment behind a proxy keeps
+		// working; the gap is named so it is chosen rather than inherited.
+		g.log.Warn("allowedHosts is \"*\" and no allowedOrigins is set — browser Origins are not validated, so DNS-rebinding protection is off",
+			"hint", "set server.allowedOrigins to the origins browser clients legitimately use, or [\"*\"] to accept the exposure explicitly")
+	}
 	if cfg.Discovery != nil {
 		// The allowlists are what stop a compromised discovery source from
 		// pointing gateway-held secrets (or callers' tokens, via
@@ -492,6 +500,13 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 			cfg.Discovery.AllowedCredentialHosts == nil {
 			g.log.Warn("discovery configured without credential allowlists — the source can attach any secretRef and point credentialed upstreams anywhere",
 				"hint", "set discovery.allowedAuthStrategies / allowedSecretRefs / allowedCredentialHosts unless the source is operated by the gateway's own operators")
+		}
+		if cfg.Discovery.AllowedUpstreamHosts == nil {
+			// A different exposure from the credential one: no secret has
+			// to travel for a source to register an upstream at any host and
+			// put its tool definitions in every caller's list.
+			g.log.Warn("discovery configured without allowedUpstreamHosts — the source can register an upstream at any host, and its tool definitions reach every caller",
+				"hint", "set discovery.allowedUpstreamHosts to the hosts upstreams are allowed to live on")
 		}
 		g.discovery = newDiscoverer(g, cfg.Discovery)
 		go g.discovery.loop()
@@ -656,6 +671,23 @@ func checkDiscoveredCredentials(d *config.Discovery, ups []config.Upstream) erro
 	}
 	for i := range ups {
 		u := &ups[i]
+		// Destination first, credentialed or not: a source that can register
+		// an uncredentialed upstream at an arbitrary host can put arbitrary
+		// tool definitions in front of every model behind the gateway and
+		// make the gateway dial that host on every list fan-out. The
+		// credential allowlists below bound where a *secret* travels; this
+		// bounds where traffic travels.
+		if d.AllowedUpstreamHosts != nil {
+			for _, raw := range u.Endpoints() {
+				parsed, err := url.Parse(raw)
+				if err != nil {
+					return fmt.Errorf("discovery: upstream %q: unparseable endpoint %q", u.ID, raw)
+				}
+				if !config.HostAllowed(d.AllowedUpstreamHosts, parsed.Host) {
+					return fmt.Errorf("discovery: upstream %q: endpoint host %q is not in allowedUpstreamHosts", u.ID, parsed.Host)
+				}
+			}
+		}
 		if u.Auth == nil {
 			continue
 		}
@@ -1673,6 +1705,18 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 		allowed["127.0.0.1"] = true
 		allowed["::1"] = true
 	}
+	// The Origin rule is server.allowedOrigins when set; otherwise it is
+	// derived from the host allowlist, which under a Host wildcard means no
+	// rule at all. That gap is announced at startup (see New) rather than
+	// closed here: closing it by requiring same-origin would refuse the
+	// browser clients — Inspector on localhost:6274 against a ["*"] gateway
+	// — that work today, and the additive field is the non-breaking shape.
+	var originRule []string
+	originWildcard := false
+	if g.cfg.Server != nil && g.cfg.Server.AllowedOrigins != nil {
+		originRule = g.cfg.Server.AllowedOrigins
+		originWildcard = slices.Contains(originRule, "*")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Rejections flow through audit like any other terminal response —
 		// audit is the single exit door, and a DNS-rebinding attempt is
@@ -1685,17 +1729,26 @@ func (g *Gateway) hostValidation(next http.Handler) http.Handler {
 				http.Error(w, "forbidden host", http.StatusForbidden)
 				return
 			}
-			if origin := r.Header.Get("Origin"); origin != "" {
-				// A present Origin must resolve to an allowed host. An origin
-				// that is not a well-formed absolute URL — "null" from a
-				// sandboxed document, or an authority whose port is not
-				// numeric — has no allowed host and fails closed.
-				if !originAllowed(allowed, origin) {
-					g.metrics.reject("forbidden_origin")
-					g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeForbidden, Error: fmt.Sprintf("forbidden origin %q", origin)})
-					http.Error(w, "forbidden origin", http.StatusForbidden)
-					return
-				}
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			// A present Origin must satisfy the rule. An origin that is not
+			// a well-formed absolute URL — "null" from a sandboxed document,
+			// or an authority whose port is not numeric — has no host and
+			// fails closed under either rule.
+			var ok bool
+			switch {
+			case originRule != nil:
+				ok = originWildcard || originAllowedBy(originRule, origin)
+			case wildcard:
+				ok = true // no rule to apply; announced at startup
+			default:
+				ok = originAllowed(allowed, origin)
+			}
+			if !ok {
+				g.metrics.reject("forbidden_origin")
+				g.audit.Emit(audit.Event{Method: "http", Outcome: audit.OutcomeForbidden, Error: fmt.Sprintf("forbidden origin %q", origin)})
+				http.Error(w, "forbidden origin", http.StatusForbidden)
+				return
 			}
 		}
 		next.ServeHTTP(w, r)
@@ -1735,6 +1788,17 @@ func originAllowed(allowed map[string]bool, origin string) bool {
 	}
 	host, ok := authorityHost(u.Host)
 	return ok && allowed[host]
+}
+
+// originAllowedBy is originAllowed against server.allowedOrigins patterns
+// (exact hostnames or "*.suffix"), with the same parsing discipline.
+func originAllowedBy(patterns []string, origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	host, ok := authorityHost(u.Host)
+	return ok && config.HostAllowed(patterns, host)
 }
 
 // authMiddleware enforces Bearer auth via the SDK's resource-server

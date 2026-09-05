@@ -47,6 +47,13 @@ upstreams at any endpoint. Unless the source is operated by this gateway's
 own operators, set discovery.allowedAuthStrategies, allowedSecretRefs, and
 allowedCredentialHosts.
 {{- end }}
+{{- if not (hasKey $disc "allowedUpstreamHosts") }}
+
+WARNING: discovery is enabled without allowedUpstreamHosts. The discovery
+source can register an upstream at any host — no credential required — and
+its tool names and descriptions reach every caller. Set
+discovery.allowedUpstreamHosts to the hosts upstreams may live on.
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.listener.enabled) }}
