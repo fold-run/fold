@@ -157,7 +157,9 @@ jobs:
           context: .
           file: deploy/docker/fold.Dockerfile
           push: false
-          build-args: VERSION=ci
+          build-args: |
+            VERSION=ci
+            REVISION=${{ github.sha }}
 
       - name: build stdio image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -165,7 +167,9 @@ jobs:
           context: .
           file: deploy/docker/stdio.Dockerfile
           push: false
-          build-args: VERSION=ci
+          build-args: |
+            VERSION=ci
+            REVISION=${{ github.sha }}
 
       - name: build discovery image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -173,7 +177,9 @@ jobs:
           context: .
           file: deploy/docker/discovery.Dockerfile
           push: false
-          build-args: VERSION=ci
+          build-args: |
+            VERSION=ci
+            REVISION=${{ github.sha }}
 
       - name: build registry image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -181,4 +187,6 @@ jobs:
           context: .
           file: deploy/docker/registry.Dockerfile
           push: false
-          build-args: VERSION=ci
+          build-args: |
+            VERSION=ci
+            REVISION=${{ github.sha }}

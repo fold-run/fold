@@ -7,3 +7,12 @@ README.md
 CHANGELOG.md
 LICENSE
 scripts
+# Local artifacts that are never part of an image and can be large: test
+# binaries from `go test -c`, coverage, goreleaser output, the compose
+# stack's config and data.
+*.test
+coverage.out
+dist
+data
+.env
+fold.config.json

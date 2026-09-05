@@ -1,0 +1,34 @@
+# A minimal OpenTelemetry Collector for the compose observability profile:
+# receives fold's spans (the `tracing` section) and its audit events (the
+# `otlp-logs` sink) over OTLP/HTTP on :4318 and prints both, so the tracing
+# and OTLP-audit paths have a runnable example rather than only a config
+# reference. Point fold at it with:
+#
+#   "tracing": { "otlpEndpoint": "http://otel-collector:4318" }
+#   "audit":   { "sinks": [{ "type": "otlp-logs", "endpoint": "http://otel-collector:4318" }] }
+#
+# Replace the `debug` exporter with your backend's (otlp to Tempo/Jaeger for
+# traces, otlphttp or loki for logs); everything else stays.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

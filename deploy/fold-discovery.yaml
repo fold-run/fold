@@ -1,8 +1,33 @@
 # fold-discovery: the Kubernetes discovery-document producer.
 # Lists Services labeled fold.run/upstream=true and serves the discovery
-# document a fold gateway polls via its `discovery.url`. Adjust namespace,
-# and scope the RBAC to a Role/RoleBinding + --namespace for a single
-# namespace instead of cluster-wide.
+# document a fold gateway polls via its `discovery.url`.
+#
+# Apply in two steps — the token is the one object this file cannot carry:
+#
+#   kubectl apply -f deploy/fold-discovery.yaml            # namespace, RBAC, Deployment, Service
+#   kubectl -n fold create secret generic fold-discovery-token \
+#     --from-literal=token="$(openssl rand -hex 32)"        # the poll credential
+#
+# The gateway presents the same value as FOLD_DISCOVERY_TOKEN (its
+# `discovery.bearerSecretRef`), so put it in the gateway's Secret too. Until
+# the Secret exists the pod sits in CreateContainerConfigError, which is the
+# manifest refusing to run unauthenticated rather than a mistake.
+#
+# RBAC is a namespaced Role by default — the producer lists Services in one
+# namespace, its own — because a component that can read every Service in
+# the cluster should have to be granted that on purpose. To watch another
+# namespace, change the Role's and RoleBinding's namespace and --namespace
+# together; to watch the whole cluster, replace both with the ClusterRole and
+# ClusterRoleBinding commented out below and drop --namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fold
+  labels:
+    # The pod below satisfies the restricted profile; say so where the
+    # admission controller reads it.
+    pod-security.kubernetes.io/enforce: restricted
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -10,26 +35,52 @@ metadata:
   namespace: fold
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: fold-discovery
+  namespace: fold
 rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: fold-discovery
+  namespace: fold
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: fold-discovery
 subjects:
   - kind: ServiceAccount
     name: fold-discovery
     namespace: fold
+# --- cluster-wide variant: replace the Role and RoleBinding above with these
+# --- and remove --namespace from the container args.
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: ClusterRole
+# metadata:
+#   name: fold-discovery
+# rules:
+#   - apiGroups: [""]
+#     resources: ["services"]
+#     verbs: ["get", "list"]
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: ClusterRoleBinding
+# metadata:
+#   name: fold-discovery
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: ClusterRole
+#   name: fold-discovery
+# subjects:
+#   - kind: ServiceAccount
+#     name: fold-discovery
+#     namespace: fold
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -47,12 +98,22 @@ spec:
         app.kubernetes.io/name: fold-discovery
     spec:
       serviceAccountName: fold-discovery
+      # The producer talks to the API server with this token; it is the one
+      # fold component that needs it mounted.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: fold-discovery
           image: ghcr.io/fold-run/fold-discovery:v1.15.0 # equals the chart appVersion, enforced by gateway/release_pins_test.go and bumped by the release flow
           args:
             - --log-format
             - json
+            # Matches the Role above; remove for the ClusterRole variant.
+            - --namespace
+            - fold
             # Registration bounds — see docs/discovery-controller.md.
             # Namespace prefixing is on by default (anti-squatting); add
             # --allow-unprefixed-ids only in single-tenant clusters.
@@ -83,6 +144,10 @@ spec:
             httpGet:
               path: /health
               port: http
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -107,10 +172,15 @@ spec:
     - name: http
       port: 8090
       targetPort: http
-# Point the gateway at it:
-#   "discovery": { "url": "http://fold-discovery.fold.svc.cluster.local:8090/upstreams.json",
+# Pointing the gateway at it. fold requires https for discovery.url except on
+# loopback, so the shape that works with nothing else installed is the
+# producer as a sidecar in the gateway pod:
+#
+#   "discovery": { "url": "http://127.0.0.1:8090/upstreams.json",
 #                  "bearerSecretRef": "FOLD_DISCOVERY_TOKEN",
+#                  "allowedUpstreamHosts": ["*.svc.cluster.local"],
 #                  "allowedCredentialHosts": ["*.svc.cluster.local"] }
-# (fold requires https for discovery.url except loopback; front this Service
-# with TLS — e.g. a service mesh or an in-cluster cert — or run the producer
-# as a sidecar in the gateway pod and use http://127.0.0.1:8090.)
+#
+# To use this standalone Service instead, put TLS in front of it — a service
+# mesh or an in-cluster certificate — and point at
+#   https://fold-discovery.fold.svc.cluster.local:8090/upstreams.json

@@ -353,6 +353,13 @@ by default, the audit trail being where identity belongs), and a client
 span per upstream call (`upstream <id>`) closed with its guard outcome. Export is batched off the request path; `Close`/shutdown
 flushes with a 3 s bound so a dead collector cannot hang termination.
 
+A runnable example ships with the compose observability profile:
+[`deploy/observability/otel-collector.yaml`](../deploy/observability/otel-collector.yaml)
+is an OpenTelemetry Collector that receives both fold's spans and its
+`otlp-logs` audit events on `otel-collector:4318` — the endpoint
+`fold.config.example.json` already names — and prints them. Swap its `debug`
+exporter for your backend's and the rest stands.
+
 ## Log streams
 
 Operational logs go to stderr via `log/slog` (`--log-format text|json`,

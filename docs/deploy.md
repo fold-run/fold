@@ -42,6 +42,14 @@ docker run --rm -p 8080:8080 \
   not the flag's.)
 - `--host 0.0.0.0` is required in a container: the binary binds `127.0.0.1`
   by default, which is unreachable through published ports.
+- The image carries a `HEALTHCHECK` (`fold --healthcheck`, the binary's own
+  probe — distroless has no shell), so `docker ps` reports health without
+  configuration. It answers "is the process serving", never "are upstreams
+  up": a `503` from `/health` is healthy here, on purpose. Override the check
+  if you run the gateway on a port other than 8080.
+- Every image carries OCI labels (`org.opencontainers.image.source`,
+  `.revision`, `.version`, `.licenses`), so a registry UI links the image
+  back to the commit and an admission policy can key on the revision.
 - The image runs as nonroot on distroless static; `--read-only` works.
 
 Images are multi-arch (linux/amd64, linux/arm64), tagged `latest` and per
