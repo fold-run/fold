@@ -339,3 +339,16 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 topologySpreadConstraints: []
+
+# `helm test <release>` runs deploy/helm/fold/files/smoke.sh against the
+# Service: initialize → tools/list → /health → /metrics, with the probe Host
+# header. Any curl-carrying image works; the default is pinned by digest.
+tests:
+  enabled: true
+  image: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+  # A tool to call with empty arguments after tools/list (its namespaced
+  # name, e.g. gh__list_repos). Empty skips the call.
+  tool: ""
+  # Extra env for the test pod — e.g. a bearer token for an auth-required
+  # gateway, then reference it in `tool`-less runs via SMOKE_TOKEN below.
+  env: []

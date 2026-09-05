@@ -92,11 +92,29 @@ The important knobs (see `values.yaml` for the full set with comments):
 | `extraVolumes` / `extraVolumeMounts` | `[]` | Private CA bundle (+ `SSL_CERT_FILE` in `env`), or a writable path for the `file` audit sink / `deadLetterPath` under the read-only root. |
 | `autoscaling.behavior` | slow scale-down | HPA `behavior`; default removes at most one pod a minute after five minutes of low load, because scale-down cuts live SSE sessions. |
 | `metrics.listener.externalConfigSetsMetricsAddr` | `false` | Required confirmation to use the metrics listener with `existingConfigMap`, whose `server.metricsAddr` the chart cannot inject. |
+| `tests.*` | enabled, curl image | `helm test <release>` runs the packaged smoke script (initialize → tools/list → /health → /metrics) against the Service; `tests.tool` adds a `tools/call`. |
 | `ingress.*` | disabled | Remember SSE annotations (long-lived streams) and that ingress hosts must appear in `allowedHosts`. |
 | `autoscaling.*` / `podDisruptionBudget.*` / `metrics.serviceMonitor.*` | disabled | Standard optional resources. |
 
 ## Development
 
 ```bash
-make helm-check   # helm lint + template render over deploy/helm/fold/ci/*.yaml
+make helm-check   # helm lint --strict (values.schema.json enforced) + template render over deploy/helm/fold/ci/*.yaml at two Kubernetes versions
 ```
+
+`values.schema.json` types every value, so a typo (`replicaCount: "2"`,
+`probes.readiness.timeout`) fails `helm lint`/`install` instead of rendering
+silently; `additionalProperties: false` at every level the chart owns means
+an unknown key is an error too. Free-form objects the chart passes through to
+Kubernetes (`config`, `resources`, `strategy`, `affinity`, …) stay untyped.
+
+The `ci/` shapes each render at Kubernetes 1.31 (with the `preStop` sleep
+action) and 1.28 (without). Two shapes are asserted to **fail**:
+`metrics.listener.enabled` with `existingConfigMap` but without
+`metrics.listener.externalConfigSetsMetricsAddr: true`, and a
+`terminationGracePeriodSeconds` not exceeding `lifecycle.preStopSleepSeconds`
+plus the drain — `ci/existing-configmap-metrics-values.yaml` is the passing
+form of the first.
+
+After an install, `helm test <release>` runs `files/smoke.sh` in a pod; the
+same script is `scripts/smoke.sh` in the repo for running by hand.
