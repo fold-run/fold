@@ -294,3 +294,88 @@ func TestDiscoveryIntervalClamped(t *testing.T) {
 	}
 	close(d.stop)
 }
+
+// healthOf reads /health once: status code and decoded body.
+func healthOf(t *testing.T, url string) (int, map[string]any) {
+	t.Helper()
+	resp, err := http.Get(url + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /health: %v", err)
+	}
+	return resp.StatusCode, body
+}
+
+// A gateway whose only source of upstreams is discovery must not be ready
+// until that source has answered. Before this, an unreachable registry at
+// boot left the upstream set empty, /health found nothing to probe and
+// answered 200, and the pod joined the Service serving every client an empty
+// tools/list with no error. The readiness probe is the mechanism that keeps
+// such a pod out of rotation, so /health has to say 503 — and say why.
+func TestDiscoveryOnlyGatewayIsUnreadyUntilTheSourceApplies(t *testing.T) {
+	registry, doc := discoveryRegistry(t, "")
+	doc.Store("") // the source answers 500 until told otherwise
+	up, _ := newUpstreamServer(t, "alpha_tool")
+
+	ts, _ := startGateway(t, &config.Config{
+		Discovery: &config.Discovery{URL: registry.URL, IntervalMs: 50},
+	})
+
+	// Let the first sync fail before reading, so the assertion is about a
+	// failed source rather than about a race with the first poll.
+	waitFor(t, 5*time.Second, func() bool {
+		_, body := healthOf(t, ts.URL)
+		disc, _ := body["discovery"].(map[string]any)
+		return disc != nil && disc["lastOutcome"] == "error"
+	}, "discovery never recorded the failed fetch")
+
+	code, body := healthOf(t, ts.URL)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("/health = %d with no upstreams and a source that has never applied; want 503", code)
+	}
+	if body["status"] != "degraded" {
+		t.Fatalf("status = %v, want degraded", body["status"])
+	}
+	disc := body["discovery"].(map[string]any)
+	if disc["applied"] != false {
+		t.Fatalf("discovery.applied = %v, want false", disc["applied"])
+	}
+	if _, leaks := disc["url"]; leaks {
+		t.Fatal("/health is unauthenticated and must not carry the discovery URL")
+	}
+
+	// The registry comes up. The pod becomes ready on the next poll.
+	doc.Store(fmt.Sprintf(`{"upstreams":[{"id":"a","url":%q,"namespace":"a"}]}`, up.URL))
+	waitFor(t, 5*time.Second, func() bool {
+		code, _ := healthOf(t, ts.URL)
+		return code == http.StatusOK
+	}, "/health never recovered after the discovery source came up")
+	_, body = healthOf(t, ts.URL)
+	disc = body["discovery"].(map[string]any)
+	if body["status"] != "ok" || disc["applied"] != true || disc["lastOutcome"] == "error" {
+		t.Fatalf("after apply: status=%v discovery=%v", body["status"], disc)
+	}
+}
+
+// The condition is "never applied", not "currently empty". A source that
+// applies an empty document has answered, and the registry saying the
+// federation is empty is an answer fold believes.
+func TestDiscoveryEmptyDocumentIsReady(t *testing.T) {
+	registry, _ := discoveryRegistry(t, "") // serves {"upstreams":[]} by default
+	ts, _ := startGateway(t, &config.Config{
+		Discovery: &config.Discovery{URL: registry.URL, IntervalMs: 50},
+	})
+	waitFor(t, 5*time.Second, func() bool {
+		code, _ := healthOf(t, ts.URL)
+		return code == http.StatusOK
+	}, "an applied empty document must make the gateway ready")
+	_, body := healthOf(t, ts.URL)
+	disc := body["discovery"].(map[string]any)
+	if disc["applied"] != true || disc["lastOutcome"] != "applied" && disc["lastOutcome"] != "unchanged" {
+		t.Fatalf("discovery = %v, want applied", disc)
+	}
+}

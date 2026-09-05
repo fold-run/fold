@@ -1987,7 +1987,8 @@ func (g *Gateway) upstreamHealthFor(ctx context.Context, rt *routes) (statuses [
 }
 
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
-	statuses, healthy, probeable := g.upstreamHealthFor(r.Context(), g.rt())
+	rt := g.rt()
+	statuses, healthy, probeable := g.upstreamHealthFor(r.Context(), rt)
 	if g.cfg.AuthRequired() {
 		redactUpstreamHealth(statuses)
 	}
@@ -1997,16 +1998,41 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// process permanently unready while it serves every authenticated caller
 	// correctly.
 	code := http.StatusOK
+	ok := healthy == probeable
 	if probeable > 0 && healthy == 0 {
 		code = http.StatusServiceUnavailable
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":    map[bool]string{true: "ok", false: "degraded"}[healthy == probeable],
+	body := map[string]any{
 		"version":   version,
 		"upstreams": statuses,
-	})
+	}
+	if g.discovery != nil {
+		// A discovery-driven federation with nothing in it is unready until
+		// its source has answered once. Before that, an empty upstream set
+		// is not a federation that happens to be empty — it is a registry
+		// that was unreachable when the pod started, and a pod that passes
+		// readiness in that state joins the Service and serves every client
+		// an empty tools/list with no error. After a first apply the usual
+		// fail-safe holds: a source that goes away leaves the last good set
+		// serving, and a source that applies an empty document is believed.
+		// The object is deliberately URL-free: /health is unauthenticated.
+		outcome, at := g.discovery.status()
+		applied := g.discovery.everApplied()
+		disc := map[string]any{"applied": applied}
+		if outcome != "" {
+			disc["lastOutcome"] = outcome
+			disc["lastSyncAt"] = at.UTC().Format(time.RFC3339)
+		}
+		body["discovery"] = disc
+		if len(rt.upstreams) == 0 && !applied {
+			code = http.StatusServiceUnavailable
+			ok = false
+		}
+	}
+	body["status"] = map[bool]string{true: "ok", false: "degraded"}[ok]
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // iconsServed reports whether the /icons endpoint is mounted: icons enabled,

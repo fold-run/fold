@@ -230,6 +230,20 @@ reachable. The chart's probe defaults follow from that:
 - **Startup**: `httpGet /health` with a ~2-minute budget for first upstream
   connects and JWKS fetches.
 
+**Discovery-only federations wait on their source.** A gateway with no static
+upstreams and a `discovery` section answers `503` until the first document is
+applied, and says why in a `discovery` object on the response. That is what
+keeps a pod whose registry was unreachable at boot out of the Service — it
+would otherwise be Ready with an empty federation, serving every client an
+empty `tools/list` with no error. Two consequences for probes: readiness holds
+the pod out until the source answers, which is the point; and the startup
+probe's budget (`probes.startup.failureThreshold × periodSeconds`, about two
+minutes by default) now also bounds how long the source may be down at boot
+before the pod is restarted. Raise it for a discovery-only federation whose
+source is slow to come up alongside it. A source that applies an *empty*
+document is `200`: the registry said the federation is empty, and fold
+believes it.
+
 **Upstreams with caller-derived credentials are not probed at all.** A probe
 runs on nobody's behalf, so an upstream using `passthrough` or
 `token-exchange` has no credential to present: it reports `"unprobed": true`
