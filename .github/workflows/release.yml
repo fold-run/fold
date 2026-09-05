@@ -143,6 +143,11 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
+  # `:latest` moves only on a final release: a pre-release tag (v1.16.0-rc1)
+  # publishes its own tag and leaves `latest` on the last final, because
+  # `docker run ghcr.io/fold-run/fold` in the README means `latest` and a
+  # release candidate must not be what that resolves to.
+  #
   # The images are the artifact the chart and compose actually deploy, so
   # they carry the same supply-chain evidence as the binaries: BuildKit
   # provenance + SBOM attached in-registry (provenance/sbom below), and a
@@ -183,7 +188,7 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/fold-run/fold:${{ github.ref_name }}
-            ghcr.io/fold-run/fold:latest
+            ${{ !contains(github.ref_name, '-') && 'ghcr.io/fold-run/fold:latest' || '' }}
 
       - name: attest image provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -205,7 +210,7 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/fold-run/fold-discovery:${{ github.ref_name }}
-            ghcr.io/fold-run/fold-discovery:latest
+            ${{ !contains(github.ref_name, '-') && 'ghcr.io/fold-run/fold-discovery:latest' || '' }}
 
       - name: attest discovery image provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -231,7 +236,7 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/fold-run/fold-stdio:${{ github.ref_name }}
-            ghcr.io/fold-run/fold-stdio:latest
+            ${{ !contains(github.ref_name, '-') && 'ghcr.io/fold-run/fold-stdio:latest' || '' }}
 
       - name: attest stdio image provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -253,7 +258,7 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/fold-run/fold-registry:${{ github.ref_name }}
-            ghcr.io/fold-run/fold-registry:latest
+            ${{ !contains(github.ref_name, '-') && 'ghcr.io/fold-run/fold-registry:latest' || '' }}
 
       - name: attest registry-producer image provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -261,3 +266,44 @@ jobs:
           subject-name: ghcr.io/fold-run/fold-registry
           subject-digest: ${{ steps.registry.outputs.digest }}
           push-to-registry: true
+
+  # Every artifact is attested by the jobs above; nothing above checked that
+  # the attestations verify from the outside, or that the three artifacts a
+  # release advertises all exist. The GitHub release is created by
+  # `binaries` and would stand even if `image` failed after it. This job runs
+  # the first checks the release-verifier agent performs, as a gate rather
+  # than a human step: one archive, one image, and the chart, each verified
+  # back to this workflow.
+  verify:
+    if: github.event_name == 'push'
+    needs: [binaries, chart, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: verify a binary archive against its attestation
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'fold_*_linux_amd64.tar.gz' --pattern 'checksums.txt'
+          gh attestation verify fold_*_linux_amd64.tar.gz --owner "${GITHUB_REPOSITORY_OWNER}"
+          gh attestation verify checksums.txt --owner "${GITHUB_REPOSITORY_OWNER}"
+          sha256sum --check --ignore-missing checksums.txt
+
+      - name: verify the four images against their attestations
+        run: |
+          for img in fold fold-discovery fold-stdio fold-registry; do
+            gh attestation verify "oci://ghcr.io/fold-run/$img:$TAG" --owner "${GITHUB_REPOSITORY_OWNER}"
+          done
+
+      - name: verify the chart is pullable and attested
+        run: |
+          version=$(helm show chart deploy/helm/fold | awk '/^version:/ {print $2}')
+          helm pull "oci://ghcr.io/fold-run/charts/fold" --version "$version"
+          gh attestation verify "oci://ghcr.io/fold-run/charts/fold:$version" --owner "${GITHUB_REPOSITORY_OWNER}"

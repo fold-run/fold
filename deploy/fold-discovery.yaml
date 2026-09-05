@@ -49,7 +49,7 @@ spec:
       serviceAccountName: fold-discovery
       containers:
         - name: fold-discovery
-          image: ghcr.io/fold-run/fold-discovery:latest # pin a version in production
+          image: ghcr.io/fold-run/fold-discovery:v1.15.0 # equals the chart appVersion, enforced by gateway/release_pins_test.go and bumped by the release flow
           args:
             - --log-format
             - json

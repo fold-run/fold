@@ -100,7 +100,11 @@ over `latest`.
 ## docker compose
 
 [`compose.yaml`](../compose.yaml) at the repo root runs the gateway with
-`./fold.config.json` mounted, plus optional services under profiles:
+`./fold.config.json` mounted, plus optional services under profiles. Its
+image tags are pinned to the release the chart's `appVersion` names — a test
+holds them equal, and the release flow bumps them together — so `make
+compose-up` runs the gateway the repo you cloned documents, and the alert
+rules the observability profile mounts describe the codes that gateway emits:
 
 ```bash
 cp fold.config.example.json fold.config.json   # then edit

@@ -123,6 +123,12 @@ signs:
 sboms:
   - artifacts: archive
 
+# A tag with a pre-release suffix (v1.16.0-rc1) publishes a GitHub
+# pre-release rather than a release, so `latest` in the releases UI — like
+# `:latest` on the images — keeps meaning the last final.
+release:
+  prerelease: auto
+
 changelog:
   use: github
   filters:

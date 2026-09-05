@@ -33,7 +33,7 @@ tidy-check:
 	go mod tidy -diff
 
 vuln:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go tool govulncheck ./...
 
 bench:
 	FOLD_BENCH=1 go test ./bench -run TestAddedLatencyGate -v
@@ -49,6 +49,9 @@ fuzz:
 	go test ./gateway -run '^$$' -fuzz FuzzResolve -fuzztime 30s
 	go test ./gateway -run '^$$' -fuzz FuzzListCursor -fuzztime 30s
 	go test ./gateway -run '^$$' -fuzz FuzzDiscoveryDoc -fuzztime 30s
+	go test ./gateway -run '^$$' -fuzz FuzzSanitizeRawMeta -fuzztime 30s
+	go test ./gateway -run '^$$' -fuzz FuzzListCacheScope -fuzztime 30s
+	go test ./gateway -run '^$$' -fuzz FuzzParamHeaderRelay -fuzztime 30s
 
 conformance:
 	./scripts/conformance.sh

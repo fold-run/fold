@@ -33,7 +33,7 @@ case "$file" in
     exit 2
     ;;
   */deploy/helm/fold/Chart.yaml)
-    echo "chart version surface: two lines, two jobs. 'version' is the chart's own, published as an immutable OCI tag — bump it on ANY change under deploy/helm/, since reusing a tag means two different charts wearing one name. 'appVersion' is the gateway a default install actually deploys (values.yaml ships image.tag: \"\" and the deployment falls back to .Chart.AppVersion) and it labels every rendered object; the release workflow's chart job refuses to publish when it does not name the tag. Then: make helm-check" >&2
+    echo "chart version surface: two lines, two jobs. 'version' is the chart's own, published as an immutable OCI tag — bump it on ANY change under deploy/helm/, since reusing a tag means two different charts wearing one name. 'appVersion' is the gateway a default install actually deploys (values.yaml ships image.tag: \"\" and the deployment falls back to .Chart.AppVersion) and it labels every rendered object; the release workflow's chart job refuses to publish when it does not name the tag, and gateway/release_pins_test.go holds compose.yaml and deploy/fold-discovery.yaml's image tags equal to it. Then: make helm-check" >&2
     exit 2
     ;;
   */deploy/helm/fold/*)

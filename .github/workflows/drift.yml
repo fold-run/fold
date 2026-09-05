@@ -61,8 +61,22 @@ jobs:
           CONFORMANCE_PKG: "@modelcontextprotocol/conformance@latest"
         run: ./scripts/conformance.sh
 
+  # Directed fuzzing of every parser an untrusted party controls. The seed
+  # corpora run in `make test` on every merge; this explores past them, on
+  # the schedule rather than per PR, because seven targets at 30 s each is
+  # cost without much signal on a change that touched none of them.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: fuzz
+        run: make fuzz
+
   report:
-    needs: [sdk-latest, conformance-latest]
+    needs: [sdk-latest, conformance-latest, fuzz]
     if: failure()
     runs-on: ubuntu-latest
     steps:
@@ -80,6 +94,7 @@ jobs:
           Check which job failed:
           - **sdk-latest**: build/test broke against the latest \`modelcontextprotocol/go-sdk\`.
           - **conformance-latest**: a conformance scenario regressed against the latest suite / spec.
+          - **fuzz**: directed fuzzing found an input a parser mishandles — the failing input is in the job log and belongs in the target's testdata/fuzz corpus.
 
           This issue is auto-managed by \`.github/workflows/drift.yml\`; close it once the pins in \`go.mod\` and \`scripts/conformance.sh\` are updated and CI is green."
           existing=$(gh issue list --state open --label drift --json number -q '.[0].number')
