@@ -41,13 +41,13 @@ scrapers must send an allowed `Host` header (see
 | `fold_tenant_upstream_calls_total` | `tenant` | Upstream invocations attributed to a tenant: the same unit `tenants[].budget` is charged in, so this is a monthly allowance being spent, live. Cardinality is the number of declared tenants — config-bounded, like `upstream`. |
 | `fold_budget_degraded_total` | `scope` | Budget decisions taken per-instance because shared state was unreachable. Budgets fail open by design, so this is the signal that a fleet is not enforcing one allowance — **alert on any non-zero rate**. |
 | `fold_state_degraded_total` | `kind` | The limiter/breaker peer of the above: rate-limit (`limiter`) and circuit-breaker (`breaker`) decisions made from the instance's local mirror because Redis was unreachable. Per-instance enforcement continues; fleet-wide enforcement does not — **alert on any non-zero rate** (packaged as `FoldStateDegraded`). |
-| `fold_http_rejections_total` | `reason` | Requests refused before the MCP layer: `body_too_large`, `forbidden_host`, `forbidden_origin`, `unauthenticated`, `rate_limited`, `oauth_token_rate_limited`, `introspection_viewer` (principal outside `server.introspection.groups`; was `console_viewer` and undocumented before v1.9). |
+| `fold_http_rejections_total` | `reason` | Requests refused before the MCP layer: `body_too_large`, `body_timeout` (a session-less request whose body had not fully arrived at the 30 s read deadline — answered `408` with `Connection: close`), `forbidden_host`, `forbidden_origin`, `unauthenticated`, `rate_limited`, `oauth_token_rate_limited`, `introspection_viewer` (principal outside `server.introspection.groups`; was `console_viewer` and undocumented before v1.9). |
 | `fold_discovery_syncs_total` | `outcome` | Discovery polls: `applied`, `unchanged`, `rejected` (document failed parse or merged validation), `error` (fetch failed). |
 | `fold_jwks_fetches_total` | `issuer`, `outcome` | Key-set fetches against each configured issuer (and the EMA IdP): `ok`; `stale` — the refresh failed and the last good set is still verifying tokens, so callers are unaffected *so far*; `error` — nothing is cached and every token from that issuer is being refused. A cached set is refreshed every 5 minutes so a revoked key stops verifying within that window, and a failing IdP is retried at most every 30 s. **Alert on `error` and `stale`** (packaged as `FoldJWKSFetchFailing`): without it an IdP outage is indistinguishable from a wave of clients presenting bad tokens. |
 | `fold_hook_decisions_total` | `stage` (`ingress`, `egress`, `serverInitiated`), `outcome` | External decision-hook results: `allow`, `deny`, `error`. **Alert on `error`** — under `onError: "allow"` it counts calls that proceeded without inspection, which is a compliance gap rather than a service one. Packaged as `FoldHookErrors`. |
 | `fold_hook_duration_seconds` | `stage` | What one decision round trip added to a request. This is latency fold adds on purpose, at your request — it is the number that says what inspection costs, and the floor against a local no-op endpoint is ~42 µs. |
 | `fold_definition_drift_total` | `upstream`, `kind` | Definitions an upstream rewrote after fold had already served them, when `pinDefinitions` is on. The tool name is deliberately not a label — it is upstream-chosen and unbounded — so read the `upstream/definitionChanged` audit event for which one. A change is counted once, not once per refill: the new definition becomes the baseline. |
-| `fold_downstream_sessions` | — | Live downstream MCP sessions. Sessions idle past `server.sessionIdleTimeoutMs` are expired; sustained growth means clients are minting sessions faster than they expire — raise the alarm before memory does. |
+| `fold_downstream_sessions` | — | Live downstream MCP sessions. A client that closes its session (`DELETE`) frees it at once; one that drops leaves it to `server.sessionIdleTimeoutMs`. Sustained growth with a steady client count means clients are dropping rather than closing — or a leak; raise the alarm before memory does. This is the gauge that found the orphan-probe defect fixed in the release after v1.15.0. |
 | `fold_upstream_bridged_sessions` | `upstream` | Per-client bridged sessions currently held against each upstream (idle ones sweep after 5 minutes). |
 | `fold_panics_total` | `site` | Panics the gateway recovered instead of dying from: the request path (`route`, `fanout`), plain HTTP handlers outside the MCP dispatch — `/health`, `/icons`, the well-known documents, the token endpoint — which `net/http` would otherwise recover silently (`http`), background loops (`sweep`, `discovery`, `probe`, `health`, `reload`, `telemetry`), SDK-invoked handlers (`bridge`, `notify`), and the audit delivery worker (`audit`). The process survives them by design, but **every one is a bug: alert on non-zero** and file what the paired `panic recovered` log line's stack trace shows. |
 | `fold_build_info` | `version` | Always 1. |
@@ -198,7 +198,8 @@ upstream session behind it, until the idle timeout reclaims them. So:
 memory ≈ 26 MiB + 0.4 MiB × (peak sessions in any 30-minute window) + list caches
 ```
 
-The chart's default `limits.memory: 256Mi` is therefore good for roughly
+A client that *closes* its session frees it immediately; the window only
+matters for clients that drop. The chart's default `limits.memory: 256Mi` is therefore good for roughly
 **600 held sessions**; a gateway fronting a few thousand agents that
 reconnect on a schedule should either raise the limit to match the
 arithmetic or shorten `sessionIdleTimeoutMs` so the window it is sized for
@@ -383,10 +384,10 @@ errors pass through verbatim):
 
 HTTP-level refusals: `401` (missing/invalid token, with a
 `WWW-Authenticate` challenge), `403` (host/origin not allowed), `413` (body
-over `server.maxBodyBytes`), `429` (+ `Retry-After`). A request body that
-has not fully arrived 30 seconds after its headers is cut and the connection
-closed: `ReadHeaderTimeout` bounds the headers, a write timeout is impossible
-for a streaming protocol, and this is what bounds the middle. It is a deadline
+over `server.maxBodyBytes`), `429` (+ `Retry-After`), `408` (+
+`Connection: close`) for a request body that has not fully arrived 30 seconds
+after its headers — `ReadHeaderTimeout` bounds the headers, a write timeout
+is impossible for a streaming protocol, and this is what bounds the middle. It is a deadline
 on the *request* only — lifted the moment the body reaches EOF — so it never
 touches a response stream, however long that runs.
 
