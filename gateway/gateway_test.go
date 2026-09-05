@@ -427,8 +427,11 @@ func TestHealthEndpoint(t *testing.T) {
 	if body.Status != "ok" || len(body.Upstreams) != 1 || !body.Upstreams[0].Connected {
 		t.Errorf("unexpected health: %+v", body)
 	}
-	if body.Upstreams[0].Owner == nil || body.Upstreams[0].Owner.Org != "acme" {
-		t.Errorf("owner not surfaced in health: %+v", body.Upstreams[0])
+	// /health is unauthenticated and always redacted: no URL, owner, labels,
+	// or raw error, whatever the auth mode. The detailed view is
+	// /api/federation's, behind authentication.
+	if u := body.Upstreams[0]; u.Owner != nil || u.URL != "" {
+		t.Errorf("/health published owner or URL: %+v", u)
 	}
 }
 

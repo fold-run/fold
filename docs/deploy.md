@@ -440,7 +440,14 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 
 - [ ] `server.allowedHosts` pinned to your public hostname(s), not `["*"]`
 - [ ] `auth.mode: "required"` with your IdP's issuer (anonymous gateways
-      have no per-principal policy or rate limits)
+      have no per-principal policy or rate limits; fold warns at startup when
+      auth is off and the listener is bound beyond loopback)
+- [ ] With EMA: `auth.ema.allowedAssertionTypes` (and `allowedClientIds`
+      where your IdP stamps a `client_id`) — without them any IdP-signed JWT
+      addressed to the resource is exchangeable, and fold warns at startup
+- [ ] Every credentialed upstream (`static`, `passthrough`, `token-exchange`,
+      `client-credentials`) reaches its endpoint over `https`, or over a hop
+      your mesh encrypts — fold warns at startup for each one that does not
 - [ ] `policy.defaultDecision: "deny"` with explicit allow rules (an absent
       `policy` block is an allow-all engine)
 - [ ] `policy.serverInitiatedDecision: "deny"` with explicit grants for any

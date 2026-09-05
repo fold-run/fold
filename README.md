@@ -13,7 +13,7 @@ fold sits in front of any number of upstream MCP servers — in any language, on
 ## Use cases
 
 - **Unify a federation.** Acquisitions, child orgs, and teams each ship their own MCP servers; fold presents them as one virtual server with namespaced tools — no team rewrites anything.
-- **Draw the security boundary.** One choke point for authentication, deny-by-default tool allowlists, per-principal visibility, and an audit event for every request including denials.
+- **Draw the security boundary.** One choke point for authentication, deny-by-default tool allowlists (once a `policy` block is present — an absent one is allow-all, and the deploy checklist says so), per-principal visibility, and an audit event for every request including denials.
 - **Broker credentials.** Clients hold one token with the gateway as audience; the gateway exchanges it per upstream (RFC 8693) or injects service credentials — API keys never reach agents.
 - **Protect fragile services.** Caching, global and per-upstream rate limits, and circuit breakers stand between agent traffic storms and your internal systems.
 - **Govern vendor MCP servers.** Put third-party/SaaS MCP endpoints behind your own auth, policy, and audit instead of scattering per-user API keys.

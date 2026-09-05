@@ -96,8 +96,9 @@ type discoveryStatus struct {
 // handleFederationState serves the federation snapshot. When gateway auth is
 // on, buildHandler wraps this in authMiddleware — reaching here means the
 // caller presented a valid token, so the detailed view is intentional (the
-// API exists to show the federation). With auth off, the deployment is
-// trusted by the same reasoning as /health's detailed mode.
+// API exists to show the federation). With auth off, the endpoint is as open
+// as the rest of the gateway — which is why the introspection section is
+// opt-in, and why /health, which cannot be turned off, carries none of this.
 func (g *Gateway) handleFederationState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)

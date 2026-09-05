@@ -101,6 +101,7 @@ func main() {
 			watchPath = path
 		}
 	}
+	warnIfExposedWithoutAuth(cfg, *host, logger)
 	addr := *host + ":" + strconv.Itoa(*port)
 	if err := run(cfg, path, watchPath, logger, addr); err != nil {
 		fmt.Fprintf(os.Stderr, "fold: %v\n", err)
@@ -179,6 +180,36 @@ func configWatch(path string, ch chan<- struct{}, stop <-chan struct{}) {
 // the config file — hot-reloads the upstream set and policy from source
 // without dropping the listener. Kept separate from main so deferred cleanup
 // (gateway sessions, state provider) runs on every exit path.
+// warnIfExposedWithoutAuth names the one posture the defaults are designed
+// to prevent by pairing: auth disabled AND the listener bound beyond
+// loopback. Each half is a supported choice — the quick start runs with no
+// IdP on 127.0.0.1, and a hardened deployment binds 0.0.0.0 with
+// auth.mode "required" — but together they are an open gateway, and until
+// now the only sign was an Info field reading authRequired=false. An
+// operator who passes --host 0.0.0.0 to a config with no auth section gets
+// told, once, at the moment the choice is made.
+func warnIfExposedWithoutAuth(cfg *config.Config, host string, logger *slog.Logger) {
+	if cfg.AuthRequired() || isLoopback(host) {
+		return
+	}
+	logger.Warn("auth is disabled and the listener is bound beyond loopback — every caller who can reach this port is a principal with no identity, no per-principal policy, and no per-principal rate limit",
+		"host", host,
+		"hint", "set auth.mode \"required\" with your IdP's issuer, or bind --host 127.0.0.1 behind an authenticating proxy")
+}
+
+// isLoopback reports whether a bind address stays on this machine. An empty
+// host is every interface, which is not loopback.
+func isLoopback(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
 func run(cfg *config.Config, source, watchPath string, logger *slog.Logger, addr string) error {
 	gw, err := gateway.New(cfg, gateway.WithLogger(logger))
 	if err != nil {

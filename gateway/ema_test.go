@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -517,5 +519,34 @@ func TestAuthorizationServerMetadataAbsentWithoutEMA(t *testing.T) {
 		if entry == prm["resource"] {
 			t.Errorf("fold advertised itself as an authorization server with EMA off: %v", servers)
 		}
+	}
+}
+
+// EMA with neither allowlist exchanges any correctly addressed IdP-signed JWT.
+// The default is kept for compatibility and named at startup, the way
+// discovery names its missing allowlists; setting either list silences it.
+func TestEMAWithoutAllowlistsIsWarnedAtStartup(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool")
+	idp := newFixtureIssuer(t)
+	setEMAKey(t)
+
+	startWith := func(t *testing.T, mutate func(*config.EMAConfig)) string {
+		t.Helper()
+		var buf bytes.Buffer
+		cfg := emaConfig(idp, []config.Upstream{{ID: "u", URL: up.URL}})
+		mutate(cfg.Auth.EMA)
+		gw, err := New(cfg, WithLogger(slog.New(slog.NewTextHandler(&buf, nil))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gw.Close()
+		return buf.String()
+	}
+
+	if logs := startWith(t, func(*config.EMAConfig) {}); !strings.Contains(logs, "EMA token exchange accepts any IdP-signed JWT") {
+		t.Fatalf("no warning for EMA without allowlists; got:\n%s", logs)
+	}
+	if logs := startWith(t, func(e *config.EMAConfig) { e.AllowedAssertionTypes = []string{"oauth-id-jag+jwt"} }); strings.Contains(logs, "EMA token exchange accepts") {
+		t.Fatalf("warned although allowedAssertionTypes is set; got:\n%s", logs)
 	}
 }

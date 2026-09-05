@@ -276,8 +276,20 @@ tools.
 
 Secrets never appear in the config document — `secretRef` fields name
 environment variables — and `/health` withholds URLs, owners, and error
-text (which can name env vars or internal hosts) unless auth is disabled,
-i.e. on deployments already private by posture.
+text (which can name env vars or internal hosts) from every caller. It used
+to publish them when auth was disabled, reasoning that an auth-off gateway is
+loopback-private; `--host 0.0.0.0` breaks that pairing with one flag, so the
+detailed view now lives only on `/api/federation`, which authenticates.
+
+**One accepted risk, stated.** Validation forces `https` onto every trust
+anchor and onto upstream token endpoints, but not onto an upstream's own
+`url`/`urls`. A `static` or `passthrough` upstream at `http://…` therefore
+sends its credential — or the caller's own bearer token — in the clear, and
+config validation accepts it. That is deliberate: cleartext inside a service
+mesh that encrypts the hop is a common and legitimate topology, and fold
+cannot distinguish it from a mistake. What fold does is name each such
+upstream in a startup warning, so the choice is visible where it is made.
+Treat the warning as a checklist item, not noise.
 
 ## Discovery moves an authorization boundary — treat it that way
 

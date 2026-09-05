@@ -419,3 +419,35 @@ func TestUpstreamDownMessageRedacted(t *testing.T) {
 		t.Fatalf("unexpected message shape: %q", wire.Message)
 	}
 }
+
+// A credentialed upstream over cleartext http is a supported topology inside
+// a mesh and a mistake everywhere else, and fold cannot tell which. What it
+// can do is name the upstream at startup. Passthrough counts — it carries the
+// caller's own bearer token — and loopback does not, because that hop never
+// leaves the machine.
+func TestCleartextCredentialedUpstreamIsWarnedAtStartup(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Setenv("API_KEY", "k")
+	// Upstreams connect lazily, so none of these need a server behind them.
+	gw, err := New(&config.Config{Upstreams: []config.Upstream{
+		{ID: "plain", URL: "http://mcp.internal:8080/mcp", Namespace: "plain"},
+		{ID: "keyed", URL: "http://mcp.internal:8081/mcp", Namespace: "keyed", Auth: &config.UpstreamAuth{Strategy: "static", SecretRef: "API_KEY"}},
+		{ID: "local", URL: "http://127.0.0.1:9/mcp", Namespace: "local", Auth: &config.UpstreamAuth{Strategy: "static", SecretRef: "API_KEY"}},
+		{ID: "tls", URL: "https://mcp.internal/mcp", Namespace: "tls", Auth: &config.UpstreamAuth{Strategy: "static", SecretRef: "API_KEY"}},
+	}}, WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.Close()
+
+	var warned []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "cleartext http") {
+			warned = append(warned, line)
+		}
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "upstream=keyed") {
+		t.Fatalf("want exactly one cleartext warning, for upstream=keyed; got %d:\n%s", len(warned), strings.Join(warned, "\n"))
+	}
+}

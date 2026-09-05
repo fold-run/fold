@@ -350,7 +350,7 @@ An assertion must be issued by `idpIssuer` for the `resource` audience and carry
 - `allowedAssertionTypes` is a positive list of JOSE `typ` values the assertion must carry. SEP-990 §5.1 requires `oauth-id-jag+jwt`; set it when your IdP stamps that value.
 - `allowedClientIds` restricts which `client_id` claims fold will mint a token for. The claim is copied into the minted access token but otherwise unvalidated; an allowlist prevents an unrelated IdP-issued token for the same audience from being exchanged.
 
-Either list may be used alone; both empty preserves the v1-compatible behaviour.
+Either list may be used alone; both empty preserves the v1-compatible behaviour — and logs a warning at startup, because a token endpoint that will exchange any correctly addressed IdP-signed JWT is a posture worth opting into rather than inheriting. Set `allowedAssertionTypes` in production.
 
 ## `policy`
 
@@ -375,7 +375,7 @@ Either list may be used alone; both empty preserves the v1-compatible behaviour.
 }
 ```
 
-**How a decision is reached.** Any matching `deny` refuses, whatever the rule order; otherwise the first matching `allow` grants; otherwise `defaultDecision`. Policy governs named invocations (`tools/call`, `prompts/get`, `resources/read`), the completions and subscriptions derived from them (`completion/complete` is gated behind the prompt/resource it completes; `resources/subscribe` behind the resource), and it **filters list results per principal** — callers never see tools, prompts, or resources they cannot reach. Protocol plumbing (ping, the lists themselves) is not policy-gated; invisibility plus call-denial is the enforcement pair.
+**How a decision is reached.** With no `policy` block at all, the engine is **allow-all** — every principal may invoke every tool. Once a block is present, any matching `deny` refuses, whatever the rule order; otherwise the first matching `allow` grants; otherwise `defaultDecision`. Policy governs named invocations (`tools/call`, `prompts/get`, `resources/read`), the completions and subscriptions derived from them (`completion/complete` is gated behind the prompt/resource it completes; `resources/subscribe` behind the resource), and it **filters list results per principal** — callers never see tools, prompts, or resources they cannot reach. Protocol plumbing (ping, the lists themselves) is not policy-gated; invisibility plus call-denial is the enforcement pair.
 
 A rule may carry `allow`, `deny`, or both, and at least one of them.
 
