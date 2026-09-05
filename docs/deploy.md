@@ -408,7 +408,10 @@ reverse proxy in front of it. Two things matter at that layer:
    - Traefik: raise `respondingTimeouts.readTimeout`/`idleTimeout`
    - nginx (plain): `proxy_read_timeout 3600s; proxy_buffering off;`
 2. **Host**: the public hostname the proxy forwards must be in
-   `server.allowedHosts`.
+   `server.allowedHosts`. That list is the only Host check fold performs —
+   a gateway bound to `127.0.0.1` behind a reverse proxy on the same machine
+   (the systemd shape below) is admitted on the forwarded public Host as long
+   as the allowlist names it.
 
 ### Private CAs
 

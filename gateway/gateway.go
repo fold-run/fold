@@ -1446,6 +1446,20 @@ func (g *Gateway) buildHandler() http.Handler {
 			// either. Expiry is the backstop that turns both into bounded
 			// garbage; fold_downstream_sessions watches it work.
 			SessionTimeout: time.Duration(g.cfg.SessionIdleTimeoutMs()) * time.Millisecond,
+			// fold's hostValidation is the Host guard, and the only one. The
+			// SDK's own DNS-rebinding check refuses any non-loopback Host on
+			// a connection that arrived over a loopback address, which is a
+			// fine default for a bare local server and wrong behind fold's
+			// allowlist: a gateway bound to 127.0.0.1 behind a same-host
+			// reverse proxy forwarding its public Host — an ordinary VM
+			// shape, the systemd unit in the deploy guide — had every request
+			// refused by the SDK with a message that never mentioned fold or
+			// allowedHosts. Two guards with two rule sets meant the operator
+			// could satisfy the documented one and still be refused by the
+			// undocumented one. hostValidation seeds the loopback names when
+			// no allowlist is set, so nothing the SDK's check protected is
+			// unprotected here.
+			DisableLocalhostProtection: true,
 		},
 	)
 
