@@ -22,7 +22,12 @@ exempt for development):
 Every `/mcp` request passes, in order: host/origin allowlist (DNS-rebinding
 protection — `allowedHosts` for the Host, and for the Origin either
 `allowedOrigins` or, absent that, the same hosts; a Host wildcard without
-`allowedOrigins` leaves the Origin unchecked and is warned about at startup)
+`allowedOrigins` leaves the Origin unchecked and is warned about at startup;
+this is the *only* Host guard — the SDK's built-in one, which refuses any
+non-loopback Host arriving over a loopback address, is disabled because
+`allowedHosts` already covers what it did and a second rule set made a
+loopback-bound gateway behind a same-host proxy unreachable in a way no
+document explained)
 → body-size cap → Bearer verification (trusted issuer, JWKS
 signature, exact audience per RFC 8707, non-empty `sub`, asymmetric
 algorithms only — RS/ES/EdDSA) → global, per-tenant, and per-principal rate
