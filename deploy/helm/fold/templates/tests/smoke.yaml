@@ -1,0 +1,69 @@
+{{- if .Values.tests.enabled }}
+# `helm test <release>` runs the same smoke script an operator runs by hand:
+# initialize → tools/list → /health → /metrics against the Service, with the
+# Host header the probes use. A failing test is a deployment that a real
+# client would also fail against.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fold.fullname" . }}-smoke
+  labels:
+    {{- include "fold.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  smoke.sh: |-
+{{ .Files.Get "files/smoke.sh" | indent 4 }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "fold.fullname" . }}-smoke
+  labels:
+    {{- include "fold.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  {{- with .Values.podSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: smoke
+      image: {{ .Values.tests.image | quote }}
+      command: ["sh", "/smoke/smoke.sh"]
+      args:
+        - "http://{{ include "fold.fullname" . }}:{{ .Values.service.port }}"
+        - "--host"
+        - {{ include "fold.probeHostHeader" . | quote }}
+        {{- if .Values.metrics.listener.enabled }}
+        - "--metrics"
+        - "http://{{ include "fold.fullname" . }}:{{ .Values.metrics.listener.port }}"
+        {{- end }}
+        {{- with .Values.tests.tool }}
+        - "--tool"
+        - {{ . | quote }}
+        {{- end }}
+      {{- with .Values.tests.env }}
+      env:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumeMounts:
+        - name: smoke
+          mountPath: /smoke
+          readOnly: true
+  volumes:
+    - name: smoke
+      configMap:
+        name: {{ include "fold.fullname" . }}-smoke
+        defaultMode: 0555
+{{- end }}

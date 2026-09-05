@@ -1,6 +1,6 @@
 # Single source of truth for dev/CI commands; CI calls these same targets.
 
-.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance sync-console console-check check fuzz cover helm-check compose-up compose-down compose-logs dev-up dev-down dev-status
+.PHONY: build test race vet lint fmt fmt-check tidy-check vuln bench loadtest conformance sync-console console-check check fuzz cover helm-check compose-up compose-down compose-logs compose-smoke dev-up dev-down dev-status
 
 build:
 	go build ./...
@@ -71,7 +71,13 @@ console-check:
 # of `check` (keeps the contributor toolchain Go-only); CI runs it in its own
 # job. --api-versions lets the ServiceMonitor render without a cluster.
 helm-check:
-	helm lint deploy/helm/fold -f deploy/helm/fold/ci/default-values.yaml
+	helm lint --strict deploy/helm/fold -f deploy/helm/fold/ci/default-values.yaml
+	@for f in deploy/helm/fold/ci/*.yaml; do \
+		helm lint --strict --quiet deploy/helm/fold -f $$f >/dev/null || { echo "helm lint --strict failed for $$f"; exit 1; }; \
+	done
+	@if helm lint --strict --quiet deploy/helm/fold -f deploy/helm/fold/ci/default-values.yaml --set replicaCount=two >/dev/null 2>&1; then \
+		echo "expected values.schema.json to reject a non-integer replicaCount"; exit 1; \
+	else echo "values schema guard OK"; fi
 	@for f in deploy/helm/fold/ci/*.yaml; do \
 		echo "helm template -f $$f"; \
 		helm template fold deploy/helm/fold -f $$f \
@@ -137,3 +143,9 @@ compose-down:
 
 compose-logs:
 	$(COMPOSE) logs -f
+
+# The post-deploy smoke test against the compose stack (or any URL: make
+# compose-smoke SMOKE_URL=https://gw.example.com SMOKE_ARGS="--token $$T").
+SMOKE_URL ?= http://localhost:8080
+compose-smoke:
+	scripts/smoke.sh $(SMOKE_URL) $(SMOKE_ARGS)

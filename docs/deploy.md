@@ -74,6 +74,22 @@ cosign verify-blob checksums.txt \
 sha256sum --check --ignore-missing checksums.txt
 ```
 
+**Then check the deployment itself, not just the artifact.** `scripts/smoke.sh`
+does what a real client does — `initialize`, `tools/list`, an optional
+`tools/call`, then `/health` and `/metrics` — and exits non-zero on the first
+answer a healthy gateway would not give:
+
+```bash
+scripts/smoke.sh https://gw.example.com --token "$TOKEN" --tool gh__list_repos
+make compose-smoke                       # against the local compose stack
+helm test fold -n fold                   # the same script, run from a pod in the cluster
+```
+
+`helm test` sends the probe Host header and, with the metrics listener on,
+checks `/metrics` on that port. It is the check to run after every upgrade,
+because a rollout that leaves pods Ready but answering an empty `tools/list`
+is precisely the failure readiness does not catch.
+
 Images additionally embed BuildKit provenance and an SBOM in the registry
 (`docker buildx imagetools inspect ghcr.io/fold-run/fold:v1.11.0` shows
 them), and cluster admission controllers that verify GitHub attestations
