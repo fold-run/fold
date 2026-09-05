@@ -150,11 +150,18 @@ traffic. Treat a rising line as a question, not a measurement.
 
 | Alert | Fires on | Why it is not noise |
 |---|---|---|
+| `FoldDown` (**critical**) | a scrape target gone for 2m | The only alert for "fold is not there": pod gone, unready, or not answering. With readiness on `/health` a total upstream outage looks like this from outside — check the breakers on surviving instances before assuming a crash |
+| `FoldAllRequestsFailing` (**critical**) | `upstream_down` share of requests > 90% for 5m | The gateway is up and honestly refusing; the federation is not serving |
 | `FoldErrorRateHigh` | error + upstream_down ratio over threshold, 10m | Refusals excluded, so it means fold is failing, not governing |
 | `FoldRequestLatencyHigh` | p99 over a configured bound, 10m | Threshold is yours; unset it rather than tolerate a flapping page |
+| `FoldPanicRecovered` | any recovered panic in 10m | The process survived by design; every one is a bug with a stack trace in the paired log line |
+| `FoldGoroutinesHigh` / `FoldMemoryHigh` | sustained goroutines or RSS over a configured bound, 15m | Leak detectors for the growth a short benchmark cannot see; compare against session counts before restarting |
 | `FoldUpstreamCircuitOpen` | breaker at 2 for 5m | The federation still serves everything else — urgent, not an outage |
 | `FoldUpstreamEndpointEjected` | endpoint out of rotation 15m | Traffic is fine; a replica never came back |
 | `FoldBudgetDegraded` | any degraded decision in 10m | The fleet is enforcing N copies of one allowance |
+| `FoldStateDegraded` | any per-instance limiter/breaker decision in 10m | Redis is unreachable; per-instance enforcement continues, fleet-wide does not |
+| `FoldUpstreamResponseCapped` | an upstream response refused over `maxResponseBytes` in 15m | The call failed rather than being truncated — a runaway upstream or a bound set too low |
+| `FoldAuditEventsLost` | audit events `dropped` or `dead_lettered` in 10m | The compliance record has a hole; dead-lettered ones can be replayed, dropped ones cannot |
 | `FoldDiscoverySyncFailing` | rejected/error sync in 15m | Last good set still serving, but nothing new applies — an id collision freezes discovery until resolved |
 | `FoldTenantBudgetExhausted` | a tenant refused on budget in 15m | Nobody is broken; someone owes a customer a decision |
 | `FoldHookErrors` | any hook error in 10m | Under `onError: "allow"`, these calls were served uninspected — the audit events name them via `hookOutcome` |
@@ -163,9 +170,14 @@ traffic. Treat a rising line as a question, not a measurement.
 | `FoldIngressRejectionSpike` | bad Host/Origin or unauthenticated over threshold, 10m | Misconfigured client or someone probing — worth knowing which |
 | `FoldJWKSFetchFailing` | a key-set fetch failed in 10m | The one signal that separates "the IdP is down" from "clients are sending bad tokens" — `stale` is a warning shot, `error` means every caller from that issuer is already refused |
 
-Severities are `warning` and `info` only. Nothing here pages by default:
-fold's genuinely paging condition is "no upstream is reachable", which
-`/health` answers with a 503 and your existing probe already watches.
+Two alerts are `critical` and meant to page — `FoldDown` and
+`FoldAllRequestsFailing` — because they are the two shapes of "fold is not
+serving". Everything else is `warning` or `info`: something fold is
+surviving, or governance not being enforced the way it reads, which is worth
+a ticket and not a wake-up. Earlier versions of this pack paged on nothing
+and said the readiness probe was the page; that left a deployment with
+`prometheusRule.enabled` and no external monitor believing it was covered for
+an outage it was not.
 
 ## Audit events
 

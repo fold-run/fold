@@ -274,6 +274,12 @@ metrics:
     # request, so set it from the hook's own timeoutMs rather than from any
     # fold constant.
     hookLatencyP99Seconds: 0.5
+    # Sustained goroutine count tripping FoldGoroutinesHigh, and resident
+    # memory in bytes tripping FoldMemoryHigh (default 200 MiB, under the
+    # chart's 256Mi limit). Both are leak detectors for the growth a short
+    # benchmark cannot see; size them from your own steady state.
+    goroutinesThreshold: 10000
+    memoryBytesThreshold: 209715200
 
   # The Grafana dashboard, delivered as a ConfigMap for the Grafana sidecar.
   # The JSON itself is deploy/helm/fold/dashboards/fold-overview.json — import

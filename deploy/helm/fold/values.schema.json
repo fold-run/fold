@@ -160,7 +160,9 @@
             "errorRatioThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
             "latencyP99Seconds": { "type": "number", "minimum": 0 },
             "rejectionRateThreshold": { "type": "number", "minimum": 0 },
-            "hookLatencyP99Seconds": { "type": "number", "minimum": 0 }
+            "hookLatencyP99Seconds": { "type": "number", "minimum": 0 },
+            "goroutinesThreshold": { "type": "integer", "minimum": 1 },
+            "memoryBytesThreshold": { "type": "integer", "minimum": 1 }
           }
         },
         "dashboard": {
