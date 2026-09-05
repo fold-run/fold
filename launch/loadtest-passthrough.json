@@ -5,6 +5,11 @@
     256
   ],
   "durationSec": 10,
+  "gatewayIdle": {
+    "rssBytes": 26624000,
+    "goroutines": 22,
+    "sessions": 2
+  },
   "mode": "passthrough",
   "results": [
     {
@@ -12,10 +17,10 @@
       "scenario": "tools/call",
       "connections": 8,
       "durationSec": 10,
-      "rps": 13046.9,
-      "p50Ms": 0.574917,
-      "p90Ms": 0.97225,
-      "p99Ms": 1.425083,
+      "rps": 10521.3,
+      "p50Ms": 0.689959,
+      "p90Ms": 1.231,
+      "p99Ms": 2.005292,
       "errors": 0
     },
     {
@@ -23,21 +28,24 @@
       "scenario": "tools/call",
       "connections": 8,
       "durationSec": 10,
-      "rps": 8068.6,
-      "p50Ms": 0.940958,
-      "p90Ms": 1.429125,
-      "p99Ms": 1.955375,
-      "errors": 0
+      "rps": 6129.8,
+      "p50Ms": 1.196875,
+      "p90Ms": 1.926417,
+      "p99Ms": 3.141125,
+      "errors": 0,
+      "gatewayRssBytes": 38240256,
+      "gatewayGoroutines": 81,
+      "gatewaySessions": 10
     },
     {
       "target": "direct",
       "scenario": "tools/call",
       "connections": 64,
       "durationSec": 10,
-      "rps": 14720.8,
-      "p50Ms": 3.657625,
-      "p90Ms": 8.658375,
-      "p99Ms": 14.303625,
+      "rps": 12930.4,
+      "p50Ms": 4.10225,
+      "p90Ms": 9.936083,
+      "p99Ms": 16.932583,
       "errors": 0
     },
     {
@@ -45,21 +53,24 @@
       "scenario": "tools/call",
       "connections": 64,
       "durationSec": 10,
-      "rps": 9380.1,
-      "p50Ms": 6.125625,
-      "p90Ms": 12.149958,
-      "p99Ms": 18.739959,
-      "errors": 0
+      "rps": 7596.5,
+      "p50Ms": 7.395166,
+      "p90Ms": 15.214791,
+      "p99Ms": 25.371291,
+      "errors": 0,
+      "gatewayRssBytes": 60538880,
+      "gatewayGoroutines": 535,
+      "gatewaySessions": 74
     },
     {
       "target": "direct",
       "scenario": "tools/call",
       "connections": 256,
       "durationSec": 10,
-      "rps": 22465.8,
-      "p50Ms": 8.138042,
-      "p90Ms": 25.730625,
-      "p99Ms": 50.230875,
+      "rps": 20784.5,
+      "p50Ms": 8.847833,
+      "p90Ms": 28.023042,
+      "p99Ms": 52.861459,
       "errors": 0
     },
     {
@@ -67,21 +78,24 @@
       "scenario": "tools/call",
       "connections": 256,
       "durationSec": 10,
-      "rps": 13398.2,
-      "p50Ms": 16.8775,
-      "p90Ms": 37.457375,
-      "p99Ms": 58.908833,
-      "errors": 0
+      "rps": 11682.5,
+      "p50Ms": 18.962458,
+      "p90Ms": 43.845291,
+      "p99Ms": 70.46375,
+      "errors": 0,
+      "gatewayRssBytes": 159580160,
+      "gatewayGoroutines": 2440,
+      "gatewaySessions": 330
     },
     {
       "target": "direct",
       "scenario": "tools/list",
       "connections": 8,
       "durationSec": 10,
-      "rps": 37632.9,
-      "p50Ms": 0.144542,
-      "p90Ms": 0.408,
-      "p99Ms": 1.048417,
+      "rps": 34290,
+      "p50Ms": 0.162375,
+      "p90Ms": 0.438125,
+      "p99Ms": 1.157625,
       "errors": 0
     },
     {
@@ -89,21 +103,24 @@
       "scenario": "tools/list",
       "connections": 8,
       "durationSec": 10,
-      "rps": 36527.9,
-      "p50Ms": 0.150125,
-      "p90Ms": 0.414416,
-      "p99Ms": 1.034792,
-      "errors": 0
+      "rps": 32670.7,
+      "p50Ms": 0.169,
+      "p90Ms": 0.455125,
+      "p99Ms": 1.220125,
+      "errors": 0,
+      "gatewayRssBytes": 159629312,
+      "gatewayGoroutines": 2445,
+      "gatewaySessions": 338
     },
     {
       "target": "direct",
       "scenario": "tools/list",
       "connections": 64,
       "durationSec": 10,
-      "rps": 42981.8,
-      "p50Ms": 1.056041,
-      "p90Ms": 3.432333,
-      "p99Ms": 6.201458,
+      "rps": 38411.7,
+      "p50Ms": 1.188792,
+      "p90Ms": 3.804,
+      "p99Ms": 6.999666,
       "errors": 0
     },
     {
@@ -111,21 +128,24 @@
       "scenario": "tools/list",
       "connections": 64,
       "durationSec": 10,
-      "rps": 42926.1,
-      "p50Ms": 1.073875,
-      "p90Ms": 3.420167,
-      "p99Ms": 6.008917,
-      "errors": 0
+      "rps": 37385.1,
+      "p50Ms": 1.185042,
+      "p90Ms": 3.931459,
+      "p99Ms": 7.427041,
+      "errors": 0,
+      "gatewayRssBytes": 161759232,
+      "gatewayGoroutines": 2566,
+      "gatewaySessions": 402
     },
     {
       "target": "direct",
       "scenario": "tools/list",
       "connections": 256,
       "durationSec": 10,
-      "rps": 42408.3,
-      "p50Ms": 3.05075,
-      "p90Ms": 16.548,
-      "p99Ms": 37.499583,
+      "rps": 27474.8,
+      "p50Ms": 4.9515,
+      "p90Ms": 24.502541,
+      "p99Ms": 54.762334,
       "errors": 0
     },
     {
@@ -133,11 +153,14 @@
       "scenario": "tools/list",
       "connections": 256,
       "durationSec": 10,
-      "rps": 42596.5,
-      "p50Ms": 3.355875,
-      "p90Ms": 15.53675,
-      "p99Ms": 35.409583,
-      "errors": 0
+      "rps": 35381.1,
+      "p50Ms": 4.003208,
+      "p90Ms": 18.864292,
+      "p99Ms": 41.161583,
+      "errors": 0,
+      "gatewayRssBytes": 189677568,
+      "gatewayGoroutines": 3014,
+      "gatewaySessions": 658
     }
   ]
 }

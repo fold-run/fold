@@ -593,7 +593,8 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
       rollout for what it cannot see (secret env vars present, signing key
       parseable, sink paths writable, Redis reachable)
 - [ ] Kubernetes: PodDisruptionBudget on (the chart's default when
-      `replicaCount` ≥ 2), resource limits sized, probe Host header matches
+      `replicaCount` ≥ 2), resource limits sized from the arithmetic in
+      [operations.md "Sizing"](operations.md#sizing), probe Host header matches
       the allowlist, `networkPolicy.enabled` scoping the metrics port and —
       with `egress.enabled` — where upstream credentials may travel;
       `terminationGracePeriodSeconds` above preStop + drain (the chart

@@ -179,6 +179,108 @@ and said the readiness probe was the page; that left a deployment with
 `prometheusRule.enabled` and no external monitor believing it was covered for
 an outage it was not.
 
+## Sizing
+
+Every figure here traces to [benchmarks.md](benchmarks.md); the load
+harness re-measures them (`make loadtest`), and the memory columns exist so
+this section is arithmetic rather than folklore.
+
+**Memory.** The gateway process idles at ≈26 MiB and adds ≈0.3–0.4 MiB per
+downstream session it holds (a live session costs the higher figure, one
+whose client has gone the lower), plus whatever the list caches hold for
+your federation — a 1,000-tool catalogue is a few MiB. The number that
+matters is not current connections but the **peak population of sessions
+over the last `server.sessionIdleTimeoutMs`** (30 min by default): a client
+that disconnects without a `DELETE` leaves its session, and the bridged
+upstream session behind it, until the idle timeout reclaims them. So:
+
+```
+memory ≈ 26 MiB + 0.4 MiB × (peak sessions in any 30-minute window) + list caches
+```
+
+The chart's default `limits.memory: 256Mi` is therefore good for roughly
+**600 held sessions**; a gateway fronting a few thousand agents that
+reconnect on a schedule should either raise the limit to match the
+arithmetic or shorten `sessionIdleTimeoutMs` so the window it is sized for
+is smaller. `FoldMemoryHigh` fires at 200 MiB by default so the OOM killer
+does not decide for you; `fold_downstream_sessions` on the dashboard is the
+population it tracks.
+
+**Goroutines.** ≈7 per held session, on a floor of ≈20. Ten thousand
+goroutines — `FoldGoroutinesHigh`'s default — is about 1,400 sessions; if
+the count grows while `fold_downstream_sessions` does not, that is a leak
+and the alert is correct to fire.
+
+**CPU.** One untuned instance on a laptop core sustains ≈8,500 `tools/call`
+per second at 64 concurrent sessions and ≈12,000 at 256, at 57–64% of the
+upstream's own direct ceiling; fold's added p50 is ≈0.2 ms. Those are
+loopback numbers against a trivial upstream, so they bound the *gateway's*
+cost — against a real upstream doing real work, the upstream's latency
+dominates and fold's share shrinks toward that 0.2 ms. The chart requests
+`100m` and sets **no CPU limit** on purpose: a latency-sensitive proxy under
+a CPU limit is throttled exactly when it is busiest, and the request is what
+the scheduler needs. Size the request from your own `fold_requests_total`
+rate against the throughput above.
+
+**`tools/list` is payload-bound**, not gateway-bound: its throughput falls
+with the size of the merged catalogue (≈22× from one tool to a thousand),
+and the gateway's own share of a 1,000-tool merge is ≈25 µs. A large
+federation's cost shows up as response bytes on every list, which the
+per-principal policy filter and `routing.pageSize` are the tools for.
+
+**When Redis.** One replica needs none. More than one needs it for the
+rate-limit windows, breakers, budgets, EMA replay records, and task
+ownership to be fleet-wide rather than per-replica; the state is small
+(counters and short-lived records) and any managed Redis or Valkey is
+sufficient. Every operation is bounded at 500 ms and fails open to the
+local mirror, so Redis latency is a ceiling on enforcement accuracy, not on
+request latency — keep it in the same region as the gateways.
+
+**Replicas.** Two is the chart's default and the minimum for a rollout with
+no serving gap (`maxUnavailable: 0` needs a second pod to surge into).
+Beyond that, add replicas for throughput or for zones, not for memory: a
+session is pinned to the replica that holds it, so more replicas divide the
+session population rather than share it.
+
+## Upgrading and rolling back
+
+fold holds no durable state of its own — no database, no files it needs
+back — so an upgrade or a rollback is a rolling restart of a stateless
+process, and there is nothing to back up. Three things make that true in
+practice rather than in principle.
+
+**Config is compatible across the whole v1 line.** The document, the CLI,
+the endpoints, the error codes, the metric names, and the audit shape are
+frozen by the [compatibility contract](../README.md#api-stability): a newer
+minor reads an older document unchanged, and new fields are additive. The
+reverse holds for a rollback as long as the document uses no field the
+older version lacks — `fold --validate` with the older binary refuses an
+unknown field before anything starts, which is what the chart's init
+container does on every rollout.
+
+**Mixed versions can share Redis during the rollout.** The keys are
+namespaced (`fold:<kind>:<scope>:…`) and hold counters, timestamps, and
+short-lived records whose encoding no release in the v1 line has changed;
+a change would be a changelog headline and would name the migration.
+Sessions do not live in Redis — they are pinned to the replica that holds
+them, which is why a rollout severs streams on the pods it retires (the
+drain bound, exit 0) and clients reconnect to a surviving pod.
+
+**Roll back with the chart's history.** `revisionHistoryLimit` keeps five
+ReplicaSets, so `helm rollback <release> <revision>` (or
+`kubectl rollout undo`) is a rolling restart onto the previous image with
+the same rollout safety as the upgrade: `maxUnavailable: 0`, the `preStop`
+sleep, the drain. Pin the chart with `--version` and the image with
+`image.tag` or a digest so the rollback target is a known pair; the
+`appVersion` a chart names is the gateway it was tested with. After either
+direction, `helm test <release>` runs the smoke script — `initialize`,
+`tools/list`, `/health`, `/metrics` — from inside the cluster, which is the
+check that catches a rollout that left pods Ready and serving nothing.
+
+Sections that need a restart rather than a reload (`auth`, `server`,
+`routing`, `audit`, `tracing`, `discovery`) need one on a downgrade too;
+everything else the running process reloads in place, in both directions.
+
 ## Audit events
 
 One JSON event per terminal response — including 401s, 403-equivalents, and
