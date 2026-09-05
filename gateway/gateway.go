@@ -358,12 +358,14 @@ func New(cfg *config.Config, opts ...Option) (*Gateway, error) {
 		// on a wedged IdP and follow a redirect off the configured URI.
 		anchors := auth.TrustAnchorClient()
 		g.verifier = auth.NewVerifier(cfg.Auth, anchors)
+		g.verifier.SetJWKSObserver(g.metrics.observeJWKSFetch)
 		if cfg.Auth.EMA != nil {
 			ema, err := auth.NewEMA(cfg.Auth, anchors, provider.Once("emajti"))
 			if err != nil {
 				return nil, err
 			}
 			g.ema = ema
+			ema.SetJWKSObserver(g.metrics.observeJWKSFetch)
 			// The token endpoint is an authorization server surface; its
 			// terminal responses flow through audit like every other refusal
 			// or grant the gateway produces. A replayed ID-JAG is the event

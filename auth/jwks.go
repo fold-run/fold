@@ -20,12 +20,34 @@ import (
 // exhaust gateway memory with an oversized body.
 const maxJWKSBytes = 1 << 20 // 1 MiB
 
+// refetchHoldoff is the minimum spacing between fetches of one URI, whatever
+// prompted them — an unknown kid (rotation-in, or a flood of forged tokens)
+// or a refresh that failed. Without it an IdP outage would cost every
+// verification a fetch attempt against the failing endpoint, serialized
+// behind the per-URI gate, and the outage would become a latency incident
+// for every caller holding a perfectly valid token.
+const refetchHoldoff = 30 * time.Second
+
 // jwksCache fetches and caches a JWKS document per URI, single-flighting
 // concurrent fetches so an unauthenticated flood of unknown-kid tokens
 // cannot be amplified into a burst of outbound requests to the IdP.
+//
+// A cached set is refreshed once it is older than ttl even when the kid is
+// known: rotation-in (a new kid) was always handled by the unknown-kid path,
+// but rotation-out — an IdP revoking a key that tokens keep presenting — is
+// only visible by re-reading the set, and a key the IdP has withdrawn must
+// stop verifying tokens within the ttl rather than for the life of the
+// process. A refresh that fails keeps serving the last good set (an IdP
+// outage is not a reason to reject every valid caller) and reports it, so
+// the outage is visible rather than being read as a wave of bad clients.
 type jwksCache struct {
 	client *http.Client
 	ttl    time.Duration
+	now    func() time.Time
+	// observe is told the outcome of every fetch, by issuer: "ok", "error"
+	// (nothing cached, verification fails), or "stale" (the fetch failed and
+	// the previous set was served). The gateway turns this into a metric.
+	observe func(issuer, outcome string)
 
 	mu      sync.Mutex
 	sets    map[string]*jwksEntry
@@ -34,7 +56,12 @@ type jwksCache struct {
 
 type jwksEntry struct {
 	keys    map[string]any // kid → public key
-	fetched time.Time
+	fetched time.Time      // last successful fetch
+	// refreshAt is fetched + ttl: after it, even a known kid forces a
+	// refresh. noFetchBefore is the last attempt (success or failure) plus
+	// refetchHoldoff: before it, nothing forces one.
+	refreshAt     time.Time
+	noFetchBefore time.Time
 }
 
 func newJWKSCache(client *http.Client) *jwksCache {
@@ -46,6 +73,8 @@ func newJWKSCache(client *http.Client) *jwksCache {
 	return &jwksCache{
 		client:  client,
 		ttl:     5 * time.Minute,
+		now:     time.Now,
+		observe: func(string, string) {},
 		sets:    map[string]*jwksEntry{},
 		fetchMu: map[string]*sync.Mutex{},
 	}
@@ -66,58 +95,92 @@ func lookup(keys map[string]any, kid string) (any, bool) {
 	return nil, false
 }
 
-// key returns the public key for kid at uri, refetching the set when the kid
-// is unknown and the cached copy is stale (key rotation).
-func (c *jwksCache) key(ctx context.Context, uri, kid string) (any, error) {
-	c.mu.Lock()
-	e := c.sets[uri]
-	if e != nil {
-		if k, ok := lookup(e.keys, kid); ok {
-			c.mu.Unlock()
-			return k, nil
-		}
-		if time.Since(e.fetched) < 30*time.Second {
-			c.mu.Unlock()
-			return nil, fmt.Errorf("jwks %s: no key %q", uri, kid)
-		}
+// key returns the public key for kid in the set served at uri, fetching the
+// set when the kid is unknown or the cached copy has reached its ttl. issuer
+// is the configured issuer the URI belongs to, used only to label what is
+// reported about the fetch.
+func (c *jwksCache) key(ctx context.Context, issuer, uri, kid string) (any, error) {
+	if k, ok := c.freshKey(uri, kid); ok {
+		return k, nil
 	}
 	// Serialize fetches per URI: the first miss fetches, concurrent misses
 	// wait and then re-read the freshly cached set.
+	fm := c.gate(uri)
+	fm.Lock()
+	defer fm.Unlock()
+
+	// Re-check: another goroutine may have refreshed the set while we waited.
+	if k, ok := c.freshKey(uri, kid); ok {
+		return k, nil
+	}
+	c.mu.Lock()
+	e := c.sets[uri]
+	c.mu.Unlock()
+	if e != nil && c.now().Before(e.noFetchBefore) {
+		// Fetched — or failed to — within the holdoff. Answer from what is
+		// held: a known kid from a set past its ttl is still a key the IdP
+		// published, and an unknown one is not worth another fetch yet.
+		if k, ok := lookup(e.keys, kid); ok {
+			return k, nil
+		}
+		return nil, fmt.Errorf("jwks %s: no key %q", uri, kid)
+	}
+
+	keys, err := c.fetch(ctx, uri)
+	now := c.now()
+	if err != nil {
+		if e == nil {
+			c.observe(issuer, "error")
+			return nil, err
+		}
+		// Stale-on-error: the IdP is unreachable and the last set it served
+		// is the best evidence of what it trusts. Keep serving it, hold off
+		// the next attempt, and say so.
+		c.mu.Lock()
+		e.noFetchBefore = now.Add(refetchHoldoff)
+		c.mu.Unlock()
+		c.observe(issuer, "stale")
+		if k, ok := lookup(e.keys, kid); ok {
+			return k, nil
+		}
+		return nil, fmt.Errorf("jwks %s: no key %q (refresh failed: %w)", uri, kid, err)
+	}
+	c.mu.Lock()
+	c.sets[uri] = &jwksEntry{
+		keys:          keys,
+		fetched:       now,
+		refreshAt:     now.Add(c.ttl),
+		noFetchBefore: now.Add(refetchHoldoff),
+	}
+	c.mu.Unlock()
+	c.observe(issuer, "ok")
+	if k, ok := lookup(keys, kid); ok {
+		return k, nil
+	}
+	return nil, fmt.Errorf("jwks %s: no key %q", uri, kid)
+}
+
+// freshKey is the hot path: a known kid in a set that has not reached its
+// ttl. Anything else goes through the fetch gate.
+func (c *jwksCache) freshKey(uri, kid string) (any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.sets[uri]
+	if e == nil || !c.now().Before(e.refreshAt) {
+		return nil, false
+	}
+	return lookup(e.keys, kid)
+}
+
+func (c *jwksCache) gate(uri string) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	fm := c.fetchMu[uri]
 	if fm == nil {
 		fm = &sync.Mutex{}
 		c.fetchMu[uri] = fm
 	}
-	c.mu.Unlock()
-
-	fm.Lock()
-	defer fm.Unlock()
-
-	// Re-check: another goroutine may have populated the set while we waited.
-	c.mu.Lock()
-	if e := c.sets[uri]; e != nil {
-		if k, ok := lookup(e.keys, kid); ok {
-			c.mu.Unlock()
-			return k, nil
-		}
-		if time.Since(e.fetched) < 30*time.Second {
-			c.mu.Unlock()
-			return nil, fmt.Errorf("jwks %s: no key %q", uri, kid)
-		}
-	}
-	c.mu.Unlock()
-
-	keys, err := c.fetch(ctx, uri)
-	if err != nil {
-		return nil, err
-	}
-	c.mu.Lock()
-	c.sets[uri] = &jwksEntry{keys: keys, fetched: time.Now()}
-	c.mu.Unlock()
-	if k, ok := lookup(keys, kid); ok {
-		return k, nil
-	}
-	return nil, fmt.Errorf("jwks %s: no key %q", uri, kid)
+	return fm
 }
 
 func (c *jwksCache) fetch(ctx context.Context, uri string) (map[string]any, error) {

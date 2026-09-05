@@ -69,6 +69,12 @@ type metricsSet struct {
 	// because Redis was unreachable — the limiter/breaker peer of
 	// fold_budget_degraded_total, and the same posture: fail open, loudly.
 	stateDegr *prometheus.CounterVec
+
+	// jwksFetches counts key-set fetches by issuer and outcome. The inbound
+	// trust anchor had no telemetry of its own: an IdP outage failed every
+	// authenticated request and was indistinguishable, in metrics, from a
+	// wave of clients presenting bad tokens.
+	jwksFetches *prometheus.CounterVec
 }
 
 func newMetricsSet(current func() []*upstream) *metricsSet {
@@ -152,11 +158,15 @@ func newMetricsSet(current func() []*upstream) *metricsSet {
 			Name: "fold_state_degraded_total",
 			Help: "Rate-limit and circuit-breaker decisions made per-instance because shared state was unreachable, by kind (limiter, breaker). Fail-open is deliberate; a fleet enforcing N separate copies of one limit must be visible — alert on it, like fold_budget_degraded_total.",
 		}, []string{"kind"}),
+		jwksFetches: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "fold_jwks_fetches_total",
+			Help: "JWKS fetches against a configured issuer, by outcome: ok, error (nothing cached — verification fails), stale (the fetch failed and the previous key set was served). A sustained error or stale rate is the IdP failing, which otherwise looks exactly like clients presenting bad tokens — alert on it.",
+		}, []string{"issuer", "outcome"}),
 	}
 	m.registry.MustRegister(
 		m.requests, m.requestDur, m.upstreamReq, m.upstreamDur, m.httpRejects, m.discovery,
 		m.budgetDegr, m.fanOut, m.tenantReq, m.tenantCalls, m.auditEvents, m.listItems, m.panics, m.drift, m.hookDecisions, m.hookLatency,
-		m.stateDegr, m.respCapped,
+		m.stateDegr, m.respCapped, m.jwksFetches,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -321,6 +331,12 @@ func (m *metricsSet) observeDrift(upstream, kind string) {
 // shared state (wired into state.Redis.OnDegraded).
 func (m *metricsSet) observeStateDegraded(kind string) {
 	m.stateDegr.WithLabelValues(kind).Inc()
+}
+
+// observeJWKSFetch counts one key-set fetch against an issuer (wired into
+// auth.Verifier.SetJWKSObserver and auth.EMA.SetJWKSObserver).
+func (m *metricsSet) observeJWKSFetch(issuer, outcome string) {
+	m.jwksFetches.WithLabelValues(issuer, outcome).Inc()
 }
 
 // panicked counts one recovered panic (see rescue.go).

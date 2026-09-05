@@ -181,6 +181,19 @@ groups:
             being applied. `rejected` means it failed validation or collided with a static
             upstream — an id collision freezes discovery until it is resolved.
 
+      - alert: FoldJWKSFetchFailing
+        expr: increase(fold_jwks_fetches_total{outcome=~"error|stale"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: JWKS fetch {{ $labels.outcome }} for issuer {{ $labels.issuer }}
+          description: >-
+            fold could not refresh this issuer's key set. `stale` means the last good set is
+            still verifying tokens and callers are unaffected so far; `error` means nothing is
+            cached and every token from this issuer is being refused. Either way the fault is
+            at the identity provider — without this alert it looks exactly like a wave of
+            clients presenting bad tokens.
+
       - alert: FoldTenantBudgetExhausted
         expr: increase(fold_tenant_requests_total{outcome="budget_exhausted"}[15m]) > 0
         labels:

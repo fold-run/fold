@@ -12,7 +12,7 @@ exempt for development):
 
 | Anchor | Why it is one |
 |---|---|
-| `auth.issuers[].issuer` / `jwksUri` | The inbound identity root: forging a principal only requires substituting the key set. Issuers are allowlisted and checked before any network I/O; JWKS fetches are single-flighted, size-bounded, and timeout-bounded so unknown-`kid` floods cannot be amplified against the IdP. |
+| `auth.issuers[].issuer` / `jwksUri` | The inbound identity root: forging a principal only requires substituting the key set. Issuers are allowlisted and checked before any network I/O; JWKS fetches are single-flighted, size-bounded, and timeout-bounded so unknown-`kid` floods cannot be amplified against the IdP. A cached set is re-read every 5 minutes even when every `kid` is known, so a key the IdP withdraws stops verifying tokens within that window rather than for the life of the process; a refresh that fails keeps the last good set serving (an IdP outage must not reject every valid caller), is retried at most every 30 s, and is counted in `fold_jwks_fetches_total` so the outage is visible as the IdP's rather than as bad clients. |
 | `auth.ema.idpIssuer` / `idpJwksUri` | The same, for the ID-JAG exchange path. |
 | Upstream `tokenEndpoint`s | Carry client secrets (client-credentials, token-exchange). |
 | `discovery.url` | Decides where traffic routes and where credentials attach: whoever controls the document can add upstreams. Documents are strictly parsed, size-capped (4 MiB), and validated whole against the running config — a collision with a static upstream rejects the entire document. |

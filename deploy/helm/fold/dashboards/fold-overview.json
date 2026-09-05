@@ -1234,6 +1234,59 @@
         }
       ],
       "description": "Live downstream MCP sessions and per-client bridged upstream sessions. Idle downstream sessions expire after server.sessionIdleTimeoutMs (default 30 min); bridged sessions sweep at 5 min. Sustained growth means clients are minting sessions faster than they expire."
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "JWKS fetches by outcome",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 12,
+        "h": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (issuer, outcome) (rate(fold_jwks_fetches_total[5m]))",
+          "legendFormat": "{{issuer}} {{outcome}}",
+          "range": true,
+          "refId": "J"
+        }
+      ],
+      "description": "The inbound trust anchor. stale means the IdP could not be reached and the last good key set is still verifying tokens; error means nothing is cached and every authenticated request is failing. Either one is the IdP, not your clients."
     }
   ]
 }

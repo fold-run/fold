@@ -147,6 +147,15 @@ func (m *EMA) Issuer() string { return m.issuer }
 // PublicKey returns the verification key for fold-minted tokens.
 func (m *EMA) PublicKey() *ecdsa.PublicKey { return &m.key.PublicKey }
 
+// SetJWKSObserver is told the outcome of every fetch of the IdP's key set,
+// labelled with idpIssuer — the same hook Verifier.SetJWKSObserver offers,
+// so both trust anchors report into one metric.
+func (m *EMA) SetJWKSObserver(fn func(issuer, outcome string)) {
+	if fn != nil {
+		m.jwks.observe = fn
+	}
+}
+
 // ServeJWKS answers GET /.well-known/jwks.json with the public key set.
 func (m *EMA) ServeJWKS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -212,7 +221,7 @@ func (m *EMA) ServeToken(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		kid, _ := t.Header["kid"].(string)
-		return m.jwks.key(r.Context(), jwksURI, kid)
+		return m.jwks.key(r.Context(), m.cfg.IdpIssuer, jwksURI, kid)
 	})
 	if err != nil {
 		refuse(http.StatusBadRequest, "invalid_grant", "ID-JAG validation failed")

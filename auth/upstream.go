@@ -78,7 +78,12 @@ const maxCachedTokens = 4096
 // step in the grant.
 func NewUpstreamCredentials(cfg *config.UpstreamAuth, client *http.Client) *UpstreamCredentials {
 	if client == nil {
-		client = http.DefaultClient
+		// Never http.DefaultClient: it has no timeout, and a token fetch is
+		// single-flighted per key, so one wedged token endpoint would hold
+		// every caller behind it for the full request timeout. The
+		// trust-anchor client is bounded; its redirect refusal is replaced
+		// below with the POST-safe form.
+		client = TrustAnchorClient()
 	}
 	noRedirect := *client
 	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error {

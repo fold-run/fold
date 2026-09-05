@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -345,5 +346,32 @@ func TestClaimsBasedPolicy(t *testing.T) {
 	})
 	if _, err := multi.CallTool(context.Background(), &mcp.CallToolParams{Name: "things__get_thing"}); err != nil {
 		t.Errorf("array-claim caller CallTool: %v", err)
+	}
+}
+
+// The inbound trust anchor reports its fetches. Before this the IdP had no
+// telemetry of its own: an outage there failed every authenticated request
+// and showed up only as unauthenticated rejections, indistinguishable from a
+// wave of clients presenting bad tokens.
+func TestJWKSFetchesAreCounted(t *testing.T) {
+	iss := newFixtureIssuer(t)
+	up, _ := newUpstreamServer(t, "tool")
+	ts, _ := startGateway(t, authedConfig(iss, []config.Upstream{{ID: "u", URL: up.URL}}, nil))
+
+	token := iss.mint(t, "carol", "https://gw.example.com", nil)
+	session := connect(t, ts.URL, map[string]string{"Authorization": "Bearer " + token})
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool"}); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	want := `fold_jwks_fetches_total{issuer="` + iss.server.URL + `",outcome="ok"} 1`
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("metrics missing %q", want)
 	}
 }
