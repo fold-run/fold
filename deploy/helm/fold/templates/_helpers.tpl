@@ -89,3 +89,28 @@ required.
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Guards that fail a render whose manifest would be wrong in a way nothing else
+reports. Included once from deployment.yaml; emits nothing.
+*/}}
+{{- define "fold.rolloutGuards" -}}
+{{- $sleep := int .Values.lifecycle.preStopSleepSeconds }}
+{{- $drain := default "10s" (.Values.server.drainTimeout | toString) }}
+{{- $drainSec := 0 }}
+{{- if hasSuffix "ms" $drain }}
+{{- $drainSec = div (int (trimSuffix "ms" $drain)) 1000 }}
+{{- else if hasSuffix "m" $drain }}
+{{- $drainSec = mul (int (trimSuffix "m" $drain)) 60 }}
+{{- else if hasSuffix "s" $drain }}
+{{- $drainSec = int (trimSuffix "s" $drain) }}
+{{- else }}
+{{- fail (printf "server.drainTimeout %q must be a Go duration in s, m, or ms" $drain) }}
+{{- end }}
+{{- if le (int .Values.terminationGracePeriodSeconds) (add $sleep $drainSec) }}
+{{- fail (printf "terminationGracePeriodSeconds (%d) must exceed lifecycle.preStopSleepSeconds (%d) + server.drainTimeout (%s): the kubelet would kill the pod mid-drain" (int .Values.terminationGracePeriodSeconds) $sleep $drain) }}
+{{- end }}
+{{- if and .Values.existingConfigMap .Values.metrics.listener.enabled (not .Values.metrics.listener.externalConfigSetsMetricsAddr) }}
+{{- fail (printf "metrics.listener.enabled with existingConfigMap opens port %v that nothing binds unless your ConfigMap sets server.metricsAddr to \":%v\"; set metrics.listener.externalConfigSetsMetricsAddr: true to confirm it does" .Values.metrics.listener.port .Values.metrics.listener.port) }}
+{{- end }}
+{{- end }}

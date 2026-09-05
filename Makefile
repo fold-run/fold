@@ -75,8 +75,20 @@ helm-check:
 	@for f in deploy/helm/fold/ci/*.yaml; do \
 		echo "helm template -f $$f"; \
 		helm template fold deploy/helm/fold -f $$f \
+			--kube-version 1.31.0 \
+			--api-versions monitoring.coreos.com/v1 >/dev/null || exit 1; \
+		helm template fold deploy/helm/fold -f $$f \
+			--kube-version 1.28.0 \
 			--api-versions monitoring.coreos.com/v1 >/dev/null || exit 1; \
 	done
+	@if helm template fold deploy/helm/fold -f deploy/helm/fold/ci/existing-configmap-values.yaml \
+		--set metrics.listener.enabled=true >/dev/null 2>&1; then \
+		echo "expected metrics listener + existingConfigMap without confirmation to fail"; exit 1; \
+	else echo "metrics-listener guard OK"; fi
+	@if helm template fold deploy/helm/fold -f deploy/helm/fold/ci/default-values.yaml \
+		--set terminationGracePeriodSeconds=12 >/dev/null 2>&1; then \
+		echo "expected a grace period under drain + preStop to fail"; exit 1; \
+	else echo "grace-period guard OK"; fi
 	@if helm template fold deploy/helm/fold >/dev/null 2>&1; then \
 		echo "expected render without a config to fail"; exit 1; \
 	else echo "required-config guard OK"; fi
