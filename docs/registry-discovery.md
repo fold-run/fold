@@ -69,8 +69,11 @@ arranged the credential some other way.
 
 Nothing here is a substitute for the gateway-side allowlists. Set
 `discovery.allowedAuthStrategies` / `allowedSecretRefs` /
-`allowedCredentialHosts` as you would for any producer: the gateway enforcing
-its own bounds on a document is what makes the producer's promises checkable.
+`allowedCredentialHosts` — and `allowedUpstreamHosts`, which bounds where an
+*uncredentialed* entry may point — as you would for any producer: the gateway
+enforcing its own bounds on a document is what makes the producer's promises
+checkable, and a registry entry needs no credential to put a tool in front of
+every model behind the gateway.
 
 ## Deploying
 

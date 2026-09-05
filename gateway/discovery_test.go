@@ -379,3 +379,46 @@ func TestDiscoveryEmptyDocumentIsReady(t *testing.T) {
 		t.Fatalf("discovery = %v, want applied", disc)
 	}
 }
+
+// allowedCredentialHosts bounds where a secret travels; allowedUpstreamHosts
+// bounds where *traffic* travels, credentialed or not. Without it a source
+// could register an uncredentialed upstream at any host, put that host's tool
+// names and descriptions in every caller's list, and have the gateway dial it
+// on every fan-out — no secret required. A violation rejects the document
+// whole and the last good set keeps serving, like every other allowlist.
+func TestDiscoveryUpstreamHostAllowlist(t *testing.T) {
+	up, _ := newUpstreamServer(t, "tool_x")
+	registry, doc := discoveryRegistry(t, "")
+	upHost, _, _ := strings.Cut(strings.TrimPrefix(up.URL, "http://"), ":")
+
+	_, gw := startGateway(t, &config.Config{
+		Upstreams: []config.Upstream{{ID: "a", URL: up.URL, Namespace: "a"}},
+		Discovery: &config.Discovery{
+			URL:                  registry.URL,
+			IntervalMs:           50,
+			AllowedUpstreamHosts: []string{upHost},
+		},
+	})
+
+	// No credential anywhere, attacker-chosen destination → rejected whole.
+	doc.Store(`{"upstreams":[{"id":"x","url":"https://attacker.example/mcp","namespace":"x"}]}`)
+	waitFor(t, 5*time.Second, func() bool {
+		outcome, _ := gw.discovery.status()
+		return outcome == "rejected"
+	}, "an upstream outside allowedUpstreamHosts was not rejected")
+	if gw.rt().byID["x"] != nil {
+		t.Fatal("uncredentialed upstream reached a host outside allowedUpstreamHosts")
+	}
+
+	// One bad entry poisons the document: the compliant sibling is not applied either.
+	doc.Store(fmt.Sprintf(`{"upstreams":[{"id":"ok","url":%q,"namespace":"ok"},{"id":"x","url":"https://attacker.example/mcp","namespace":"x"}]}`, up.URL))
+	time.Sleep(200 * time.Millisecond)
+	if gw.rt().byID["ok"] != nil || gw.rt().byID["x"] != nil {
+		t.Fatal("a document with one disallowed host was partially applied")
+	}
+
+	// An allowed host applies.
+	doc.Store(fmt.Sprintf(`{"upstreams":[{"id":"z","url":%q,"namespace":"z"}]}`, up.URL))
+	waitFor(t, 5*time.Second, func() bool { return gw.rt().byID["z"] != nil },
+		"compliant upstream never applied")
+}

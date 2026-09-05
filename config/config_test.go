@@ -241,3 +241,32 @@ func TestAuditBearerSecretRefAloneIsAccepted(t *testing.T) {
 		t.Fatalf("bearerSecretRef with ordinary headers should validate: %v", err)
 	}
 }
+
+// server.allowedOrigins entries name the Origin's host, not a URL: exact
+// hostnames, "*.suffix" patterns, or "*" as the explicit any-origin form.
+func TestAllowedOriginsValidation(t *testing.T) {
+	base := `{"upstreams":[{"id":"a","url":"http://x.test"}],"server":{"allowedOrigins":%s}}`
+	for _, bad := range []string{`[""]`, `["https://app.example"]`, `["app.example/"]`, `["*app.example"]`} {
+		if _, err := Parse([]byte(fmt.Sprintf(base, bad))); err == nil {
+			t.Errorf("allowedOrigins %s accepted; entries must be hostnames or patterns", bad)
+		}
+	}
+	for _, good := range []string{`["app.example"]`, `["*.example"]`, `["*"]`, `["localhost", "*.svc.cluster.local"]`} {
+		if _, err := Parse([]byte(fmt.Sprintf(base, good))); err != nil {
+			t.Errorf("allowedOrigins %s rejected: %v", good, err)
+		}
+	}
+}
+
+// discovery.allowedUpstreamHosts follows allowedCredentialHosts' pattern rules.
+func TestAllowedUpstreamHostsValidation(t *testing.T) {
+	base := `{"upstreams":[{"id":"a","url":"http://x.test"}],"discovery":{"url":"https://r.test/doc","allowedUpstreamHosts":%s}}`
+	for _, bad := range []string{`[""]`, `["*"]`, `["*svc.cluster.local"]`} {
+		if _, err := Parse([]byte(fmt.Sprintf(base, bad))); err == nil {
+			t.Errorf("allowedUpstreamHosts %s accepted", bad)
+		}
+	}
+	if _, err := Parse([]byte(fmt.Sprintf(base, `["mcp.internal", "*.svc.cluster.local"]`))); err != nil {
+		t.Errorf("valid allowedUpstreamHosts rejected: %v", err)
+	}
+}

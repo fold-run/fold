@@ -51,7 +51,7 @@ default-deny about credentials: a Service carrying any auth strategy or
 and `--allow-secret-refs` grant it, because an ungated reference would let
 any Service author point a gateway-held secret at a URL of their choosing.
 The gateway enforces the same bounds independently via
-`discovery.allowedAuthStrategies` / `allowedSecretRefs` (see the README and
+`discovery.allowedAuthStrategies` / `allowedSecretRefs` / `allowedCredentialHosts` / `allowedUpstreamHosts` (see the README and
 [security-model.md](security-model.md)) — set both when registrants and
 gateway operators are different people. Use `--reserved-ids` for the
 gateway's static upstream ids; namespace prefixing is already on by default.

@@ -20,7 +20,10 @@ exempt for development):
 ## The inbound chain
 
 Every `/mcp` request passes, in order: host/origin allowlist (DNS-rebinding
-protection) → body-size cap → Bearer verification (trusted issuer, JWKS
+protection — `allowedHosts` for the Host, and for the Origin either
+`allowedOrigins` or, absent that, the same hosts; a Host wildcard without
+`allowedOrigins` leaves the Origin unchecked and is warned about at startup)
+→ body-size cap → Bearer verification (trusted issuer, JWKS
 signature, exact audience per RFC 8707, non-empty `sub`, asymmetric
 algorithms only — RS/ES/EdDSA) → global, per-tenant, and per-principal rate
 limits → routing (which resolves the caller's tenant) → the tenant's
@@ -306,9 +309,18 @@ consequences, each with a control:
   credentialed strategies and secret references by default
   (`--allow-auth-strategies`, `--allow-secret-refs`), and the gateway
   enforces its own `discovery.allowedAuthStrategies` /
-  `allowedSecretRefs` allowlists as a backstop, rejecting a violating
-  document whole. Set the gateway-side allowlists whenever the discovery
-  source is not operated by the gateway's operators.
+  `allowedSecretRefs` / `allowedCredentialHosts` allowlists as a backstop,
+  rejecting a violating document whole. Set the gateway-side allowlists
+  whenever the discovery source is not operated by the gateway's operators.
+- **Destination is the other sharp edge, and it needs no secret.** The
+  three credential allowlists bound where a *secret* travels and leave an
+  uncredentialed upstream free to live anywhere. Registering one costs a
+  source nothing and still puts that host's tool names and descriptions —
+  the instruction set a model acts on — into every caller's list, with the
+  gateway dialing the host on every fan-out. `discovery.allowedUpstreamHosts`
+  bounds every discovered endpoint host, credentialed or not; set it with
+  the other three, and read fold's startup warning when it is absent as the
+  reminder it is.
 - **Identity claims need bounds.** A registration colliding with a static
   upstream id makes the gateway reject every future document (fail-safe,
   but a freeze an attacker can cause — alert on
