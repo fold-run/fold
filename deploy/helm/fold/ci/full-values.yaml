@@ -52,6 +52,44 @@ ingress:
 
 autoscaling:
   enabled: true
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+
+priorityClassName: system-cluster-critical
+
+lifecycle:
+  preStopSleepSeconds: 8
+
+server:
+  drainTimeout: 15s
+
+terminationGracePeriodSeconds: 45
+
+probes:
+  readiness:
+    mode: tcp
+
+extraVolumes:
+  - name: private-ca
+    configMap:
+      name: corp-ca-bundle
+  - name: audit
+    emptyDir: {}
+extraVolumeMounts:
+  - name: private-ca
+    mountPath: /etc/ssl/private
+    readOnly: true
+  - name: audit
+    mountPath: /var/lib/fold
+
+env:
+  - name: SSL_CERT_FILE
+    value: /etc/ssl/private/ca.pem
 
 podDisruptionBudget:
   enabled: true

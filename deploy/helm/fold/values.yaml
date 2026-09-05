@@ -17,6 +17,32 @@ fullnameOverride: ""
 # Ignored when autoscaling.enabled is true.
 replicaCount: 2
 
+# Rollout shape. maxUnavailable: 0 means a serving pod is never taken away
+# before its replacement is Ready — with the default two replicas and the
+# PDB's minAvailable: 1, the Kubernetes defaults (25%/25%) would otherwise
+# let a rollout run on one pod. maxSurge: 1 is the price: one extra pod for
+# the duration.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+# ReplicaSets kept for `helm rollback` / `kubectl rollout undo`.
+revisionHistoryLimit: 5
+
+# A gateway that fronts every MCP call in the cluster should be evicted last.
+# Name a PriorityClass you have created; empty leaves the default.
+priorityClassName: ""
+
+lifecycle:
+  # Seconds the container sleeps after SIGTERM is decided but before it is
+  # sent, so endpoint removal propagates to kube-proxy and the ingress before
+  # the listener closes. Without it a rollout produces a few seconds of
+  # refused connections per pod. Uses the Kubernetes 1.30+ `sleep` action —
+  # the image is distroless and has no shell to sleep with — and is omitted
+  # on older clusters. 0 disables.
+  preStopSleepSeconds: 5
+
 # The fold config document (see fold.config.example.json in the repo root),
 # rendered verbatim into a ConfigMap as fold.config.json. In production set
 # config.server.allowedHosts to your public hostname(s) — the gateway's
@@ -63,6 +89,13 @@ server:
   port: 8080
   logFormat: json
   logLevel: info
+  # How long SIGTERM waits for in-flight requests and open streams before
+  # severing them (fold's --drain-timeout, a Go duration such as 15s). Empty
+  # passes no flag and fold uses its default, 10 s. Requires fold >= v1.16.0
+  # when set — older images do not know the flag. terminationGracePeriodSeconds
+  # must exceed preStopSleepSeconds + the drain (10 s when empty), or the
+  # kubelet kills the pod mid-drain; the chart refuses to render otherwise.
+  drainTimeout: ""
   # Additional CLI arguments appended to the container args.
   extraArgs: []
 
@@ -85,6 +118,14 @@ probes:
     failureThreshold: 24
   readiness:
     enabled: true
+    # http probes GET `path` (default /health, which is 503 when every
+    # probeable upstream is down — so a total upstream outage removes every
+    # pod from the Service and clients see an ingress 502/503 instead of
+    # fold's own -31041 + partialFailure answer). Set mode: tcp to keep pods
+    # in rotation on process liveness alone and let fold's error semantics
+    # reach clients; the trade-off is written up in docs/deploy.md.
+    mode: http
+    path: /health
     periodSeconds: 15
     timeoutSeconds: 8
     failureThreshold: 3
@@ -163,6 +204,17 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 10
   targetCPUUtilizationPercentage: 75
+  # HPA scaling behaviour (autoscaling/v2 `behavior`). Scale-down cuts live
+  # SSE sessions on the pods it removes, so the default here is slower than
+  # Kubernetes' own: wait five minutes of sustained low load and remove at
+  # most one pod a minute.
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
 
 # On by default: the chart defaults to two replicas, which is exactly the
 # shape where one node drain can take both pods at once. Rendered only when
@@ -183,6 +235,12 @@ metrics:
   listener:
     enabled: false
     port: 9090
+    # With existingConfigMap the chart cannot inject server.metricsAddr into
+    # your document, so enabling the listener would open a port nothing
+    # binds: Service, NetworkPolicy, and ServiceMonitor all pointing at a
+    # dead target. The chart refuses to render that unless you confirm your
+    # ConfigMap sets server.metricsAddr to ":<port>" yourself.
+    externalConfigSetsMetricsAddr: false
 
   serviceMonitor:
     # Requires the prometheus-operator CRDs.
@@ -231,12 +289,31 @@ metrics:
     # Sets the grafana_folder annotation when non-empty.
     folderAnnotation: ""
 
+# No CPU limit on purpose: a latency-sensitive proxy under a CPU limit is
+# throttled exactly when it is busiest, and the request is what the scheduler
+# needs. The memory limit is a backstop, not a measurement — see
+# docs/operations.md "Sizing" for what to set it from.
 resources:
   requests:
     cpu: 100m
     memory: 64Mi
   limits:
     memory: 256Mi
+
+# Extra volumes and mounts on the gateway container. The two reasons to need
+# them: a private CA bundle (mount it and point SSL_CERT_FILE at it via
+# `env`; Go reads that variable, and the distroless image has no
+# update-ca-certificates), and a writable path for the `file` audit sink or
+# a `deadLetterPath` under readOnlyRootFilesystem (an emptyDir, or a PVC if
+# it must survive the pod).
+extraVolumes: []
+#  - name: private-ca
+#    configMap:
+#      name: corp-ca-bundle
+extraVolumeMounts: []
+#  - name: private-ca
+#    mountPath: /etc/ssl/private
+#    readOnly: true
 
 # The image is distroless nonroot and the binary never writes to disk, so
 # the strictest settings work as-is.
@@ -251,9 +328,9 @@ securityContext:
   capabilities:
     drop: ["ALL"]
 
-# Must exceed the gateway's 10s graceful-shutdown bound (SIGTERM →
-# http.Server.Shutdown with a 10s timeout; long-lived SSE streams are cut at
-# that bound).
+# Must exceed lifecycle.preStopSleepSeconds + server.drainTimeout (the
+# chart refuses to render otherwise): SIGTERM → fold drains for drainTimeout,
+# severing SSE streams still open at that bound and exiting 0.
 terminationGracePeriodSeconds: 30
 
 podAnnotations: {}

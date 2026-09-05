@@ -1,0 +1,14 @@
+# Operator-managed ConfigMap *and* the metrics listener: the chart cannot
+# inject server.metricsAddr, so it renders only with the operator's
+# confirmation that the document sets it. Without the confirmation this
+# shape must fail — which a passing render cannot show, so that half is
+# documented in the chart README rather than rendered here.
+existingConfigMap: fold-config
+probes:
+  hostHeader: gw.example.com
+metrics:
+  listener:
+    enabled: true
+    externalConfigSetsMetricsAddr: true
+  serviceMonitor:
+    enabled: true

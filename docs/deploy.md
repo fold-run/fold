@@ -198,6 +198,19 @@ How the pieces map:
 - **Redis** — set `redis.existingSecret` (or `redis.url`) to populate
   `REDIS_URL` when running more than one replica; see
   [Redis for fleets](#redis-for-fleets).
+- **Rollouts** — the chart's `strategy` is `maxUnavailable: 0, maxSurge: 1`,
+  so a serving pod is never taken away before its replacement is Ready
+  (Kubernetes' own 25%/25% would let a two-replica rollout run on one pod,
+  which the PDB's `minAvailable: 1` permits). A `preStop` sleep
+  (`lifecycle.preStopSleepSeconds`, 5 s, Kubernetes 1.30+) lets endpoint
+  removal reach kube-proxy and the ingress before SIGTERM closes the
+  listener — without it every rollout refuses a few seconds of connections
+  per pod. `server.drainTimeout` is fold's `--drain-timeout`; the chart
+  refuses to render a `terminationGracePeriodSeconds` that does not exceed
+  the sleep plus the drain, because the kubelet would kill the pod mid-drain.
+  `revisionHistoryLimit` keeps five ReplicaSets for `helm rollback`, and
+  `priorityClassName` is there because a gateway fronting every MCP call
+  should be evicted last.
 
 ### allowedHosts and health probes
 
@@ -229,7 +242,17 @@ reachable. The chart's probe defaults follow from that:
 
 - **Readiness**: `httpGet /health`, period 15 s, timeout 8 s (above the 5 s
   internal budget) — pods only receive traffic while at least one upstream
-  is reachable.
+  is reachable. **Read the consequence before accepting it.** When *every*
+  probeable upstream is down, every pod fails readiness at once, the
+  Service has no endpoints, and clients see the ingress's 502/503 instead of
+  fold's own answer — `-31041` on named calls, an empty list with a
+  `partialFailure` marker on fan-outs — which is the behaviour the product
+  is built around. `probes.readiness.mode: tcp` keeps pods in rotation on
+  process liveness alone and lets fold's error semantics reach clients; the
+  trade is that a pod with a wedged upstream set stays in rotation too.
+  Neither is wrong; the default keeps the pre-0.4.0 behaviour, and
+  `probes.readiness.path` is there for a deployment that wants an HTTP probe
+  on something other than `/health`.
 - **Liveness**: plain TCP connect, deliberately *not* `/health` — liveness
   should detect a wedged process, not restart pods because upstreams are
   down, and shouldn't generate upstream traffic every few seconds.
@@ -322,8 +345,10 @@ Per credential:
 - **Upstream API keys / OAuth client secrets** (`auth.secretRef`,
   `clientAuth.secretRef`): overlap-friendly — provision the new credential
   at the upstream, update the Secret, rolling-restart, then revoke the old
-  one. Zero downtime with `replicaCount` ≥ 2 and the PDB the chart now
-  applies by default.
+  one. Zero downtime with `replicaCount` ≥ 2, the PDB, and — since chart
+  0.4.0 — a rollout that never drops below the serving count
+  (`maxUnavailable: 0`) with a `preStop` sleep ahead of SIGTERM, all of which
+  the chart applies by default.
 - **The EMA signing key** (`auth.ema.signingKeyRef`): read once at startup,
   and there is no dual-key overlap — after the restart the gateway trusts
   only the new key, so fold-minted tokens signed by the old key (up to
@@ -356,6 +381,39 @@ reverse proxy in front of it. Two things matter at that layer:
    - nginx (plain): `proxy_read_timeout 3600s; proxy_buffering off;`
 2. **Host**: the public hostname the proxy forwards must be in
    `server.allowedHosts`.
+
+### Private CAs
+
+fold's outbound TLS — to upstreams, to the IdP's JWKS and token endpoints,
+to Redis over `rediss://`, to an audit webhook or OTLP collector — trusts the
+system root store, and the distroless image ships Mozilla's. An internal PKI
+is not in it, and the image has no `update-ca-certificates` to add one. Go
+reads two environment variables for exactly this: `SSL_CERT_FILE` (one PEM
+bundle) and `SSL_CERT_DIR` (a directory of them), both honoured on Linux and
+both **replacing** the system store rather than extending it — so a bundle
+that must trust public CAs as well includes them.
+
+With the chart, mount the bundle and point the variable at it:
+
+```yaml
+extraVolumes:
+  - name: private-ca
+    configMap:
+      name: corp-ca-bundle          # key ca.pem
+extraVolumeMounts:
+  - name: private-ca
+    mountPath: /etc/ssl/private
+    readOnly: true
+env:
+  - name: SSL_CERT_FILE
+    value: /etc/ssl/private/ca.pem
+```
+
+With compose, bind-mount the file and set the same variable in
+`environment:`. The gateway has no `caFile` config field on purpose: the
+variable is what Go already reads, a field would duplicate it inside the
+frozen config surface, and `fold-discovery`'s `--ca-file` exists only because
+the Kubernetes API's CA is a different trust decision from the gateway's.
 
 ## Redis for fleets
 
@@ -509,7 +567,12 @@ ServiceMonitor (`metrics.serviceMonitor.enabled`).
 - [ ] Kubernetes: PodDisruptionBudget on (the chart's default when
       `replicaCount` ≥ 2), resource limits sized, probe Host header matches
       the allowlist, `networkPolicy.enabled` scoping the metrics port and —
-      with `egress.enabled` — where upstream credentials may travel
+      with `egress.enabled` — where upstream credentials may travel;
+      `terminationGracePeriodSeconds` above preStop + drain (the chart
+      checks), and a decision recorded on `probes.readiness.mode` for the
+      all-upstreams-down case
+- [ ] Private PKI: the CA bundle mounted and `SSL_CERT_FILE` pointing at it
+      (see "Private CAs") — the image trusts only public roots otherwise
 - [ ] Release artifacts verified at deploy time (`gh attestation verify`,
       or a cosign/Kyverno admission policy — see "Verifying what you deploy")
 - [ ] A credential-rotation procedure written down (see "Rotating

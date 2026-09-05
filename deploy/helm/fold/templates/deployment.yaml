@@ -5,8 +5,14 @@ metadata:
   labels:
     {{- include "fold.labels" . | nindent 4 }}
 spec:
+  {{- include "fold.rolloutGuards" . }}
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   selector:
     matchLabels:
@@ -36,6 +42,9 @@ spec:
       # user-supplied SA doesn't silently re-mount a token.
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -75,6 +84,10 @@ spec:
             - {{ .Values.server.logFormat }}
             - --log-level
             - {{ .Values.server.logLevel }}
+            {{- with .Values.server.drainTimeout }}
+            - --drain-timeout
+            - {{ . | quote }}
+            {{- end }}
             {{- with .Values.server.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -121,12 +134,17 @@ spec:
           {{- end }}
           {{- if .Values.probes.readiness.enabled }}
           readinessProbe:
+            {{- if eq .Values.probes.readiness.mode "tcp" }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
-              path: /health
+              path: {{ .Values.probes.readiness.path }}
               port: http
               httpHeaders:
                 - name: Host
                   value: {{ include "fold.probeHostHeader" . }}
+            {{- end }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
@@ -140,6 +158,16 @@ spec:
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           {{- end }}
+          {{- if and (gt (int .Values.lifecycle.preStopSleepSeconds) 0) (semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version) }}
+          # Endpoint removal propagates asynchronously; sleeping before
+          # SIGTERM lets kube-proxy and the ingress stop sending traffic
+          # before the listener closes. The `sleep` action because the image
+          # has no shell; omitted on clusters that predate it.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.lifecycle.preStopSleepSeconds }}
+          {{- end }}
           {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -152,10 +180,16 @@ spec:
             - name: config
               mountPath: /etc/fold
               readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "fold.configMapName" . }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

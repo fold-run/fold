@@ -84,6 +84,14 @@ The important knobs (see `values.yaml` for the full set with comments):
 | `probes.hostHeader` | derived | Host header for httpGet probes; must pass the gateway's allowedHosts check. Auto-derived from inline `config.server.allowedHosts`, else `localhost`. |
 | `validateInitContainer.enabled` | `true` | Runs `fold --validate` before the gateway starts. |
 | `replicaCount` | `2` | Ignored when `autoscaling.enabled`. |
+| `strategy` | `maxUnavailable: 0, maxSurge: 1` | A serving pod is never removed before its replacement is Ready. `revisionHistoryLimit` (5) keeps ReplicaSets for `helm rollback`. |
+| `lifecycle.preStopSleepSeconds` | `5` | Sleep between endpoint removal and SIGTERM so kube-proxy and the ingress stop routing first. Kubernetes 1.30+ `sleep` action (distroless has no shell); omitted on older clusters. |
+| `server.drainTimeout` | `""` (fold default 10 s) | fold's `--drain-timeout`. Requires fold ≥ v1.16.0 when set. `terminationGracePeriodSeconds` must exceed preStop + drain or the render fails. |
+| `priorityClassName` | `""` | Evict the gateway last. |
+| `probes.readiness.mode` / `.path` | `http` / `/health` | `tcp` keeps pods in rotation on process liveness alone during a total upstream outage so clients get fold's `-31041` instead of an ingress 503 — see docs/deploy.md. |
+| `extraVolumes` / `extraVolumeMounts` | `[]` | Private CA bundle (+ `SSL_CERT_FILE` in `env`), or a writable path for the `file` audit sink / `deadLetterPath` under the read-only root. |
+| `autoscaling.behavior` | slow scale-down | HPA `behavior`; default removes at most one pod a minute after five minutes of low load, because scale-down cuts live SSE sessions. |
+| `metrics.listener.externalConfigSetsMetricsAddr` | `false` | Required confirmation to use the metrics listener with `existingConfigMap`, whose `server.metricsAddr` the chart cannot inject. |
 | `ingress.*` | disabled | Remember SSE annotations (long-lived streams) and that ingress hosts must appear in `allowedHosts`. |
 | `autoscaling.*` / `podDisruptionBudget.*` / `metrics.serviceMonitor.*` | disabled | Standard optional resources. |
 
