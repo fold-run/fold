@@ -4,15 +4,17 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"runtime/debug"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fold-run/fold/config"
@@ -203,7 +205,9 @@ func New(cfg *config.Audit, opts ...Option) *Logger {
 		built := len(l.sinks)
 		switch s.Type {
 		case "stdout":
-			l.sinks = append(l.sinks, &stdoutSink{})
+			w := newStdoutSink(os.Stdout, report)
+			l.sinks = append(l.sinks, w)
+			l.closers = append(l.closers, w)
 		case "webhook":
 			headers, err := webhookHeaders(s)
 			if err != nil {
@@ -310,8 +314,9 @@ func (l *Logger) StartupErrors() []error {
 }
 
 // Close releases sinks that hold resources (open files, delivery workers).
-// Buffered events are flushed on a bounded best-effort basis; a shutdown that
-// waits indefinitely on an unreachable webhook is worse than a lost tail.
+// Buffered events are flushed on a bounded best-effort basis (drainTimeout
+// per sink); a shutdown that waits indefinitely on an unreachable webhook is
+// worse than a lost tail — but a lost tail is counted, never silent.
 func (l *Logger) Close() {
 	if l == nil {
 		return
@@ -338,14 +343,20 @@ func (l *Logger) Emit(e Event) {
 	}
 }
 
-// scrubEvent applies the configured audit scrub before delivery. It is a
-// value edit, not a copy, because the caller has already handed the event
-// to audit and no longer depends on its original contents.
+// scrubEvent applies the configured audit scrub before delivery.
+//
+// Usage is cloned before any key is removed. The map arrived by pointer: it
+// is the upstream's own result `_meta.usage`, and the caller is about to
+// serialize that same result to the client. An in-place delete would redact
+// the response as well as the record — a scrub configured to keep secrets
+// out of the trail would silently take fields away from the caller. Error is
+// a string, so editing it can reach nothing else.
 func (l *Logger) scrubEvent(e *Event) {
 	if l.scrub == nil {
 		return
 	}
 	if len(l.scrub.RedactUsageKeys) > 0 && len(e.Usage) > 0 {
+		e.Usage = maps.Clone(e.Usage)
 		for _, k := range l.scrub.RedactUsageKeys {
 			delete(e.Usage, k)
 		}
@@ -355,16 +366,107 @@ func (l *Logger) scrubEvent(e *Event) {
 	}
 }
 
-type stdoutSink struct{ mu sync.Mutex }
+// drainTimeout bounds how long a closing sink keeps delivering what is still
+// buffered. Shutdown must not wait out a receiver that is already failing,
+// but the last events a process emits are exactly the ones a rolling restart
+// makes interesting — so a closing sink tries once, briefly, and counts what
+// it could not place.
+var drainTimeout = 3 * time.Second
+
+// stdoutSink writes one JSON event per line, from a worker rather than the
+// request goroutine. stdout is the default sink and the one most likely to be
+// a pipe somebody else reads — a container log driver, a collector — and a
+// pipe nobody is reading blocks its writer. The webhook and OTLP sinks
+// already refuse to let audit become the reason a request is slow; this one
+// refuses the same way, with the same bounded buffer and the same counted
+// drop. (The file sink stays synchronous on purpose: it is the durability
+// anchor requireDurable points at, and a buffered file would make that
+// promise conditional on a clean shutdown.)
+type stdoutSink struct {
+	w       io.Writer
+	ch      chan Event
+	done    chan struct{}
+	exited  chan struct{}
+	closed  atomic.Bool
+	writing atomic.Int32 // 1 while the worker is inside w.Write
+	report  func(outcome string, n int)
+}
+
+func newStdoutSink(w io.Writer, report func(string, int)) *stdoutSink {
+	s := &stdoutSink{
+		w:      w,
+		ch:     make(chan Event, 1024),
+		done:   make(chan struct{}),
+		exited: make(chan struct{}),
+		report: report,
+	}
+	go s.run()
+	return s
+}
 
 func (s *stdoutSink) Emit(e Event) {
-	data, err := json.Marshal(e)
-	if err != nil {
+	if s.closed.Load() {
+		s.report(OutcomeDropped, 1)
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, _ = fmt.Fprintln(os.Stdout, string(data))
+	select {
+	case s.ch <- e:
+	default:
+		// Full buffer: drop rather than block the request path, and count it.
+		s.report(OutcomeDropped, 1)
+	}
+}
+
+func (s *stdoutSink) run() {
+	defer close(s.exited)
+	for {
+		select {
+		case e := <-s.ch:
+			s.write(e)
+		case <-s.done:
+			// Drain what is buffered. A wedged writer is the case this
+			// worker exists for, so the bound is applied from Close, which
+			// stops waiting at drainTimeout and counts what is left.
+			for {
+				select {
+				case e := <-s.ch:
+					s.write(e)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+func (s *stdoutSink) write(e Event) {
+	data, err := json.Marshal(e)
+	if err != nil {
+		s.report(OutcomeDropped, 1)
+		return
+	}
+	s.writing.Store(1)
+	_, err = s.w.Write(append(data, '\n'))
+	s.writing.Store(0)
+	if err != nil {
+		s.report(OutcomeDropped, 1)
+		return
+	}
+	s.report(OutcomeDelivered, 1)
+}
+
+// Close stops accepting events, lets the worker drain the buffer for up to
+// drainTimeout, and counts whatever a wedged writer left behind — including
+// the event it is stuck writing.
+func (s *stdoutSink) Close() error {
+	s.closed.Store(true)
+	close(s.done)
+	select {
+	case <-s.exited:
+	case <-time.After(drainTimeout):
+		s.report(OutcomeDropped, len(s.ch)+int(s.writing.Load()))
+	}
+	return nil
 }
 
 // encoder turns a batch of events into a request body. The two HTTP sinks
@@ -387,6 +489,14 @@ type httpSink struct {
 	report  func(outcome string, n int)
 	onPanic PanicHook // nil → stderr fallback in deliverSafe
 	done    chan struct{}
+	exited  chan struct{}
+	closed  atomic.Bool
+	// ctx bounds every post the worker makes; Close cancels it once the drain
+	// window is spent so a post that was already in flight when shutdown
+	// arrived cannot hold its batch uncounted for the client's full timeout.
+	ctx        context.Context
+	cancel     context.CancelFunc
+	drainUntil time.Time // set by Close before done is closed
 }
 
 func newHTTPSink(url string, headers map[string]string, enc encoder, retry retryPolicy, dead *deadLetter, report func(string, int)) *httpSink {
@@ -398,6 +508,7 @@ func newHTTPSink(url string, headers map[string]string, enc encoder, retry retry
 		dead:    dead,
 		report:  report,
 		done:    make(chan struct{}),
+		exited:  make(chan struct{}),
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 			// A POST carrying the sink's configured headers (commonly an API
@@ -413,11 +524,16 @@ func newHTTPSink(url string, headers map[string]string, enc encoder, retry retry
 		},
 		ch: make(chan Event, 1024),
 	}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
 	go s.run()
 	return s
 }
 
 func (s *httpSink) Emit(e Event) {
+	if s.closed.Load() {
+		s.report(OutcomeDropped, 1)
+		return
+	}
 	select {
 	case s.ch <- e:
 	default:
@@ -428,34 +544,98 @@ func (s *httpSink) Emit(e Event) {
 	}
 }
 
-// Close stops the delivery worker and releases the dead-letter file. In-flight
-// retries are abandoned: shutdown does not wait out a backoff against a
-// receiver that is already known to be failing.
+// Close stops accepting events, gives the worker drainTimeout to deliver what
+// is still buffered — one attempt per batch, no backoff — and dead-letters or
+// counts whatever that could not place. Shutdown does not wait out a backoff
+// against a receiver that is already known to be failing, but it no longer
+// abandons the buffer either: the last events a process emits are the ones a
+// rolling restart makes interesting, and losing them uncounted contradicted
+// the contract that a lost event is always countable.
 func (s *httpSink) Close() error {
+	s.closed.Store(true)
+	s.drainUntil = time.Now().Add(drainTimeout)
 	close(s.done)
+	select {
+	case <-s.exited:
+	case <-time.After(time.Until(s.drainUntil)):
+		// A post from before Close is still in flight and has spent the
+		// drain window. Abort it: the worker accounts for that batch and for
+		// everything still buffered on its way out.
+		s.cancel()
+		select {
+		case <-s.exited:
+		case <-time.After(time.Second):
+		}
+	}
+	s.cancel()
 	return s.dead.Close()
 }
 
 func (s *httpSink) run() {
+	defer close(s.exited)
 	for {
 		var e Event
 		select {
 		case e = <-s.ch:
 		case <-s.done:
+			s.drain()
 			return
 		}
-		batch := []Event{e}
-	drain:
-		for len(batch) < 100 {
-			select {
-			case next := <-s.ch:
-				batch = append(batch, next)
-			default:
-				break drain
-			}
-		}
-		s.deliverSafe(batch)
+		s.deliverSafe(s.ctx, s.collect(e))
 	}
+}
+
+// collect fills a batch from what is already buffered, without waiting.
+func (s *httpSink) collect(first Event) []Event {
+	batch := []Event{first}
+	for len(batch) < 100 {
+		select {
+		case next := <-s.ch:
+			batch = append(batch, next)
+		default:
+			return batch
+		}
+	}
+	return batch
+}
+
+// drain runs once done is closed: each buffered batch gets one attempt bound
+// by what is left of drainTimeout, and anything still buffered when that
+// passes goes through abandon rather than vanishing with the worker.
+func (s *httpSink) drain() {
+	ctx, cancel := context.WithDeadline(s.ctx, s.drainUntil)
+	defer cancel()
+	for ctx.Err() == nil {
+		select {
+		case e := <-s.ch:
+			s.deliverSafe(ctx, s.collect(e))
+		default:
+			return
+		}
+	}
+	var rest []Event
+	for {
+		select {
+		case e := <-s.ch:
+			rest = append(rest, e)
+		default:
+			s.abandon(rest)
+			return
+		}
+	}
+}
+
+// abandon is the accounting for a batch that will not be delivered: to the
+// dead-letter file when there is one, otherwise a counted drop.
+func (s *httpSink) abandon(batch []Event) {
+	if len(batch) == 0 {
+		return
+	}
+	if s.dead != nil {
+		s.dead.write(batch)
+		return
+	}
+	s.report(OutcomeDropped, len(batch))
 }
 
 // deliverSafe keeps the delivery worker alive across a panic. The worker is
@@ -466,7 +646,7 @@ func (s *httpSink) run() {
 // countable holds even here — and the panic itself goes to the hook, so it
 // alerts like every other recovered panic rather than masquerading as a
 // sink failure.
-func (s *httpSink) deliverSafe(batch []Event) {
+func (s *httpSink) deliverSafe(ctx context.Context, batch []Event) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.report(OutcomeDropped, len(batch))
@@ -477,7 +657,7 @@ func (s *httpSink) deliverSafe(batch []Event) {
 			}
 		}
 	}()
-	s.deliver(batch)
+	s.deliver(ctx, batch)
 }
 
 // deliver posts a batch, retrying transient failures with backoff and
@@ -487,14 +667,15 @@ func (s *httpSink) deliverSafe(batch []Event) {
 // draining the buffer, so a receiver that is down applies backpressure into
 // the buffer and then into counted drops, rather than into an unbounded pile
 // of goroutines each holding a batch.
-func (s *httpSink) deliver(batch []Event) {
+func (s *httpSink) deliver(ctx context.Context, batch []Event) {
 	data, err := s.encode(batch)
 	if err != nil {
 		s.report(OutcomeDropped, len(batch))
 		return
 	}
+attempts:
 	for attempt := 1; attempt <= s.retry.maxAttempts; attempt++ {
-		err := s.post(data)
+		err := s.post(ctx, data)
 		if err == nil {
 			s.report(OutcomeDelivered, len(batch))
 			return
@@ -506,14 +687,13 @@ func (s *httpSink) deliver(batch []Event) {
 		select {
 		case <-time.After(s.retry.backoff(attempt)):
 		case <-s.done:
-			return
+			// Closing: there is no backoff to wait out. Fall through to the
+			// accounting rather than returning — a batch caught mid-retry by
+			// shutdown used to leave here uncounted.
+			break attempts
 		}
 	}
-	if s.dead != nil {
-		s.dead.write(batch)
-		return
-	}
-	s.report(OutcomeDropped, len(batch))
+	s.abandon(batch)
 }
 
 // jsonBatch is the webhook body: the events as a JSON array, which is what
@@ -528,8 +708,8 @@ type postError struct {
 	retryable bool
 }
 
-func (s *httpSink) post(data []byte) *postError {
-	req, err := http.NewRequest(http.MethodPost, s.url, bytes.NewReader(data))
+func (s *httpSink) post(ctx context.Context, data []byte) *postError {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(data))
 	if err != nil {
 		return &postError{err: err, retryable: false}
 	}

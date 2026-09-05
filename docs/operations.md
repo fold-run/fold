@@ -169,8 +169,9 @@ fold's genuinely paging condition is "no upstream is reachable", which
 
 One JSON event per terminal response — including 401s, 403-equivalents, and
 429s — to the configured sinks (`stdout`, `file`, `webhook`, `otlp-logs`;
-delivery is
-asynchronous and batched, never adding request latency). Fields:
+every sink but `file` delivers asynchronously from a bounded buffer, never
+adding request latency — `file` is synchronous because it is the durability
+anchor). Fields:
 
 | Field | Meaning |
 |---|---|
@@ -216,13 +217,18 @@ A `4xx` other than `429` is treated as permanent and not retried — a receiver
 that rejects the payload rejects it identically every time, and retrying only
 delays the dead letter.
 
-Two things worth knowing before an incident. The buffer is bounded (1024
-events) and a full buffer drops rather than blocking, because audit must never
-become the reason a request is slow — the trade is deliberate, and the drop is
-counted. And a sink that cannot be constructed at startup (a file path that
-will not open) is logged and skipped rather than fatal, so one bad destination
-does not take the gateway down; check the startup log for `audit sink not
-started` if a sink seems inert.
+Three things worth knowing before an incident. The buffer is bounded (1024
+events, on the `stdout` sink as well as the HTTP ones) and a full buffer drops
+rather than blocking, because audit must never become the reason a request is
+slow — the trade is deliberate, and the drop is counted. A closing sink drains:
+on shutdown each buffered batch gets one attempt within a three-second bound,
+and whatever that cannot place is dead-lettered where there is a
+`deadLetterPath` and counted as `dropped` where there is not — so a rolling
+restart shows up in `fold_audit_events_total` rather than as a silent hole at
+the end of every replica's trail. And a sink that cannot be constructed at
+startup (a file path that will not open) is logged and skipped rather than
+fatal, so one bad destination does not take the gateway down; check the
+startup log for `audit sink not started` if a sink seems inert.
 
 The dead-letter file is a rotating file like any other fold writes — bounded at
 100 MB × 5 by default — for the same reason: a dead-letter file that fills the

@@ -401,7 +401,10 @@ The two output streams are separable by design:
 
 - **stdout** — audit events (one JSON line per terminal response, including
   denials) when the `stdout` sink is configured. Point your log pipeline's
-  stdout collector at your SIEM.
+  stdout collector at your SIEM. The sink writes from a worker behind a
+  bounded buffer, so a stalled log driver costs counted drops
+  (`fold_audit_events_total{sink="stdout",outcome="dropped"}`), never request
+  latency.
 - **stderr** — operational logs (`log/slog`; `--log-format json`).
 
 For direct SIEM delivery use the `webhook` sink instead (asynchronous,

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -405,5 +406,204 @@ func TestRequireDurableIsOptIn(t *testing.T) {
 	t.Cleanup(l.Close)
 	if err := l.DurabilityError(); err != nil {
 		t.Fatalf("unexpected durability error with requireDurable unset: %v", err)
+	}
+}
+
+// blockingWriter is a stdout that nobody is reading: every Write parks until
+// released. This is the container-log-driver-stalled case the stdout sink's
+// worker exists for.
+type blockingWriter struct{ release chan struct{} }
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	<-w.release
+	return len(p), nil
+}
+
+// The stdout sink is the default sink, and a default that could stall every
+// request behind a wedged pipe is not a default fold can ship. Emit must
+// return whatever the writer is doing, the overflow must be counted, and Close
+// must give up on a wedged writer within the drain bound — counting what it
+// leaves behind, including the event stuck inside Write.
+func TestStdoutSinkNeverBlocksRequestPath(t *testing.T) {
+	prev := drainTimeout
+	drainTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { drainTimeout = prev })
+
+	c := newCounted()
+	w := &blockingWriter{release: make(chan struct{})}
+	t.Cleanup(func() { close(w.release) })
+	s := newStdoutSink(w, func(outcome string, n int) { c.observe("stdout", outcome, n) })
+
+	const total = 3000 // well past the 1024 buffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range total {
+			s.Emit(Event{Method: "tools/call"})
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Emit blocked on a wedged stdout")
+	}
+
+	start := time.Now()
+	_ = s.Close()
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("Close took %v against a wedged writer; it must give up at the drain bound", took)
+	}
+	if got := c.get(OutcomeDropped) + c.get(OutcomeDelivered); got != total {
+		t.Fatalf("accounted for %d of %d events (dropped=%d delivered=%d); a lost event must always be countable",
+			got, total, c.get(OutcomeDropped), c.get(OutcomeDelivered))
+	}
+	if c.get(OutcomeDelivered) != 0 {
+		t.Fatalf("delivered=%d through a writer that never returned", c.get(OutcomeDelivered))
+	}
+}
+
+// lockedBuffer is a stdout that works: writes land in memory, safely across
+// goroutines.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A healthy stdout receives every event, one JSON line each, and Close flushes
+// what the worker had not yet written.
+func TestStdoutSinkWritesOneLinePerEventAndFlushesOnClose(t *testing.T) {
+	c := newCounted()
+	w := &lockedBuffer{}
+	s := newStdoutSink(w, func(outcome string, n int) { c.observe("stdout", outcome, n) })
+	for i := range 5 {
+		s.Emit(Event{Method: "tools/call", Name: fmt.Sprintf("t%d", i)})
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(w.String()), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("got %d lines, want 5:\n%s", len(lines), w.String())
+	}
+	for _, line := range lines {
+		var e Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("line is not one JSON event: %q: %v", line, err)
+		}
+	}
+	if c.get(OutcomeDelivered) != 5 || c.get(OutcomeDropped) != 0 {
+		t.Fatalf("delivered=%d dropped=%d, want 5/0", c.get(OutcomeDelivered), c.get(OutcomeDropped))
+	}
+}
+
+// Redaction is applied to the record, not to the caller's map. The Usage map
+// on an event is the upstream's own result _meta by pointer, and the gateway
+// serializes that result to the client after handing the event to audit — so
+// a scrub that deleted in place would take fields away from the response.
+func TestScrubDoesNotMutateTheCallersUsageMap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	l := New(&config.Audit{
+		Sinks: []config.AuditSink{{Type: "file", Path: path}},
+		Scrub: &config.AuditScrub{RedactUsageKeys: []string{"secret"}},
+	})
+	defer l.Close()
+
+	usage := map[string]any{"inputTokens": 12, "secret": "still-here"}
+	l.Emit(Event{Method: "tools/call", Usage: usage})
+
+	if _, ok := usage["secret"]; !ok {
+		t.Fatalf("scrub mutated the caller's map: %v", usage)
+	}
+	var e Event
+	for _, line := range readLines(t, path) {
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("bad audit line: %v", err)
+		}
+	}
+	if _, ok := e.Usage["secret"]; ok {
+		t.Fatalf("secret reached the sink: %v", e.Usage)
+	}
+	if e.Usage["inputTokens"] != float64(12) {
+		t.Fatalf("inputTokens should remain, usage=%v", e.Usage)
+	}
+}
+
+// Close drains the buffer: events the worker had not yet posted when shutdown
+// arrived are delivered within the drain bound rather than abandoned, and the
+// receiver ends up with every one of them.
+func TestWebhookCloseDrainsTheBuffer(t *testing.T) {
+	var received atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch []Event
+		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond) // slow enough that a second batch queues behind the first
+		received.Add(int64(len(batch)))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newCounted()
+	l := New(&config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: srv.URL}}}, WithObserver(c.observe))
+	const total = 50
+	for range total {
+		l.Emit(Event{Method: "tools/call"})
+	}
+	l.Close()
+
+	if got := received.Load(); got != total {
+		t.Fatalf("receiver got %d of %d events after Close; the buffer was abandoned", got, total)
+	}
+	if c.get(OutcomeDelivered) != total || c.get(OutcomeDropped) != 0 {
+		t.Fatalf("delivered=%d dropped=%d, want %d/0", c.get(OutcomeDelivered), c.get(OutcomeDropped), total)
+	}
+}
+
+// When the receiver is hung, Close still returns at the drain bound — and
+// every buffered event is counted as dropped, including the batch whose post
+// was in flight when shutdown arrived. Before this, a batch mid-retry at
+// shutdown left the worker uncounted.
+func TestWebhookCloseCountsWhatAHungReceiverKept(t *testing.T) {
+	prev := drainTimeout
+	drainTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { drainTimeout = prev })
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+
+	c := newCounted()
+	l := New(&config.Audit{Sinks: []config.AuditSink{{Type: "webhook", URL: srv.URL}}}, WithObserver(c.observe))
+	const total = 5
+	for range total {
+		l.Emit(Event{Method: "tools/call"})
+	}
+	time.Sleep(50 * time.Millisecond) // let the worker take the first batch and park in the post
+
+	start := time.Now()
+	l.Close()
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("Close took %v against a hung receiver", took)
+	}
+	if got := c.get(OutcomeDropped); got != total {
+		t.Fatalf("dropped=%d, want %d: every event a hung receiver kept must be counted", got, total)
 	}
 }
