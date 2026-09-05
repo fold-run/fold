@@ -43,6 +43,16 @@ func NewVerifier(cfg *config.Auth, client *http.Client) *Verifier {
 	return v
 }
 
+// SetJWKSObserver is told the outcome of every key-set fetch the verifier
+// makes, by issuer: "ok", "error", or "stale" (the fetch failed and the
+// previous set was served). Wiring, not API — the gateway turns it into
+// fold_jwks_fetches_total.
+func (v *Verifier) SetJWKSObserver(fn func(issuer, outcome string)) {
+	if fn != nil {
+		v.jwks.observe = fn
+	}
+}
+
 // TrustLocal registers an issuer whose tokens verify against a locally held
 // public key — fold's own EMA-minted tokens — with no JWKS fetch.
 func (v *Verifier) TrustLocal(issuer string, key any) {
@@ -80,7 +90,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Principal, error) {
 			return key, nil
 		}
 		kid, _ := t.Header["kid"].(string)
-		return v.jwks.key(ctx, jwksURI, kid)
+		return v.jwks.key(ctx, issuer, jwksURI, kid)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)

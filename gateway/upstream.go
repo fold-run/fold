@@ -244,8 +244,11 @@ type rootEntry struct {
 
 func newUpstream(cfg config.Upstream, provider state.Provider) *upstream {
 	u := &upstream{
-		cfg:            cfg,
-		creds:          auth.NewUpstreamCredentials(cfg.Auth, http.DefaultClient),
+		cfg: cfg,
+		// The bounded trust-anchor client, never http.DefaultClient: a token
+		// fetch is single-flighted per key, so one slow token endpoint with
+		// no client timeout would hold every caller behind it.
+		creds:          auth.NewUpstreamCredentials(cfg.Auth, auth.TrustAnchorClient()),
 		lists:          provider.ListCache("up:" + cfg.ID),
 		connectTimeout: defaultConnectTimeout,
 		requestTimeout: defaultRequestTimeout,

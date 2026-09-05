@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -184,12 +185,187 @@ func TestVerifyViaJWKS(t *testing.T) {
 	if _, err := v.Verify(context.Background(), rotated); err == nil {
 		t.Error("unknown kid within the refetch window must not trigger a fetch")
 	}
-	// ...and once the cached set is stale, the same token verifies.
-	v.jwks.mu.Lock()
-	v.jwks.sets[srv.URL].fetched = time.Now().Add(-time.Minute)
-	v.jwks.mu.Unlock()
+	// ...and once the holdoff has passed, the same token verifies.
+	v.jwks.now = func() time.Time { return time.Now().Add(time.Minute) }
 	if _, err := v.Verify(context.Background(), rotated); err != nil {
 		t.Fatalf("verify after rotation with stale cache: %v", err)
+	}
+}
+
+// jwksFixture serves a mutable key set and counts fetches.
+type jwksFixture struct {
+	t      *testing.T
+	srv    *httptest.Server
+	doc    atomic.Pointer[[]byte]
+	fail   atomic.Bool
+	hits   atomic.Int64
+	issuer string
+}
+
+func newJWKSFixture(t *testing.T, issuer string) *jwksFixture {
+	t.Helper()
+	f := &jwksFixture{t: t, issuer: issuer}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.hits.Add(1)
+		if f.fail.Load() {
+			http.Error(w, "idp down", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(*f.doc.Load())
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *jwksFixture) serve(kid string, pub *ecdsa.PublicKey) {
+	raw, err := pub.Bytes()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	b64 := base64.RawURLEncoding.EncodeToString
+	doc, _ := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"kty": "EC", "crv": "P-256", "kid": kid, "use": "sig",
+		"x": b64(raw[1:33]), "y": b64(raw[33:65]),
+	}}})
+	f.doc.Store(&doc)
+}
+
+// outcomes collects what the JWKS observer reports.
+type outcomes struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (o *outcomes) observe(issuer, outcome string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.n == nil {
+		o.n = map[string]int{}
+	}
+	o.n[issuer+" "+outcome]++
+}
+
+func (o *outcomes) get(issuer, outcome string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.n[issuer+" "+outcome]
+}
+
+// Rotation-out. A key the IdP has withdrawn from its set must stop verifying
+// tokens once the cached set reaches its ttl — before this, a known kid never
+// prompted a refetch, so a revoked key stayed trusted for the life of the
+// process. The refresh also has to happen without the token presenting an
+// unknown kid, which is what makes it a ttl and not the rotation-in path.
+func TestJWKSRefreshesOnTTLSoRevokedKeysStopVerifying(t *testing.T) {
+	const issuer = "https://idp.example.com"
+	f := newJWKSFixture(t, issuer)
+	k1, k2 := newKey(t), newKey(t)
+	f.serve("k1", &k1.PublicKey)
+
+	var seen outcomes
+	v := NewVerifier(&config.Auth{
+		Resource: resource,
+		Issuers:  []config.Issuer{{Issuer: issuer, JWKSURI: f.srv.URL}},
+	}, nil)
+	v.SetJWKSObserver(seen.observe)
+	clock := time.Now()
+	v.jwks.now = func() time.Time { return clock }
+
+	tok1 := signToken(t, k1, "k1", baseClaims(issuer))
+	if _, err := v.Verify(context.Background(), tok1); err != nil {
+		t.Fatalf("first verify: %v", err)
+	}
+	// Within the ttl the cached set answers: no fetch, however many calls.
+	for range 5 {
+		if _, err := v.Verify(context.Background(), tok1); err != nil {
+			t.Fatalf("cached verify: %v", err)
+		}
+	}
+	if f.hits.Load() != 1 {
+		t.Fatalf("%d fetches for a known kid inside the ttl, want 1", f.hits.Load())
+	}
+
+	// The IdP revokes k1 and publishes k2. Nothing about the tokens changes.
+	f.serve("k2", &k2.PublicKey)
+	clock = clock.Add(6 * time.Minute)
+	if _, err := v.Verify(context.Background(), tok1); err == nil {
+		t.Fatal("token signed by a revoked key verified after the ttl elapsed")
+	}
+	if _, err := v.Verify(context.Background(), signToken(t, k2, "k2", baseClaims(issuer))); err != nil {
+		t.Fatalf("token under the rotated key: %v", err)
+	}
+	if got := seen.get(issuer, "ok"); got != 2 {
+		t.Fatalf("observer saw %d ok fetches, want 2 (initial + ttl refresh)", got)
+	}
+}
+
+// An IdP outage is not a reason to reject every caller holding a valid token.
+// When the refresh fails, the last good set keeps verifying and the failure is
+// reported as "stale" — distinct from "error", which means nothing is cached
+// and verification really is failing. And a failing IdP is not hammered: one
+// attempt per holdoff, not one per request.
+func TestJWKSServesStaleWhenTheIdPIsDown(t *testing.T) {
+	const issuer = "https://idp.example.com"
+	f := newJWKSFixture(t, issuer)
+	k1 := newKey(t)
+	f.serve("k1", &k1.PublicKey)
+
+	var seen outcomes
+	v := NewVerifier(&config.Auth{
+		Resource: resource,
+		Issuers:  []config.Issuer{{Issuer: issuer, JWKSURI: f.srv.URL}},
+	}, nil)
+	v.SetJWKSObserver(seen.observe)
+	clock := time.Now()
+	v.jwks.now = func() time.Time { return clock }
+
+	tok := signToken(t, k1, "k1", baseClaims(issuer))
+	if _, err := v.Verify(context.Background(), tok); err != nil {
+		t.Fatalf("first verify: %v", err)
+	}
+
+	f.fail.Store(true)
+	clock = clock.Add(6 * time.Minute)
+	for range 10 {
+		if _, err := v.Verify(context.Background(), tok); err != nil {
+			t.Fatalf("verify during IdP outage: %v — the last good set must keep serving", err)
+		}
+	}
+	if got := f.hits.Load(); got != 2 {
+		t.Fatalf("%d fetches during the outage, want exactly 1 (the holdoff bounds retries)", got-1)
+	}
+	if got := seen.get(issuer, "stale"); got != 1 {
+		t.Fatalf("observer saw stale=%d, want 1", got)
+	}
+	if got := seen.get(issuer, "error"); got != 0 {
+		t.Fatalf("observer saw error=%d for an outage with a cached set; that outcome means nothing is cached", got)
+	}
+
+	// A cold cache against a down IdP is the hard failure, and says so.
+	cold := NewVerifier(&config.Auth{
+		Resource: resource,
+		Issuers:  []config.Issuer{{Issuer: issuer, JWKSURI: f.srv.URL}},
+	}, nil)
+	cold.SetJWKSObserver(seen.observe)
+	if _, err := cold.Verify(context.Background(), tok); err == nil {
+		t.Fatal("cold cache verified a token with the IdP down")
+	}
+	if got := seen.get(issuer, "error"); got != 1 {
+		t.Fatalf("observer saw error=%d after a cold-cache fetch failure, want 1", got)
+	}
+}
+
+// A nil client must not fall back to http.DefaultClient: the token fetch is
+// single-flighted per key, so one wedged token endpoint with no client
+// timeout would hold every caller behind it for the full request timeout.
+func TestUpstreamCredentialsNeverUseTheDefaultClient(t *testing.T) {
+	c := NewUpstreamCredentials(&config.UpstreamAuth{Strategy: "static", SecretRef: "X"}, nil)
+	if c.client.Timeout == 0 {
+		t.Fatal("token-endpoint client has no timeout")
+	}
+	if c.client == http.DefaultClient {
+		t.Fatal("token-endpoint client is http.DefaultClient")
 	}
 }
 
